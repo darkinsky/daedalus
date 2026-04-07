@@ -1,0 +1,21 @@
+# Build artifacts
+/target
+
+# Secrets and environment files
+.secrets
+.env
+.env.*
+
+# Log files
+/logs
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+Thumbs.db
