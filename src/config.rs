@@ -33,7 +33,6 @@ impl AgentConfig {
 
         let system_prompt = std::env::var("DAEDALUS_SYSTEM_PROMPT").unwrap_or_else(|_| {
             "You are Daedalus, a helpful AI assistant. \
-             You can use tools to help answer questions and complete tasks. \
              Be concise and accurate in your responses."
                 .to_string()
         });

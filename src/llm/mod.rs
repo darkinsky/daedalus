@@ -2,8 +2,6 @@ mod types;
 mod genai_provider;
 
 pub use types::*;
-pub use genai_provider::GenAiProvider;
-
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -36,6 +34,6 @@ pub trait LlmApi: Send + Sync {
 /// Currently only supports the GenAI provider. In the future, this can be
 /// extended to select providers based on config (e.g., "openai", "anthropic", "ollama").
 pub fn create_provider(config: LlmConfig) -> Result<Box<dyn LlmApi>> {
-    let provider = GenAiProvider::new(config)?;
+    let provider = genai_provider::GenAiProvider::new(config)?;
     Ok(Box::new(provider))
 }

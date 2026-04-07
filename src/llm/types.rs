@@ -13,6 +13,36 @@ pub enum ChatRole {
     Assistant,
 }
 
+impl std::fmt::Display for ChatRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChatRole::System => write!(f, "system"),
+            ChatRole::User => write!(f, "user"),
+            ChatRole::Assistant => write!(f, "assistant"),
+        }
+    }
+}
+
+impl std::fmt::Display for ChatMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{}] {}", self.role, self.content)
+    }
+}
+
+/// Format a slice of ChatMessages into a JSON string for logging.
+pub fn format_messages_for_log(messages: &[ChatMessage]) -> String {
+    let entries: Vec<serde_json::Value> = messages
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "role": m.role.to_string(),
+                "content": m.content,
+            })
+        })
+        .collect();
+    serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string())
+}
+
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
         Self { role: ChatRole::System, content: content.into() }

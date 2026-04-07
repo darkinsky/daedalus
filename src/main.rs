@@ -3,6 +3,8 @@ mod cli;
 mod config;
 mod llm;
 pub mod logging;
+mod memory;
+mod session;
 
 use anyhow::Result;
 
@@ -29,8 +31,8 @@ async fn main() -> Result<()> {
     };
     let provider = llm::create_provider(llm_config)?;
 
-    // Build the agent and run the interactive CLI
-    let mut agent = agent::Agent::new(provider, &config);
+    // Build the chat agent and run the interactive CLI
+    let mut agent = agent::ChatAgent::new(provider, &config);
     cli::run_interactive(&mut agent).await?;
 
     Ok(())

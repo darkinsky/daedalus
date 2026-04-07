@@ -1,28 +1,38 @@
 use anyhow::Result;
 
-use crate::agent::Agent;
+use crate::agent::Mode;
 
-/// Run an interactive REPL loop for the agent.
-pub async fn run_interactive(agent: &mut Agent) -> Result<()> {
+/// Print session info banner.
+fn print_session_info(agent: &dyn Mode) {
+    let session = agent.session();
+    println!("  📋 Session: {} ({})", session.title, &session.id[..8]);
+}
+
+/// Run an interactive REPL loop for the given mode.
+pub async fn run_interactive(agent: &mut dyn Mode) -> Result<()> {
     use std::io::{self, BufRead, Write};
 
     println!("╔══════════════════════════════════════════╗");
     println!("║       🏛️  Daedalus Agent v0.1.0          ║");
     println!("║  Type your message or 'quit' to exit     ║");
+    println!("║  Type '/new' to start a new session      ║");
     println!("╚══════════════════════════════════════════╝");
     println!();
     println!(
-        "  Provider: {}  |  Model: {}",
+        "  Provider: {}  |  Model: {}  |  Mode: {}",
         agent.provider_name(),
-        agent.model_name()
+        agent.model_name(),
+        agent.mode_name()
     );
+    print_session_info(agent);
     println!();
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
     loop {
-        print!("You > ");
+        let request_id = agent.session().request_id + 1;
+        print!("[{}] You > ", request_id);
         stdout.flush()?;
 
         let mut input = String::new();
@@ -36,6 +46,16 @@ pub async fn run_interactive(agent: &mut Agent) -> Result<()> {
         if input.eq_ignore_ascii_case("quit") || input.eq_ignore_ascii_case("exit") {
             println!("Goodbye! 👋");
             break;
+        }
+
+        // Handle slash commands
+        if input.eq_ignore_ascii_case("/new") {
+            agent.new_session();
+            println!();
+            println!("✨ New session started!");
+            print_session_info(agent);
+            println!();
+            continue;
         }
 
         tracing::debug!("User input: {}", input);

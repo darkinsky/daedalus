@@ -3,6 +3,7 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{
     EnvFilter,
     fmt,
+    fmt::time::OffsetTime,
     layer::SubscriberExt,
     util::SubscriberInitExt,
 };
@@ -102,7 +103,7 @@ pub struct LogConfig {
 impl Default for LogConfig {
     fn default() -> Self {
         Self {
-            filter: "daedalus=debug,rig=info".to_string(),
+            filter: "daedalus=debug".to_string(),
             format: LogFormat::default(),
             with_file: false,
             with_line_number: false,
@@ -194,7 +195,7 @@ impl LogConfig {
                 "Warning: invalid log filter '{}': {}, falling back to default",
                 self.filter, e
             );
-            EnvFilter::new("daedalus=debug,rig=info")
+            EnvFilter::new("daedalus=debug")
         })
     }
 }
@@ -224,9 +225,10 @@ pub struct LogGuard {
 /// ```
 pub fn init(config: &LogConfig) -> Result<LogGuard> {
     let filter = config.build_filter();
+    let timer = local_timer();
 
     // Build the stderr (console) layer
-    let stderr_layer = build_stderr_layer(config);
+    let stderr_layer = build_stderr_layer(config, timer.clone());
 
     if let Some(ref log_dir) = config.log_dir {
         // File logging mode: output to rolling file only (no stderr)
@@ -240,7 +242,7 @@ pub fn init(config: &LogConfig) -> Result<LogGuard> {
 
         // File layer: configurable format, no ANSI, with full metadata
         let file_format = config.file_format.as_ref().unwrap_or(&LogFormat::Json);
-        let file_layer = build_layer(file_format, non_blocking);
+        let file_layer = build_layer(file_format, non_blocking, timer);
 
         tracing_subscriber::registry()
             .with(filter)
@@ -274,12 +276,28 @@ pub fn init(config: &LogConfig) -> Result<LogGuard> {
     }
 }
 
+/// Create a local-timezone timer for log timestamps.
+///
+/// Attempts to detect the local UTC offset at startup. Falls back to UTC
+/// if the offset cannot be determined (e.g., on some sandboxed environments).
+fn local_timer() -> OffsetTime<time::format_description::well_known::Rfc3339> {
+    let offset = time::UtcOffset::current_local_offset()
+        .unwrap_or(time::UtcOffset::UTC);
+    OffsetTime::new(
+        offset,
+        time::format_description::well_known::Rfc3339,
+    )
+}
+
 /// Build the stderr formatting layer based on the configured format.
-fn build_stderr_layer<S>(config: &LogConfig) -> Box<dyn tracing_subscriber::Layer<S> + Send + Sync>
+fn build_stderr_layer<S>(
+    config: &LogConfig,
+    timer: OffsetTime<time::format_description::well_known::Rfc3339>,
+) -> Box<dyn tracing_subscriber::Layer<S> + Send + Sync>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
-    build_layer_with_opts(&config.format, std::io::stderr, config)
+    build_layer_with_opts(&config.format, std::io::stderr, config, timer)
 }
 
 /// Build a formatting layer for an arbitrary writer (file, stderr, etc.).
@@ -288,6 +306,7 @@ where
 fn build_layer<S, W>(
     format: &LogFormat,
     writer: W,
+    timer: OffsetTime<time::format_description::well_known::Rfc3339>,
 ) -> Box<dyn tracing_subscriber::Layer<S> + Send + Sync>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
@@ -297,6 +316,7 @@ where
         LogFormat::Json => Box::new(
             fmt::layer()
                 .json()
+                .with_timer(timer)
                 .with_writer(writer)
                 .with_file(true)
                 .with_line_number(true)
@@ -308,6 +328,7 @@ where
         LogFormat::Compact => Box::new(
             fmt::layer()
                 .compact()
+                .with_timer(timer)
                 .with_writer(writer)
                 .with_file(true)
                 .with_line_number(true)
@@ -318,6 +339,7 @@ where
         ),
         LogFormat::Full => Box::new(
             fmt::layer()
+                .with_timer(timer)
                 .with_writer(writer)
                 .with_file(true)
                 .with_line_number(true)
@@ -329,6 +351,7 @@ where
         LogFormat::Pretty => Box::new(
             fmt::layer()
                 .pretty()
+                .with_timer(timer)
                 .with_writer(writer)
                 .with_file(true)
                 .with_line_number(true)
@@ -345,6 +368,7 @@ fn build_layer_with_opts<S, W>(
     format: &LogFormat,
     writer: W,
     config: &LogConfig,
+    timer: OffsetTime<time::format_description::well_known::Rfc3339>,
 ) -> Box<dyn tracing_subscriber::Layer<S> + Send + Sync>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
@@ -354,6 +378,7 @@ where
         LogFormat::Json => Box::new(
             fmt::layer()
                 .json()
+                .with_timer(timer)
                 .with_writer(writer)
                 .with_file(config.with_file)
                 .with_line_number(config.with_line_number)
@@ -365,6 +390,7 @@ where
         LogFormat::Compact => Box::new(
             fmt::layer()
                 .compact()
+                .with_timer(timer)
                 .with_writer(writer)
                 .with_file(config.with_file)
                 .with_line_number(config.with_line_number)
@@ -375,6 +401,7 @@ where
         ),
         LogFormat::Full => Box::new(
             fmt::layer()
+                .with_timer(timer)
                 .with_writer(writer)
                 .with_file(true)
                 .with_line_number(true)
@@ -386,6 +413,7 @@ where
         LogFormat::Pretty => Box::new(
             fmt::layer()
                 .pretty()
+                .with_timer(timer)
                 .with_writer(writer)
                 .with_file(config.with_file)
                 .with_line_number(config.with_line_number)
