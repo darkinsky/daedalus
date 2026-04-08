@@ -1,0 +1,52 @@
+# 运行时约束
+
+> 最后更新：2026-04-08
+> 来源：存量代码分析
+> 置信度：高
+
+## 硬编码常量
+
+| 常量 | 值 | 位置 | 说明 |
+|------|-----|------|------|
+| `MAX_TOOL_ROUNDS` | 10 | `src/agent/chat.rs:25` | 每条用户消息的最大工具调用轮次，防止 LLM 无限循环 |
+| `MCP_REQUEST_TIMEOUT` | 30s | `src/mcp/client.rs:13` | MCP 普通请求超时 |
+| `MCP_INIT_TIMEOUT` | 60s | `src/mcp/client.rs:16` | MCP 初始化握手超时（服务器可能需要启动时间） |
+| `DEFAULT_AGENT_NAME` | "Daedalus" | `src/prompt/sections/role.rs:4` | 默认 Agent 名称 |
+| `DEFAULT_SYSTEM_PROMPT` | "You are Daedalus..." | `src/config.rs:11-13` | 默认系统提示词（自定义检测的基准值） |
+
+## 环境变量依赖
+
+- **必须**：`OPENAI_API_KEY`（缺失时启动失败）
+- **可选但影响行为**：`DAEDALUS_MODEL`（默认 gpt-4o）、`OPENAI_BASE_URL`、`DAEDALUS_ADAPTER_KIND`
+- **Venus 触发条件**：设置 `DAEDALUS_THINKING_ENABLED` 或 `DAEDALUS_THINKING_TOKENS` 后自动切换到 VenusProvider
+
+## 日志互斥约束
+
+> 📍 **代码位置**：`src/logging.rs:265-311`
+
+当配置了 `DAEDALUS_LOG_DIR` 时，日志**仅输出到文件**，不再输出到 stderr。这是一个刻意的设计选择，但意味着无法同时查看 stderr 和文件日志。
+
+## MCP 配置搜索约束
+
+> 📍 **代码位置**：`src/mcp/config.rs:55-82`
+
+配置搜索是**先到先得**的：如果 `DAEDALUS_MCP_CONFIG` 环境变量指向的文件存在，就不再检查 `./mcp.json` 和 `~/.config/daedalus/mcp.json`。
+
+## 工具调用串行约束
+
+> 📍 **代码位置**：`src/agent/chat.rs:320-324`
+
+同一轮中的多个工具调用是**串行执行**的（`for tool_call in &response.tool_calls`），而非并行。这简化了实现，但对于多个独立工具调用可能不是最优的。
+
+## LogGuard 生命周期约束
+
+> 📍 **代码位置**：`src/logging.rs:242-244`
+
+`LogGuard` 必须在整个应用生命周期内持有。提前 drop 会导致文件日志缓冲区可能未完全 flush。
+
+---
+
+*变更历史*
+| 日期 | 变更 | 来源 |
+|------|------|------|
+| 2026-04-08 | 初始创建 | 存量代码分析 Phase A |
