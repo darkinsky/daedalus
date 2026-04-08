@@ -3,10 +3,9 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{json, Value};
 
-use crate::config::{LlmConfig, VenusExtensions};
 use super::{
-    ChatMessage, ChatOptions, ChatResponse, LlmApi,
-    TokenUsage, ToolCall, ToolResponse,
+    ChatMessage, ChatOptions, ChatResponse, LlmApi, LlmConfig,
+    TokenUsage, ToolCall, ToolResponse, VenusExtensions,
 };
 
 /// LLM provider that directly calls the Venus API proxy via HTTP.
@@ -236,10 +235,10 @@ impl VenusProvider {
 
     /// Parse token usage statistics from the response body.
     fn parse_usage(response_body: &Value) -> Option<TokenUsage> {
-        let u = response_body.get("usage")?;
-        let prompt = u.get("prompt_tokens").and_then(|v| v.as_u64());
-        let completion = u.get("completion_tokens").and_then(|v| v.as_u64());
-        let total = u.get("total_tokens").and_then(|v| v.as_u64());
+        let usage_obj = response_body.get("usage")?;
+        let prompt = usage_obj.get("prompt_tokens").and_then(|v| v.as_u64());
+        let completion = usage_obj.get("completion_tokens").and_then(|v| v.as_u64());
+        let total = usage_obj.get("total_tokens").and_then(|v| v.as_u64());
         if prompt.is_some() || completion.is_some() || total.is_some() {
             Some(TokenUsage {
                 prompt_tokens: prompt,
@@ -271,30 +270,14 @@ impl VenusProvider {
             None
         }
     }
-}
 
-/// Truncate a string to at most `max_len` characters for log output.
-///
-/// Appends "..." if the string was truncated.
-fn truncate_for_log(s: &str, max_len: usize) -> &str {
-    if s.len() <= max_len {
-        s
-    } else {
-        &s[..max_len]
-    }
-}
-
-#[async_trait]
-impl LlmApi for VenusProvider {
-    async fn chat_with_tools(
-        &self,
-        messages: &[ChatMessage],
-        tools: &[Value],
-        tool_history: &[(Vec<ToolCall>, Vec<ToolResponse>)],
-        options: Option<&ChatOptions>,
-    ) -> Result<ChatResponse> {
+    /// Send an HTTP request to the Venus API and return the parsed JSON body.
+    ///
+    /// Handles the full HTTP lifecycle: send request → read response → parse JSON
+    /// → check HTTP status. This separates network concerns from business logic
+    /// in `chat_with_tools`.
+    async fn send_chat_request(&self, body: &Value) -> Result<Value> {
         let url = format!("{}/chat/completions", self.base_url);
-        let body = self.build_request_body(messages, tools, tool_history, options);
 
         tracing::debug!(
             url = %url,
@@ -310,7 +293,7 @@ impl LlmApi for VenusProvider {
             .post(&url)
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .json(&body)
+            .json(body)
             .send()
             .await
             .map_err(|e| anyhow::anyhow!("Venus HTTP request error: {}", e))?;
@@ -323,7 +306,11 @@ impl LlmApi for VenusProvider {
 
         let response_body: Value = serde_json::from_str(&response_text)
             .map_err(|e| {
-                let preview = truncate_for_log(&response_text, 500);
+                let preview = if response_text.len() <= 500 {
+                    &response_text
+                } else {
+                    &response_text[..500]
+                };
                 anyhow::anyhow!("Venus response parse error: {} (body: {})", e, preview)
             })?;
 
@@ -340,6 +327,21 @@ impl LlmApi for VenusProvider {
             ));
         }
 
+        Ok(response_body)
+    }
+}
+
+#[async_trait]
+impl LlmApi for VenusProvider {
+    async fn chat_with_tools(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[Value],
+        tool_history: &[(Vec<ToolCall>, Vec<ToolResponse>)],
+        options: Option<&ChatOptions>,
+    ) -> Result<ChatResponse> {
+        let body = self.build_request_body(messages, tools, tool_history, options);
+        let response_body = self.send_chat_request(&body).await?;
         Self::parse_response(&response_body)
     }
 
@@ -359,7 +361,7 @@ impl LlmApi for VenusProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ReasoningEffort;
+    use crate::llm::ReasoningEffort;
 
     #[test]
     fn test_extract_think_content() {

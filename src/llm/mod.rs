@@ -7,14 +7,10 @@ mod venus_provider;
 // prevents accidental namespace pollution as the type set grows.
 pub use types::{
     ChatMessage, ChatOptions, ChatRole, ChatResponse,
+    LlmConfig, ReasoningEffort, VenusExtensions,
     TokenUsage, ToolCall, ToolInfo, ToolResponse,
     format_messages_for_log,
 };
-
-// Re-export config types that LLM consumers commonly need.
-// ReasoningEffort is used by provider implementations and tests via `use crate::llm::*`.
-#[allow(unused_imports)]
-pub use crate::config::{LlmConfig, ReasoningEffort, VenusExtensions};
 
 use anyhow::Result;
 use async_trait::async_trait;

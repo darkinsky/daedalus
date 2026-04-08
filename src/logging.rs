@@ -73,30 +73,38 @@ impl LogRotation {
 
 /// Display options for a log layer.
 ///
-/// Extracted to avoid repeating the same six booleans in every layer builder.
+/// Controls which metadata fields are included in log output.
+/// Used by both `LogConfig` (for stderr) and file logging (full metadata).
 #[derive(Debug, Clone)]
-struct LayerDisplayOpts {
-    with_file: bool,
-    with_line_number: bool,
-    with_target: bool,
-    with_thread_names: bool,
-    with_thread_ids: bool,
-    with_ansi: bool,
+pub struct LayerDisplayOpts {
+    /// Whether to include source file location in log output.
+    pub with_file: bool,
+    /// Whether to include line numbers in log output.
+    pub with_line_number: bool,
+    /// Whether to include the target module path.
+    pub with_target: bool,
+    /// Whether to include thread names.
+    pub with_thread_names: bool,
+    /// Whether to include thread IDs.
+    pub with_thread_ids: bool,
+    /// Whether to use ANSI color codes.
+    pub with_ansi: bool,
+}
+
+impl Default for LayerDisplayOpts {
+    fn default() -> Self {
+        Self {
+            with_file: false,
+            with_line_number: false,
+            with_target: true,
+            with_thread_names: false,
+            with_thread_ids: false,
+            with_ansi: true,
+        }
+    }
 }
 
 impl LayerDisplayOpts {
-    /// Build display options from user-facing `LogConfig` (for stderr).
-    fn from_config(config: &LogConfig) -> Self {
-        Self {
-            with_file: config.with_file,
-            with_line_number: config.with_line_number,
-            with_target: config.with_target,
-            with_thread_names: config.with_thread_names,
-            with_thread_ids: config.with_thread_ids,
-            with_ansi: config.with_ansi,
-        }
-    }
-
     /// Build display options for file logging (full metadata, no ANSI).
     fn for_file() -> Self {
         Self {
@@ -135,18 +143,8 @@ pub struct LogConfig {
     pub filter: String,
     /// Output format
     pub format: LogFormat,
-    /// Whether to include source file location in log output
-    pub with_file: bool,
-    /// Whether to include line numbers in log output
-    pub with_line_number: bool,
-    /// Whether to include the target module path
-    pub with_target: bool,
-    /// Whether to include thread names
-    pub with_thread_names: bool,
-    /// Whether to include thread IDs
-    pub with_thread_ids: bool,
-    /// Whether to use ANSI color codes
-    pub with_ansi: bool,
+    /// Display options for stderr output (file, line, target, threads, ANSI).
+    pub display: LayerDisplayOpts,
     /// Directory for rolling log files (None = no file logging)
     pub log_dir: Option<String>,
     /// Log file name prefix (default: "daedalus")
@@ -162,12 +160,7 @@ impl Default for LogConfig {
         Self {
             filter: "daedalus=debug".to_string(),
             format: LogFormat::default(),
-            with_file: false,
-            with_line_number: false,
-            with_target: true,
-            with_thread_names: false,
-            with_thread_ids: false,
-            with_ansi: true,
+            display: LayerDisplayOpts::default(),
             log_dir: None,
             log_file_prefix: "daedalus".to_string(),
             rotation: LogRotation::default(),
@@ -202,12 +195,12 @@ impl LogConfig {
             config.format = LogFormat::parse_or_default(&format);
         }
 
-        config.with_file = env_bool("DAEDALUS_LOG_FILE", config.with_file);
-        config.with_line_number = env_bool("DAEDALUS_LOG_LINE", config.with_line_number);
-        config.with_target = env_bool("DAEDALUS_LOG_TARGET", config.with_target);
-        config.with_thread_names = env_bool("DAEDALUS_LOG_THREAD_NAMES", config.with_thread_names);
-        config.with_thread_ids = env_bool("DAEDALUS_LOG_THREAD_IDS", config.with_thread_ids);
-        config.with_ansi = env_bool("DAEDALUS_LOG_ANSI", config.with_ansi);
+        config.display.with_file = env_bool("DAEDALUS_LOG_FILE", config.display.with_file);
+        config.display.with_line_number = env_bool("DAEDALUS_LOG_LINE", config.display.with_line_number);
+        config.display.with_target = env_bool("DAEDALUS_LOG_TARGET", config.display.with_target);
+        config.display.with_thread_names = env_bool("DAEDALUS_LOG_THREAD_NAMES", config.display.with_thread_names);
+        config.display.with_thread_ids = env_bool("DAEDALUS_LOG_THREAD_IDS", config.display.with_thread_ids);
+        config.display.with_ansi = env_bool("DAEDALUS_LOG_ANSI", config.display.with_ansi);
 
         if let Ok(dir) = std::env::var("DAEDALUS_LOG_DIR")
             && !dir.is_empty() {
@@ -301,8 +294,8 @@ pub fn init(config: &LogConfig) -> Result<LogGuard> {
         })
     } else {
         // No file logging — stderr only
-        let stderr_opts = LayerDisplayOpts::from_config(config);
-        let stderr_layer = build_format_layer(&config.format, std::io::stderr, timer, &stderr_opts);
+        let stderr_opts = &config.display;
+        let stderr_layer = build_format_layer(&config.format, std::io::stderr, timer, stderr_opts);
 
         tracing_subscriber::registry()
             .with(filter)

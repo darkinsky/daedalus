@@ -8,6 +8,7 @@ use crate::llm::{
 };
 use crate::mcp::McpManager;
 use crate::memory::Memory;
+use crate::prompt::PromptBuilder;
 use crate::session::Session;
 
 use super::AgentMode;
@@ -41,6 +42,13 @@ pub struct ChatAgent {
     memory_factory: MemoryFactory,
     /// Optional MCP manager for tool calling.
     mcp: Option<McpManager>,
+    /// Custom system prompt override (from DAEDALUS_SYSTEM_PROMPT env var).
+    /// When set, bypasses PromptBuilder entirely.
+    custom_system_prompt: Option<String>,
+    /// Custom agent name for prompt building.
+    agent_name: Option<String>,
+    /// Soul/personality content loaded from SOUL.md.
+    soul: Option<String>,
 }
 
 impl ChatAgent {
@@ -54,7 +62,21 @@ impl ChatAgent {
         config: &AgentConfig,
         memory_factory: MemoryFactory,
     ) -> Self {
-        let memory = memory_factory(&config.system_prompt);
+        // Build the initial system prompt using PromptBuilder (no tools yet)
+        // If DAEDALUS_SYSTEM_PROMPT is set, it overrides the dynamic prompt.
+        let custom_override = if config.is_custom_prompt {
+            Some(config.system_prompt.clone())
+        } else {
+            None
+        };
+        let system_prompt = Self::build_system_prompt(
+            custom_override.as_deref(),
+            config.agent_name.as_deref(),
+            config.soul.as_deref(),
+            &[],
+        );
+
+        let memory = memory_factory(&system_prompt);
         let session = Session::new(memory);
 
         tracing::info!(
@@ -62,15 +84,19 @@ impl ChatAgent {
             memory_strategy = session.memory().strategy_name(),
             provider = llm.provider_name(),
             model = llm.model_name(),
-            "ChatAgent initialized"
+            prompt_len = system_prompt.len(),
+            "ChatAgent initialized with dynamic prompt"
         );
 
         Self {
             llm,
             session,
-            system_prompt: config.system_prompt.clone(),
+            system_prompt,
             memory_factory,
             mcp: None,
+            custom_system_prompt: custom_override,
+            agent_name: config.agent_name.clone(),
+            soul: config.soul.clone(),
         }
     }
 
@@ -81,6 +107,62 @@ impl ChatAgent {
             Box::new(SlidingWindowMemory::unlimited(prompt))
         });
         Self::with_memory_factory(llm, config, factory)
+    }
+
+    /// Build the system prompt using PromptBuilder with current state.
+    ///
+    /// If a custom `system_prompt` override is provided (via `DAEDALUS_SYSTEM_PROMPT`),
+    /// it is used directly, bypassing the PromptBuilder. Otherwise, the prompt is
+    /// dynamically assembled from sections.
+    ///
+    /// This is called at initialization and whenever the tool set changes
+    /// (e.g., when MCP is attached) to keep the prompt in sync.
+    fn build_system_prompt(
+        custom_system_prompt: Option<&str>,
+        agent_name: Option<&str>,
+        soul: Option<&str>,
+        tools: &[ToolInfo],
+    ) -> String {
+        // If user explicitly set DAEDALUS_SYSTEM_PROMPT, respect it as an override
+        if let Some(custom) = custom_system_prompt {
+            return custom.to_string();
+        }
+
+        let mut builder = PromptBuilder::new().tools(tools);
+
+        if let Some(name) = agent_name {
+            builder = builder.agent_name(name);
+        }
+        if let Some(soul_content) = soul {
+            builder = builder.soul(soul_content);
+        }
+
+        builder.build()
+    }
+
+    /// Rebuild the system prompt and update the current session's memory.
+    ///
+    /// Called when the tool set changes (e.g., after MCP attachment) so the
+    /// LLM sees updated tool guidance in the system prompt.
+    fn rebuild_prompt(&mut self) {
+        let tools = self.tool_descriptions();
+        let new_prompt = Self::build_system_prompt(
+            self.custom_system_prompt.as_deref(),
+            self.agent_name.as_deref(),
+            self.soul.as_deref(),
+            &tools,
+        );
+        self.system_prompt = new_prompt;
+
+        // Recreate session with updated prompt (preserving no history since
+        // this typically happens at startup before any conversation).
+        let memory = (self.memory_factory)(&self.system_prompt);
+        self.session = Session::new(memory);
+
+        tracing::info!(
+            prompt_len = self.system_prompt.len(),
+            "System prompt rebuilt with updated tool definitions"
+        );
     }
 
     /// Log the outgoing LLM request details.
@@ -296,6 +378,10 @@ impl AgentMode for ChatAgent {
             "MCP manager attached to ChatAgent"
         );
         self.mcp = Some(mcp);
+
+        // Rebuild the system prompt now that tools are available,
+        // so the LLM sees tool guidance in the system message.
+        self.rebuild_prompt();
     }
 
     fn has_tools(&self) -> bool {
@@ -313,6 +399,14 @@ impl AgentMode for ChatAgent {
     }
 
     fn new_session(&mut self) {
+        // Rebuild prompt with current tools (they may have changed)
+        let tools = self.tool_descriptions();
+        self.system_prompt = Self::build_system_prompt(
+            self.custom_system_prompt.as_deref(),
+            self.agent_name.as_deref(),
+            self.soul.as_deref(),
+            &tools,
+        );
         let memory = (self.memory_factory)(&self.system_prompt);
         self.session = Session::new(memory);
     }

@@ -1,7 +1,101 @@
-// Note: LlmConfig and ReasoningEffort are defined in `crate::config` and
-// re-exported at the `llm` module level (see mod.rs). They are not
-// re-exported here to avoid duplicate paths.
-use crate::config::VenusExtensions;
+// ── LLM provider configuration types ──
+//
+// These types define the configuration and parameters for LLM providers.
+// They live in the `llm` module because they are LLM-domain concepts.
+// The `config` module imports them when building configuration from env vars.
+
+/// Reasoning effort level for models that support it.
+///
+/// Maps to OpenAI's `reasoning_effort` and Venus proxy's `thinking_level`/`reasoning_effort`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+}
+
+impl std::fmt::Display for ReasoningEffort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReasoningEffort::Low => write!(f, "low"),
+            ReasoningEffort::Medium => write!(f, "medium"),
+            ReasoningEffort::High => write!(f, "high"),
+        }
+    }
+}
+
+impl std::str::FromStr for ReasoningEffort {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "low" => Ok(ReasoningEffort::Low),
+            "medium" => Ok(ReasoningEffort::Medium),
+            "high" => Ok(ReasoningEffort::High),
+            _ => Err(format!("Invalid reasoning effort: '{}'. Expected: low, medium, high", s)),
+        }
+    }
+}
+
+/// Venus API proxy advanced parameters.
+///
+/// Shared between `LlmConfig` (instance-level defaults) and `ChatOptions`
+/// (per-request overrides). This eliminates field duplication and provides
+/// a single merge operation for the "request overrides config" pattern.
+#[derive(Debug, Clone, Default)]
+pub struct VenusExtensions {
+    /// Enable thinking/reasoning mode for supported models.
+    /// Maps to Venus `thinking_enabled` (Claude, Gemini, VenusLLMServing).
+    pub thinking_enabled: Option<bool>,
+    /// Maximum tokens for the thinking/reasoning process.
+    /// Maps to Venus `thinking_tokens` (Claude, Gemini).
+    /// Must be > 1024 and <= max_tokens.
+    pub thinking_tokens: Option<u32>,
+    /// Reasoning effort level.
+    /// Maps to OpenAI `reasoning_effort` (o-series) and
+    /// Gemini `thinking_level`/`reasoning_effort` (gemini-3 series).
+    pub reasoning_effort: Option<ReasoningEffort>,
+}
+
+impl VenusExtensions {
+    /// Return true if any Venus extension parameter is configured.
+    ///
+    /// Useful for provider selection logic and diagnostics.
+    #[allow(dead_code)]
+    pub fn is_active(&self) -> bool {
+        self.thinking_enabled.is_some()
+            || self.thinking_tokens.is_some()
+            || self.reasoning_effort.is_some()
+    }
+
+    /// Merge with another `VenusExtensions`, using `other` as the
+    /// higher-priority source (request-level overrides config-level).
+    ///
+    /// For each field, if `other` has a value it wins; otherwise `self`
+    /// (the config default) is used.
+    pub fn merge_with_overrides(&self, overrides: &VenusExtensions) -> VenusExtensions {
+        VenusExtensions {
+            thinking_enabled: overrides.thinking_enabled.or(self.thinking_enabled),
+            thinking_tokens: overrides.thinking_tokens.or(self.thinking_tokens),
+            reasoning_effort: overrides.reasoning_effort.clone().or(self.reasoning_effort.clone()),
+        }
+    }
+}
+
+/// Configuration for an LLM provider.
+#[derive(Debug, Clone)]
+pub struct LlmConfig {
+    /// API key for authentication.
+    pub api_key: String,
+    /// Model identifier (e.g., "gpt-4o", "claude-sonnet-4-6").
+    pub model: String,
+    /// Optional custom API base URL.
+    pub api_base: Option<String>,
+    /// Adapter kind hint (e.g., "openai", "anthropic", "gemini").
+    /// Defaults to "openai" if not specified.
+    pub adapter_kind: Option<String>,
+    /// Venus API proxy advanced options (thinking, reasoning_effort).
+    pub venus: VenusExtensions,
+}
 
 /// A single message in a conversation.
 #[derive(Debug, Clone)]
@@ -177,7 +271,6 @@ pub struct ToolInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{LlmConfig, ReasoningEffort, VenusExtensions};
 
     #[test]
     fn test_chat_message_constructors() {

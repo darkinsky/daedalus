@@ -5,6 +5,7 @@ mod llm;
 pub mod logging;
 mod mcp;
 mod memory;
+mod prompt;
 mod session;
 
 use agent::AgentMode;

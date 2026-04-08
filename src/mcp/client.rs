@@ -29,8 +29,8 @@ pub struct McpClient {
     stdin: Mutex<tokio::process::ChildStdin>,
     /// Reader from the child's stdout.
     stdout: Mutex<BufReader<tokio::process::ChildStdout>>,
-    /// Auto-incrementing request ID counter.
-    next_id: AtomicU64,
+    /// Auto-incrementing JSON-RPC request ID counter.
+    request_id_counter: AtomicU64,
     /// Tools discovered from this server.
     tools: Vec<ToolDefinition>,
     /// Server info from the initialize handshake.
@@ -86,7 +86,7 @@ impl McpClient {
             child,
             stdin: Mutex::new(stdin),
             stdout: Mutex::new(BufReader::new(stdout)),
-            next_id: AtomicU64::new(1),
+            request_id_counter: AtomicU64::new(1),
             tools: Vec::new(),
             server_info: None,
         };
@@ -139,7 +139,7 @@ impl McpClient {
         // (try_wait is not available through &self, so we skip for now
         //  and rely on the write/read errors to detect dead processes)
 
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let id = self.request_id_counter.fetch_add(1, Ordering::SeqCst);
         let request = JsonRpcRequest::new(id, method, params);
 
         let request_json = serde_json::to_string(&request)

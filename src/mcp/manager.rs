@@ -137,6 +137,10 @@ impl McpManager {
 
     /// Call a tool by name, automatically routing to the correct server.
     ///
+    /// Returns the concatenated text content from the tool result.
+    /// If the tool reported an error (`is_error: true`), the text is prefixed
+    /// with `[Tool Error]` so the LLM can distinguish success from failure.
+    ///
     /// # Arguments
     /// * `tool_name` - The tool name (must match a discovered tool).
     /// * `arguments` - The arguments as a JSON object.
@@ -149,6 +153,7 @@ impl McpManager {
             .with_context(|| format!("No MCP server provides tool '{}'", tool_name))?;
 
         let result = client.call_tool(tool_name, arguments).await?;
+        let is_error = result.is_error.unwrap_or(false);
 
         // Concatenate all text content from the result
         let text = result.content.iter()
@@ -156,7 +161,11 @@ impl McpManager {
             .collect::<Vec<_>>()
             .join("\n");
 
-        Ok(text)
+        if is_error {
+            Ok(format!("[Tool Error] {}", text))
+        } else {
+            Ok(text)
+        }
     }
 
     /// Shut down all MCP servers gracefully.

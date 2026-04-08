@@ -1,99 +1,16 @@
 use anyhow::{Context, Result};
 
-// ── LLM provider configuration types ──
+use crate::llm::{LlmConfig, ReasoningEffort, VenusExtensions};
 
-/// Reasoning effort level for models that support it.
+// ── Shared constants ──
+
+/// The built-in default system prompt.
 ///
-/// Maps to OpenAI's `reasoning_effort` and Venus proxy's `thinking_level`/`reasoning_effort`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReasoningEffort {
-    Low,
-    Medium,
-    High,
-}
-
-impl std::fmt::Display for ReasoningEffort {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ReasoningEffort::Low => write!(f, "low"),
-            ReasoningEffort::Medium => write!(f, "medium"),
-            ReasoningEffort::High => write!(f, "high"),
-        }
-    }
-}
-
-impl std::str::FromStr for ReasoningEffort {
-    type Err = String;
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "low" => Ok(ReasoningEffort::Low),
-            "medium" => Ok(ReasoningEffort::Medium),
-            "high" => Ok(ReasoningEffort::High),
-            _ => Err(format!("Invalid reasoning effort: '{}'. Expected: low, medium, high", s)),
-        }
-    }
-}
-
-/// Venus API proxy advanced parameters.
-///
-/// Shared between `LlmConfig` (instance-level defaults) and `ChatOptions`
-/// (per-request overrides). This eliminates field duplication and provides
-/// a single merge operation for the "request overrides config" pattern.
-#[derive(Debug, Clone, Default)]
-pub struct VenusExtensions {
-    /// Enable thinking/reasoning mode for supported models.
-    /// Maps to Venus `thinking_enabled` (Claude, Gemini, VenusLLMServing).
-    pub thinking_enabled: Option<bool>,
-    /// Maximum tokens for the thinking/reasoning process.
-    /// Maps to Venus `thinking_tokens` (Claude, Gemini).
-    /// Must be > 1024 and <= max_tokens.
-    pub thinking_tokens: Option<u32>,
-    /// Reasoning effort level.
-    /// Maps to OpenAI `reasoning_effort` (o-series) and
-    /// Gemini `thinking_level`/`reasoning_effort` (gemini-3 series).
-    pub reasoning_effort: Option<ReasoningEffort>,
-}
-
-impl VenusExtensions {
-    /// Return true if any Venus extension parameter is configured.
-    ///
-    /// Useful for provider selection logic and diagnostics.
-    #[allow(dead_code)]
-    pub fn is_active(&self) -> bool {
-        self.thinking_enabled.is_some()
-            || self.thinking_tokens.is_some()
-            || self.reasoning_effort.is_some()
-    }
-
-    /// Merge with another `VenusExtensions`, using `other` as the
-    /// higher-priority source (request-level overrides config-level).
-    ///
-    /// For each field, if `other` has a value it wins; otherwise `self`
-    /// (the config default) is used.
-    pub fn merge_with_overrides(&self, overrides: &VenusExtensions) -> VenusExtensions {
-        VenusExtensions {
-            thinking_enabled: overrides.thinking_enabled.or(self.thinking_enabled),
-            thinking_tokens: overrides.thinking_tokens.or(self.thinking_tokens),
-            reasoning_effort: overrides.reasoning_effort.clone().or(self.reasoning_effort.clone()),
-        }
-    }
-}
-
-/// Configuration for an LLM provider.
-#[derive(Debug, Clone)]
-pub struct LlmConfig {
-    /// API key for authentication.
-    pub api_key: String,
-    /// Model identifier (e.g., "gpt-4o", "claude-sonnet-4-6").
-    pub model: String,
-    /// Optional custom API base URL.
-    pub api_base: Option<String>,
-    /// Adapter kind hint (e.g., "openai", "anthropic", "gemini").
-    /// Defaults to "openai" if not specified.
-    pub adapter_kind: Option<String>,
-    /// Venus API proxy advanced options (thinking, reasoning_effort).
-    pub venus: VenusExtensions,
-}
+/// This constant is the single source of truth for the default prompt,
+/// used by `AgentConfig::from_env()` to detect custom overrides.
+pub const DEFAULT_SYSTEM_PROMPT: &str =
+    "You are Daedalus, a helpful AI assistant. \
+     Be concise and accurate in your responses.";
 
 // ── Agent configuration ──
 
@@ -102,8 +19,16 @@ pub struct LlmConfig {
 pub struct AgentConfig {
     /// LLM provider configuration (api_key, model, api_base, adapter_kind).
     pub llm: LlmConfig,
-    /// System prompt for the agent
+    /// System prompt for the agent (legacy, used as fallback when prompt builder is bypassed).
     pub system_prompt: String,
+    /// Whether the user explicitly set a custom system prompt via `DAEDALUS_SYSTEM_PROMPT`.
+    ///
+    /// When `true`, the custom prompt takes priority over the PromptBuilder.
+    pub is_custom_prompt: bool,
+    /// Custom agent name (defaults to "Daedalus").
+    pub agent_name: Option<String>,
+    /// Loaded soul content (read from SOUL.md file at startup).
+    pub soul: Option<String>,
 }
 
 impl AgentConfig {
@@ -116,7 +41,9 @@ impl AgentConfig {
     /// - `DAEDALUS_MODEL`: Model to use (default: "gpt-4o")
     /// - `OPENAI_BASE_URL`: Custom API base URL
     /// - `DAEDALUS_ADAPTER_KIND`: LLM adapter kind ("openai", "anthropic", "gemini", "groq", "cohere")
-    /// - `DAEDALUS_SYSTEM_PROMPT`: Custom system prompt
+    /// - `DAEDALUS_SYSTEM_PROMPT`: Custom system prompt (legacy fallback)
+    /// - `DAEDALUS_AGENT_NAME`: Custom agent name (default: "Daedalus")
+    /// - `DAEDALUS_SOUL_FILE`: Path to SOUL.md personality file
     /// - `DAEDALUS_THINKING_ENABLED`: Enable thinking mode ("true"/"false")
     /// - `DAEDALUS_THINKING_TOKENS`: Max tokens for thinking (e.g., "2048")
     /// - `DAEDALUS_REASONING_EFFORT`: Reasoning effort level ("low"/"medium"/"high")
@@ -142,10 +69,31 @@ impl AgentConfig {
             .ok()
             .and_then(|v| v.parse::<ReasoningEffort>().ok());
 
-        let system_prompt = std::env::var("DAEDALUS_SYSTEM_PROMPT").unwrap_or_else(|_| {
-            "You are Daedalus, a helpful AI assistant. \
-             Be concise and accurate in your responses."
-                .to_string()
+        // Detect whether the user explicitly set a custom system prompt
+        let (system_prompt, is_custom_prompt) = match std::env::var("DAEDALUS_SYSTEM_PROMPT") {
+            Ok(custom) if custom != DEFAULT_SYSTEM_PROMPT => (custom, true),
+            _ => (DEFAULT_SYSTEM_PROMPT.to_string(), false),
+        };
+
+        let agent_name = std::env::var("DAEDALUS_AGENT_NAME").ok();
+
+        // Load soul content from SOUL.md file if configured
+        let soul = std::env::var("DAEDALUS_SOUL_FILE").ok().and_then(|path| {
+            match std::fs::read_to_string(&path) {
+                Ok(content) => {
+                    let trimmed = content.trim().to_string();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        tracing::info!(path = %path, "Loaded SOUL personality file");
+                        Some(trimmed)
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(path = %path, error = %e, "Failed to load SOUL file, skipping");
+                    None
+                }
+            }
         });
 
         Ok(Self {
@@ -161,6 +109,9 @@ impl AgentConfig {
                 },
             },
             system_prompt,
+            is_custom_prompt,
+            agent_name,
+            soul,
         })
     }
 

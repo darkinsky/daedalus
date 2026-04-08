@@ -50,7 +50,7 @@ impl Session {
 
     /// Return a short prefix of the session ID (first 8 characters).
     pub fn short_id(&self) -> &str {
-        &self.id[..8]
+        self.id.get(..8).unwrap_or(&self.id)
     }
 
     /// Return a reference to the underlying memory strategy.

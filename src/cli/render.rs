@@ -10,13 +10,13 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // ── Primitive helpers ──
 
-/// Print a dim/muted line (for secondary information).
-fn dim(text: &str) {
+/// Print a dim/muted line to stdout (for secondary information).
+fn print_dim(text: &str) {
     println!("{}", text.with(Color::DarkGrey));
 }
 
 /// Print a key-value line with the key in dim and the value in the given color.
-fn kv_line(key: &str, value: &str, value_color: Color) {
+fn print_key_value(key: &str, value: &str, value_color: Color) {
     println!(
         "    {}  {}",
         key.with(Color::DarkGrey),
@@ -35,22 +35,22 @@ pub fn banner(agent: &dyn AgentMode) {
         format!("v{}", VERSION).with(Color::DarkGrey),
     );
     println!();
-    dim(&format!(
+    print_dim(&format!(
         "  Model:    {}  ({})",
         agent.model_name(),
         agent.provider_name(),
     ));
-    dim(&format!("  Mode:     {}", agent.mode_name()));
+    print_dim(&format!("  Mode:     {}", agent.mode_name()));
     if agent.has_tools() {
-        dim(&format!("  Tools:    {} available", agent.tool_count()));
+        print_dim(&format!("  Tools:    {} available", agent.tool_count()));
     }
-    dim(&format!(
+    print_dim(&format!(
         "  Session:  {} ({})",
         agent.session().title,
         agent.session().short_id(),
     ));
     println!();
-    dim("  Type /help for available commands.");
+    print_dim("  Type /help for available commands.");
     println!();
 }
 
@@ -74,7 +74,7 @@ pub fn help() {
         );
     }
     println!();
-    dim("  Or just type a message to chat with the assistant.");
+    print_dim("  Or just type a message to chat with the assistant.");
     println!();
 }
 
@@ -90,10 +90,10 @@ pub fn cost(cost: &SessionCost) {
             .attribute(Attribute::Bold)
     );
     println!();
-    kv_line("Requests:", &cost.requests().to_string(), Color::White);
-    kv_line("Prompt tokens:", &cost.prompt_tokens().to_string(), Color::White);
-    kv_line("Completion tokens:", &cost.completion_tokens().to_string(), Color::White);
-    kv_line("Total tokens:", &cost.total_tokens().to_string(), Color::Cyan);
+    print_key_value("Requests:", &cost.requests().to_string(), Color::White);
+    print_key_value("Prompt tokens:", &cost.prompt_tokens().to_string(), Color::White);
+    print_key_value("Completion tokens:", &cost.completion_tokens().to_string(), Color::White);
+    print_key_value("Total tokens:", &cost.total_tokens().to_string(), Color::Cyan);
     println!();
 }
 
@@ -102,11 +102,11 @@ pub fn cost(cost: &SessionCost) {
 /// Print the `/model` output.
 pub fn model_info(agent: &dyn AgentMode) {
     println!();
-    kv_line("Provider:", agent.provider_name(), Color::White);
-    kv_line("Model:", agent.model_name(), Color::Cyan);
-    kv_line("Mode:", agent.mode_name(), Color::White);
+    print_key_value("Provider:", agent.provider_name(), Color::White);
+    print_key_value("Model:", agent.model_name(), Color::Cyan);
+    print_key_value("Mode:", agent.mode_name(), Color::White);
     if agent.has_tools() {
-        kv_line("Tools:", &format!("{} available", agent.tool_count()), Color::Green);
+        print_key_value("Tools:", &format!("{} available", agent.tool_count()), Color::Green);
     }
     println!();
 }
@@ -187,7 +187,7 @@ pub fn new_session(agent: &dyn AgentMode) {
         "  {} New session started.",
         "✨".to_string().with(Color::Yellow),
     );
-    dim(&format!(
+    print_dim(&format!(
         "  Session: {} ({})",
         agent.session().title,
         agent.session().short_id(),
@@ -197,7 +197,7 @@ pub fn new_session(agent: &dyn AgentMode) {
 
 /// Print the "screen cleared" message.
 pub fn screen_cleared(agent: &dyn AgentMode) {
-    dim(&format!(
+    print_dim(&format!(
         "  Screen cleared. Session: {} ({})",
         agent.session().title,
         agent.session().short_id(),
@@ -211,8 +211,8 @@ pub fn screen_cleared(agent: &dyn AgentMode) {
 pub fn tools_list(agent: &dyn AgentMode) {
     println!();
     if !agent.has_tools() {
-        dim("  No MCP tools available.");
-        dim("  Configure MCP servers in mcp.json to enable tool calling.");
+        print_dim("  No MCP tools available.");
+        print_dim("  Configure MCP servers in mcp.json to enable tool calling.");
         println!();
         return;
     }
@@ -232,12 +232,12 @@ pub fn tools_list(agent: &dyn AgentMode) {
             format!("({})", tool.server).with(Color::DarkGrey),
         );
         if !tool.description.is_empty() {
-            dim(&format!("      {}", tool.description));
+            print_dim(&format!("      {}", tool.description));
         }
     }
 
     println!();
-    dim("    The LLM will automatically use these tools when needed.");
+    print_dim("    The LLM will automatically use these tools when needed.");
     println!();
 }
 
