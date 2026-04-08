@@ -1,7 +1,7 @@
 # MCP — Model Context Protocol 客户端与工具管理
 
 > 最后更新：2026-04-08
-> 来源：存量代码分析
+> 来源：存量代码分析 + 代码审查改进
 
 ## 1. 模块概述
 
@@ -84,6 +84,7 @@ Client ← Server: ToolsListResult（工具定义列表）
 | 方法 | 职责 |
 |---|---|
 | `from_config()` | 使用 `JoinSet` **并行**连接所有服务器 |
+| `has_tools()` | 返回是否有可用工具（`tool_count() > 0`） |
 | `build_tool_definitions()` | 生成 OpenAI 格式 JSON 工具定义列表 |
 | `tool_descriptions()` | 生成 CLI 显示用 `ToolInfo` 列表 |
 | `call_tool()` | 自动路由到正确服务器 → 执行 → 拼接文本结果 |
@@ -118,4 +119,5 @@ Client ← Server: ToolsListResult（工具定义列表）
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-08 | 新增 has_tools() 方法；显式 import 替代 glob import | 代码审查改进 |
 | 2026-04-08 | 初始创建 | 存量代码分析 Phase A |

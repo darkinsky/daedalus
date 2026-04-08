@@ -1,4 +1,5 @@
 mod chat;
+pub(crate) mod tool_router;
 
 pub use chat::ChatAgent;
 

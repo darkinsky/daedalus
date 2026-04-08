@@ -12,6 +12,7 @@ use crate::prompt::PromptBuilder;
 use crate::session::Session;
 
 use super::AgentMode;
+use super::tool_router::ToolRouter;
 
 /// A factory function type for creating memory instances.
 ///
@@ -24,11 +25,29 @@ pub type MemoryFactory = Box<dyn Fn(&str) -> Box<dyn Memory> + Send + Sync>;
 /// This prevents infinite loops if the LLM keeps requesting tool calls.
 const MAX_TOOL_ROUNDS: usize = 10;
 
-/// Chat mode — multi-turn conversation with optional MCP tool calling.
+/// Truncate a string for inclusion in tool history summaries.
 ///
-/// When an `McpManager` is attached, the agent will:
+/// Prevents excessively large tool arguments or results from bloating
+/// the conversation memory and wasting tokens.
+fn truncate_for_summary(s: &str, max_len: usize) -> &str {
+    if s.len() <= max_len {
+        s
+    } else {
+        &s[..max_len]
+    }
+}
+
+/// Chat mode — multi-turn conversation with optional tool calling.
+///
+/// `ChatAgent` is the core orchestrator that coordinates:
+/// - **LLM interaction**: Sending messages and receiving responses.
+/// - **Tool execution**: Delegated to `ToolRouter` (built-in + MCP).
+/// - **Memory management**: Storing conversation history via `Session`.
+/// - **Prompt construction**: Delegated to `PromptBuilder`.
+///
+/// The tool-calling loop works as follows:
 /// 1. Send the user message to the LLM with available tool definitions.
-/// 2. If the LLM responds with tool calls, execute them via MCP.
+/// 2. If the LLM responds with tool calls, execute them via `ToolRouter`.
 /// 3. Feed the tool results back to the LLM.
 /// 4. Repeat until the LLM produces a final text response (or max rounds).
 pub struct ChatAgent {
@@ -40,11 +59,11 @@ pub struct ChatAgent {
     system_prompt: String,
     /// Factory for creating memory instances (decoupled from concrete type).
     memory_factory: MemoryFactory,
-    /// Optional MCP manager for tool calling.
-    mcp: Option<McpManager>,
+    /// Unified tool router — handles both built-in and MCP tools.
+    tool_router: ToolRouter,
     /// Custom system prompt override (from DAEDALUS_SYSTEM_PROMPT env var).
     /// When set, bypasses PromptBuilder entirely.
-    custom_system_prompt: Option<String>,
+    prompt_override: Option<String>,
     /// Custom agent name for prompt building.
     agent_name: Option<String>,
     /// Soul/personality content loaded from SOUL.md.
@@ -62,15 +81,14 @@ impl ChatAgent {
         config: &AgentConfig,
         memory_factory: MemoryFactory,
     ) -> Self {
-        // Build the initial system prompt using PromptBuilder (no tools yet)
-        // If DAEDALUS_SYSTEM_PROMPT is set, it overrides the dynamic prompt.
-        let custom_override = if config.is_custom_prompt {
+        let prompt_override = if config.is_custom_prompt {
             Some(config.system_prompt.clone())
         } else {
             None
         };
-        let system_prompt = Self::build_system_prompt(
-            custom_override.as_deref(),
+
+        let system_prompt = Self::build_prompt(
+            prompt_override.as_deref(),
             config.agent_name.as_deref(),
             config.soul.as_deref(),
             &[],
@@ -93,8 +111,8 @@ impl ChatAgent {
             session,
             system_prompt,
             memory_factory,
-            mcp: None,
-            custom_system_prompt: custom_override,
+            tool_router: ToolRouter::new(),
+            prompt_override,
             agent_name: config.agent_name.clone(),
             soul: config.soul.clone(),
         }
@@ -109,53 +127,41 @@ impl ChatAgent {
         Self::with_memory_factory(llm, config, factory)
     }
 
-    /// Build the system prompt using PromptBuilder with current state.
+    // ── Prompt construction ──
+
+    /// Build the system prompt using PromptBuilder.
     ///
-    /// If a custom `system_prompt` override is provided (via `DAEDALUS_SYSTEM_PROMPT`),
-    /// it is used directly, bypassing the PromptBuilder. Otherwise, the prompt is
-    /// dynamically assembled from sections.
-    ///
-    /// This is called at initialization and whenever the tool set changes
-    /// (e.g., when MCP is attached) to keep the prompt in sync.
-    fn build_system_prompt(
-        custom_system_prompt: Option<&str>,
+    /// Delegates to `PromptBuilder::build_with_override` which handles
+    /// the "custom override vs. dynamic assembly" decision.
+    fn build_prompt(
+        prompt_override: Option<&str>,
         agent_name: Option<&str>,
         soul: Option<&str>,
         tools: &[ToolInfo],
     ) -> String {
-        // If user explicitly set DAEDALUS_SYSTEM_PROMPT, respect it as an override
-        if let Some(custom) = custom_system_prompt {
-            return custom.to_string();
-        }
-
         let mut builder = PromptBuilder::new().tools(tools);
-
         if let Some(name) = agent_name {
             builder = builder.agent_name(name);
         }
         if let Some(soul_content) = soul {
             builder = builder.soul(soul_content);
         }
-
-        builder.build()
+        builder.build_with_override(prompt_override)
     }
 
-    /// Rebuild the system prompt and update the current session's memory.
+    /// Rebuild the system prompt and reset the session.
     ///
     /// Called when the tool set changes (e.g., after MCP attachment) so the
     /// LLM sees updated tool guidance in the system prompt.
-    fn rebuild_prompt(&mut self) {
-        let tools = self.tool_descriptions();
-        let new_prompt = Self::build_system_prompt(
-            self.custom_system_prompt.as_deref(),
+    fn reset_with_updated_prompt(&mut self) {
+        let tools = self.tool_router.tool_descriptions();
+        self.system_prompt = Self::build_prompt(
+            self.prompt_override.as_deref(),
             self.agent_name.as_deref(),
             self.soul.as_deref(),
             &tools,
         );
-        self.system_prompt = new_prompt;
 
-        // Recreate session with updated prompt (preserving no history since
-        // this typically happens at startup before any conversation).
         let memory = (self.memory_factory)(&self.system_prompt);
         self.session = Session::new(memory);
 
@@ -164,6 +170,8 @@ impl ChatAgent {
             "System prompt rebuilt with updated tool definitions"
         );
     }
+
+    // ── Logging helpers ──
 
     /// Log the outgoing LLM request details.
     fn log_request(&self, request_id: u64, user_input: &str, messages: &[ChatMessage]) {
@@ -201,45 +209,13 @@ impl ChatAgent {
         );
     }
 
-    /// Execute a single tool call via MCP and return a ToolResponse.
-    async fn execute_tool_call(&self, tool_call: &ToolCall) -> ToolResponse {
-        let mcp = match &self.mcp {
-            Some(m) => m,
-            None => return ToolResponse::new(&tool_call.call_id, "Error: No MCP manager available"),
-        };
-
-        tracing::info!(
-            tool = %tool_call.fn_name,
-            arguments = %tool_call.fn_arguments,
-            "Executing MCP tool call"
-        );
-
-        match mcp.call_tool(&tool_call.fn_name, tool_call.fn_arguments.clone()).await {
-            Ok(result) => {
-                tracing::info!(
-                    tool = %tool_call.fn_name,
-                    result_len = result.len(),
-                    "MCP tool call succeeded"
-                );
-                ToolResponse::new(&tool_call.call_id, result)
-            }
-            Err(e) => {
-                tracing::error!(
-                    tool = %tool_call.fn_name,
-                    error = %e,
-                    "MCP tool call failed"
-                );
-                ToolResponse::new(
-                    &tool_call.call_id,
-                    format!("Error calling tool '{}': {}", tool_call.fn_name, e),
-                )
-            }
-        }
-    }
+    // ── Tool-calling loop ──
 
     /// Build a summary of tool calls and results for storing in memory.
     ///
     /// This ensures the LLM can see tool usage history in subsequent turns.
+    /// Arguments and results are truncated to avoid wasting tokens on
+    /// excessively large tool payloads.
     fn summarize_tool_history(history: &[(Vec<ToolCall>, Vec<ToolResponse>)]) -> String {
         let mut parts = Vec::new();
         for (round_idx, (calls, responses)) in history.iter().enumerate() {
@@ -250,9 +226,9 @@ impl ChatAgent {
                 parts.push(format!(
                     "[Tool call round {}: {}({}) → {}]",
                     round_idx + 1,
-                    call.fn_name,
-                    call.fn_arguments,
-                    result
+                    call.function_name,
+                    truncate_for_summary(&call.arguments.to_string(), 200),
+                    truncate_for_summary(result, 500),
                 ));
             }
         }
@@ -261,7 +237,7 @@ impl ChatAgent {
 
     /// Run the tool-calling loop.
     ///
-    /// Iterates: LLM response → tool calls → execute via MCP → feed results back → repeat.
+    /// Iterates: LLM response → tool calls → execute via ToolRouter → feed results back.
     /// All tool history is accumulated and passed to the provider on each round.
     /// Token usage is accumulated across all rounds.
     async fn chat_with_tools(
@@ -269,16 +245,9 @@ impl ChatAgent {
         request_id: u64,
         messages: &[ChatMessage],
     ) -> Result<(ChatResponse, Vec<(Vec<ToolCall>, Vec<ToolResponse>)>)> {
-        let tools = self.mcp.as_ref()
-            .map(|mcp| mcp.build_tool_definitions())
-            .unwrap_or_default();
-
-        // Accumulated tool history: each entry is (tool_calls, tool_responses) for one round.
+        let tools = self.tool_router.build_tool_definitions();
         let mut tool_history: Vec<(Vec<ToolCall>, Vec<ToolResponse>)> = Vec::new();
-
-        // Accumulate token usage across all rounds
         let mut total_usage = TokenUsage::default();
-        // Keep the reasoning_content from the final round
         let mut last_reasoning_content: Option<String> = None;
 
         for round in 0..MAX_TOOL_ROUNDS {
@@ -287,15 +256,11 @@ impl ChatAgent {
             ).await?;
             self.log_response(request_id, &response);
 
-            // Accumulate usage from this round
             if let Some(ref usage) = response.usage {
                 total_usage.accumulate(usage);
             }
 
             if response.tool_calls.is_empty() {
-                // No tool calls — this is the final response.
-                // Replace usage with accumulated total.
-                // Use reasoning_content from this final round.
                 let final_response = ChatResponse {
                     content: response.content,
                     reasoning_content: response.reasoning_content.or(last_reasoning_content),
@@ -305,7 +270,6 @@ impl ChatAgent {
                 return Ok((final_response, tool_history));
             }
 
-            // Preserve reasoning_content from intermediate rounds
             if response.reasoning_content.is_some() {
                 last_reasoning_content = response.reasoning_content;
             }
@@ -316,17 +280,14 @@ impl ChatAgent {
                 "LLM requested tool calls"
             );
 
-            // Execute each tool call and collect responses
+            // Execute each tool call via the unified router
             let mut responses = Vec::new();
             for tool_call in &response.tool_calls {
-                let tool_response = self.execute_tool_call(tool_call).await;
+                let tool_response = self.tool_router.execute(tool_call).await;
                 responses.push(tool_response);
             }
 
-            // Record this round's calls and responses
             tool_history.push((response.tool_calls, responses));
-
-            // Continue the loop — send tool results back to LLM
         }
 
         anyhow::bail!("Exceeded maximum tool-calling rounds ({})", MAX_TOOL_ROUNDS)
@@ -338,31 +299,20 @@ impl AgentMode for ChatAgent {
     async fn chat(&mut self, user_input: &str) -> Result<ChatResponse> {
         let request_id = self.session.next_request_id();
 
-        // Store user message in session memory
         self.session.memory_mut().add_user_message(user_input);
-
-        // Build the full message list from session memory
         let messages = self.session.memory().build_messages();
-
-        // Log the request
         self.log_request(request_id, user_input, &messages);
 
-        // Decide whether to use tool calling
         let response = if self.has_tools() && self.llm.supports_tools() {
             let (resp, tool_history) = self.chat_with_tools(request_id, &messages).await?;
 
-            // Store tool usage summary in memory so subsequent turns can see it.
-            // Uses add_tool_context to avoid injecting fake user messages that
-            // would distort turn_count and conversation history.
             if !tool_history.is_empty() {
                 let summary = Self::summarize_tool_history(&tool_history);
                 self.session.memory_mut().add_tool_context(&summary);
             }
             self.session.memory_mut().add_assistant_message(&resp.content);
-
             resp
         } else {
-            // Simple chat without tools
             let resp = self.llm.chat(&messages, None).await?;
             self.log_response(request_id, &resp);
             self.session.memory_mut().add_assistant_message(&resp.content);
@@ -373,36 +323,26 @@ impl AgentMode for ChatAgent {
     }
 
     fn attach_mcp(&mut self, mcp: McpManager) {
-        tracing::info!(
-            tools = mcp.tool_count(),
-            "MCP manager attached to ChatAgent"
-        );
-        self.mcp = Some(mcp);
-
-        // Rebuild the system prompt now that tools are available,
-        // so the LLM sees tool guidance in the system message.
-        self.rebuild_prompt();
+        self.tool_router.attach_mcp(mcp);
+        self.reset_with_updated_prompt();
     }
 
     fn has_tools(&self) -> bool {
-        self.mcp.as_ref().map(|mcp| mcp.has_servers()).unwrap_or(false)
+        self.tool_router.has_tools()
     }
 
     fn tool_count(&self) -> usize {
-        self.mcp.as_ref().map(|mcp| mcp.tool_count()).unwrap_or(0)
+        self.tool_router.tool_count()
     }
 
     fn tool_descriptions(&self) -> Vec<ToolInfo> {
-        self.mcp.as_ref()
-            .map(|mcp| mcp.tool_descriptions())
-            .unwrap_or_default()
+        self.tool_router.tool_descriptions()
     }
 
     fn new_session(&mut self) {
-        // Rebuild prompt with current tools (they may have changed)
-        let tools = self.tool_descriptions();
-        self.system_prompt = Self::build_system_prompt(
-            self.custom_system_prompt.as_deref(),
+        let tools = self.tool_router.tool_descriptions();
+        self.system_prompt = Self::build_prompt(
+            self.prompt_override.as_deref(),
             self.agent_name.as_deref(),
             self.soul.as_deref(),
             &tools,

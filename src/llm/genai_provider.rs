@@ -104,8 +104,8 @@ impl GenAiProvider {
     fn to_genai_tool_call(tc: &ToolCall) -> GenAiToolCall {
         GenAiToolCall {
             call_id: tc.call_id.clone(),
-            fn_name: tc.fn_name.clone(),
-            fn_arguments: tc.fn_arguments.clone(),
+            fn_name: tc.function_name.clone(),
+            fn_arguments: tc.arguments.clone(),
             thought_signatures: None,
         }
     }
@@ -114,8 +114,8 @@ impl GenAiProvider {
     fn from_genai_tool_call(tc: &GenAiToolCall) -> ToolCall {
         ToolCall {
             call_id: tc.call_id.clone(),
-            fn_name: tc.fn_name.clone(),
-            fn_arguments: tc.fn_arguments.clone(),
+            function_name: tc.fn_name.clone(),
+            arguments: tc.fn_arguments.clone(),
         }
     }
 

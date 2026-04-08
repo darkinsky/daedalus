@@ -163,6 +163,7 @@ pub fn response(content: &str) {
 
 /// Print a compact token-usage / elapsed-time line after each response.
 pub fn response_footer(usage: Option<&TokenUsage>, elapsed: f64) {
+    // Collect non-None parts, skipping unavailable token counts
     let parts: Vec<String> = [
         usage.and_then(|u| u.prompt_tokens).map(|t| format!("{}↑", t)),
         usage.and_then(|u| u.completion_tokens).map(|t| format!("{}↓", t)),

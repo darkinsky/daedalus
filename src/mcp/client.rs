@@ -7,7 +7,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
-use super::types::*;
+use super::types::{
+    JsonRpcRequest, JsonRpcResponse, InitializeResult, ServerInfo,
+    ToolDefinition, ToolsListResult, ToolCallResult,
+};
 
 /// Default timeout for MCP request/response round-trips.
 const MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);

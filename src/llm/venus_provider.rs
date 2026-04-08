@@ -78,8 +78,8 @@ impl VenusProvider {
                         "id": tc.call_id,
                         "type": "function",
                         "function": {
-                            "name": tc.fn_name,
-                            "arguments": tc.fn_arguments.to_string(),
+                            "name": tc.function_name,
+                            "arguments": tc.arguments.to_string(),
                         }
                     })
                 })
@@ -222,11 +222,11 @@ impl VenusProvider {
                     .filter_map(|tc| {
                         let call_id = tc.get("id")?.as_str()?.to_string();
                         let func = tc.get("function")?;
-                        let fn_name = func.get("name")?.as_str()?.to_string();
-                        let fn_arguments_str = func.get("arguments")?.as_str().unwrap_or("{}");
-                        let fn_arguments: Value =
-                            serde_json::from_str(fn_arguments_str).unwrap_or(json!({}));
-                        Some(ToolCall { call_id, fn_name, fn_arguments })
+                        let function_name = func.get("name")?.as_str()?.to_string();
+                        let arguments_str = func.get("arguments")?.as_str().unwrap_or("{}");
+                        let arguments: Value =
+                            serde_json::from_str(arguments_str).unwrap_or(json!({}));
+                        Some(ToolCall { call_id, function_name, arguments })
                     })
                     .collect()
             })
@@ -447,8 +447,8 @@ mod tests {
         let resp = VenusProvider::parse_response(&body).unwrap();
         assert_eq!(resp.tool_calls.len(), 1);
         assert_eq!(resp.tool_calls[0].call_id, "call_123");
-        assert_eq!(resp.tool_calls[0].fn_name, "get_weather");
-        assert_eq!(resp.tool_calls[0].fn_arguments["city"], "Beijing");
+        assert_eq!(resp.tool_calls[0].function_name, "get_weather");
+        assert_eq!(resp.tool_calls[0].arguments["city"], "Beijing");
     }
 
     #[test]
@@ -546,8 +546,8 @@ mod tests {
 
         let tool_calls = vec![ToolCall {
             call_id: "call_1".to_string(),
-            fn_name: "get_weather".to_string(),
-            fn_arguments: json!({"city": "Beijing"}),
+            function_name: "get_weather".to_string(),
+            arguments: json!({"city": "Beijing"}),
         }];
         let tool_responses = vec![ToolResponse::new("call_1", "Sunny, 25°C")];
         let tool_history = vec![(tool_calls, tool_responses)];

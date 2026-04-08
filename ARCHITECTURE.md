@@ -23,8 +23,11 @@ graph TD
     AgentMode --> ChatAgent[ChatAgent<br/>多轮对话 + 工具调用]
     ChatAgent --> LlmApi{{"dyn LlmApi<br/>(trait object)"}}
     ChatAgent --> Session[Session<br/>会话管理]
-    ChatAgent --> McpManager[McpManager<br/>工具路由]
+    ChatAgent --> ToolRouter[ToolRouter<br/>统一工具路由]
     ChatAgent --> PromptBuilder[PromptBuilder<br/>提示词组装]
+
+    ToolRouter --> BuiltinTools[BuiltinToolRegistry<br/>内置工具]
+    ToolRouter --> McpManager[McpManager<br/>MCP 工具管理]
 
     LlmApi --> GenAi[GenAiProvider<br/>genai 库适配]
     LlmApi --> Venus[VenusProvider<br/>HTTP 原始请求]
@@ -55,7 +58,8 @@ graph TD
 | main.rs | 启动编排：日志 → 配置 → MCP → LLM → REPL | tokio | `src/main.rs` | [core](docs/services/core/overview.md) |
 | config | 环境变量配置加载 | anyhow | `src/config.rs` | [core](docs/services/core/overview.md) |
 | logging | 结构化日志（双通道、轮转） | tracing, tracing-appender | `src/logging.rs` | [core](docs/services/core/overview.md) |
-| agent | Agent 模式抽象 + ChatAgent 实现 | async-trait | `src/agent/` | [agent](docs/services/agent/overview.md) |
+| agent | Agent 模式抽象 + ChatAgent + ToolRouter | async-trait | `src/agent/` | [agent](docs/services/agent/overview.md) |
+| tools | 内置工具 trait + 文件系统工具 | tokio::fs, chrono | `src/tools/` | [agent](docs/services/agent/overview.md) |
 | cli | REPL 交互、命令解析、终端渲染 | rustyline, crossterm, termimad | `src/cli/` | [cli](docs/services/cli/overview.md) |
 | llm | LLM Provider 抽象 + 双 Provider 实现 | genai, reqwest | `src/llm/` | [llm](docs/services/llm/overview.md) |
 | mcp | MCP 协议客户端 + 工具管理 | tokio, serde_json | `src/mcp/` | [mcp](docs/services/mcp/overview.md) |
@@ -88,7 +92,9 @@ graph TD
       → LOOP (最多 10 轮):
         → llm.chat_with_tools(messages, tools, tool_history)
         → 如果 response.tool_calls 非空:
-          → 对每个 tool_call: mcp.call_tool(name, args)
+          → 对每个 tool_call: tool_router.execute(call)
+            → 优先查找 built-in 工具
+            → 回退到 MCP 服务器
           → 收集 ToolResponse
           → tool_history.push((calls, responses))
           → 继续循环
@@ -130,3 +136,4 @@ main()
 4. **优雅降级**：MCP 连接失败跳过该服务器、SOUL 文件读取失败仅 warn、日志 filter 解析失败回退默认值。
 5. **OpenAI JSON 作为中间格式**：工具定义使用 OpenAI function-calling JSON 作为 Provider 无关的中间表示，各 Provider 各自转换。
 6. **近因效应利用**：系统提示词中 Critical Reminders 放在最后，利用 LLM 的近因偏差确保硬规则最被重视。
+7. **内置工具始终可用**：文件系统等基础工具通过 `BuiltinToolRegistry` 内置，无需外部 MCP 配置即可使用。工具路由优先级：内置工具 > MCP 工具。

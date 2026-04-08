@@ -68,7 +68,7 @@ impl McpConfig {
         }
 
         // Check ~/.config/daedalus/mcp.json
-        if let Some(home) = dirs_home() {
+        if let Some(home) = home_dir() {
             let config_path = format!("{}/.config/daedalus/mcp.json", home);
             if std::path::Path::new(&config_path).exists() {
                 tracing::info!("Loading MCP config from: {}", config_path);
@@ -82,8 +82,8 @@ impl McpConfig {
     }
 }
 
-/// Get the user's home directory.
-fn dirs_home() -> Option<String> {
+/// Get the user's home directory from environment variables.
+fn home_dir() -> Option<String> {
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .ok()

@@ -1,7 +1,7 @@
 # LLM — Provider 抽象与双实现
 
 > 最后更新：2026-04-08
-> 来源：存量代码分析
+> 来源：存量代码分析 + 代码审查改进
 
 ## 1. 模块概述
 
@@ -105,7 +105,7 @@ pub fn create_provider(config: LlmConfig) -> Result<Box<dyn LlmApi>>
 | `VenusExtensions` | Venus 扩展参数（thinking_enabled/tokens, reasoning_effort） |
 | `LlmConfig` | Provider 配置（api_key, model, api_base, adapter_kind, venus） |
 | `ChatMessage` / `ChatRole` | 会话消息（System/User/Assistant/Tool） |
-| `ToolCall` / `ToolResponse` | 工具调用请求/响应 |
+| `ToolCall` / `ToolResponse` | 工具调用请求/响应（字段：`call_id`, `function_name`, `arguments`） |
 | `ChatResponse` | LLM 响应（content, reasoning_content, usage, tool_calls） |
 | `TokenUsage` | Token 统计（全部 Option<u64>） |
 | `ChatOptions` | 生成参数（temperature, max_tokens, top_p, venus） |
@@ -118,4 +118,5 @@ pub fn create_provider(config: LlmConfig) -> Result<Box<dyn LlmApi>>
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-08 | ToolCall 字段重命名：fn_name→function_name, fn_arguments→arguments | 代码审查改进 |
 | 2026-04-08 | 初始创建 | 存量代码分析 Phase A |

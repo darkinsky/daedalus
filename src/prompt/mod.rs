@@ -121,6 +121,21 @@ impl<'a> PromptBuilder<'a> {
 
         sections.join("\n\n")
     }
+
+    /// Build a system prompt with an optional custom override.
+    ///
+    /// If `custom_prompt` is `Some`, it is returned directly, bypassing
+    /// the PromptBuilder entirely. Otherwise, the prompt is dynamically
+    /// assembled from sections using the builder's current configuration.
+    ///
+    /// This is the primary entry point used by `ChatAgent` to construct
+    /// the system prompt, centralizing the "custom vs. dynamic" decision.
+    pub fn build_with_override(&self, custom_prompt: Option<&str>) -> String {
+        if let Some(custom) = custom_prompt {
+            return custom.to_string();
+        }
+        self.build()
+    }
 }
 
 impl<'a> Default for PromptBuilder<'a> {

@@ -7,6 +7,7 @@ mod mcp;
 mod memory;
 mod prompt;
 mod session;
+mod tools;
 
 use agent::AgentMode;
 use anyhow::Result;

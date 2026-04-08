@@ -82,8 +82,17 @@ impl McpManager {
     }
 
     /// Return true if any MCP servers are connected.
+    ///
+    /// Prefer `has_tools()` for checking tool availability, as a connected
+    /// server may not necessarily provide any tools.
+    #[allow(dead_code)]
     pub fn has_servers(&self) -> bool {
         !self.clients.is_empty()
+    }
+
+    /// Return true if any tools are available across all connected servers.
+    pub fn has_tools(&self) -> bool {
+        self.tool_count() > 0
     }
 
     /// Return the total number of tools available across all servers.

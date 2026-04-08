@@ -176,10 +176,10 @@ impl ChatMessage {
 pub struct ToolCall {
     /// Unique identifier for this tool call (used to correlate responses).
     pub call_id: String,
-    /// Name of the function/tool to invoke.
-    pub fn_name: String,
+    /// Name of the tool/function to invoke.
+    pub function_name: String,
     /// Arguments as a JSON value.
-    pub fn_arguments: serde_json::Value,
+    pub arguments: serde_json::Value,
 }
 
 /// A tool response to feed back to the LLM.
