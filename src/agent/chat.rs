@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use crate::config::AgentConfig;
 use crate::llm::{
     ChatMessage, ChatResponse, ChatResult, LlmApi, ToolCall, ToolInfo, ToolResponse,
-    format_messages_for_log,
+    TokenUsage, format_messages_for_log,
 };
 use crate::mcp::McpManager;
 use crate::memory::Memory;
@@ -181,6 +181,7 @@ impl ChatAgent {
     ///
     /// Iterates: LLM response → tool calls → execute via MCP → feed results back → repeat.
     /// All tool history is accumulated and passed to the provider on each round.
+    /// Token usage is accumulated across all rounds.
     async fn chat_with_tools(
         &self,
         request_id: u64,
@@ -193,15 +194,37 @@ impl ChatAgent {
         // Accumulated tool history: each entry is (tool_calls, tool_responses) for one round.
         let mut tool_history: Vec<(Vec<ToolCall>, Vec<ToolResponse>)> = Vec::new();
 
+        // Accumulate token usage across all rounds
+        let mut total_usage = TokenUsage::default();
+
         for round in 0..MAX_TOOL_ROUNDS {
             let response = self.llm.chat_with_tools(
                 messages, &tools, &tool_history, None,
             ).await?;
             self.log_response(request_id, &response);
 
+            // Accumulate usage from this round
+            if let Some(ref usage) = response.usage {
+                total_usage.prompt_tokens = Some(
+                    total_usage.prompt_tokens.unwrap_or(0) + usage.prompt_tokens.unwrap_or(0)
+                );
+                total_usage.completion_tokens = Some(
+                    total_usage.completion_tokens.unwrap_or(0) + usage.completion_tokens.unwrap_or(0)
+                );
+                total_usage.total_tokens = Some(
+                    total_usage.total_tokens.unwrap_or(0) + usage.total_tokens.unwrap_or(0)
+                );
+            }
+
             if response.tool_calls.is_empty() {
-                // No tool calls — this is the final response
-                return Ok((response, tool_history));
+                // No tool calls — this is the final response.
+                // Replace usage with accumulated total.
+                let final_response = ChatResponse {
+                    content: response.content,
+                    usage: Some(total_usage),
+                    tool_calls: vec![],
+                };
+                return Ok((final_response, tool_history));
             }
 
             tracing::info!(
@@ -245,13 +268,15 @@ impl AgentMode for ChatAgent {
         let response = if self.has_tools() && self.llm.supports_tools() {
             let (resp, tool_history) = self.chat_with_tools(request_id, &messages).await?;
 
-            // Store tool usage summary in memory so subsequent turns can see it
+            // Store tool usage summary in memory so subsequent turns can see it.
+            // The summary is stored as a separate assistant message, keeping the
+            // final response clean.
             if !tool_history.is_empty() {
                 let summary = Self::summarize_tool_history(&tool_history);
-                self.session.add_assistant_message(&format!("{}\n\n{}", summary, resp.content));
-            } else {
-                self.session.add_assistant_message(&resp.content);
+                self.session.add_assistant_message(&summary);
+                self.session.add_user_message("Based on the tool results above, please provide your response.");
             }
+            self.session.add_assistant_message(&resp.content);
 
             resp
         } else {

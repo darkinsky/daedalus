@@ -91,7 +91,7 @@ impl McpManager {
             .collect()
     }
 
-    /// Return tool descriptions for CLI display (fix #6).
+    /// Return tool descriptions for CLI display.
     pub fn tool_descriptions(&self) -> Vec<ToolInfo> {
         self.all_tools()
             .iter()

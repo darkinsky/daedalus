@@ -117,7 +117,19 @@ impl McpClient {
     }
 
     /// Send a JSON-RPC request and read the response.
+    ///
+    /// Uses the default `MCP_REQUEST_TIMEOUT` for the response wait.
     async fn send_request(&self, method: &str, params: Option<serde_json::Value>) -> Result<JsonRpcResponse> {
+        self.send_request_with_timeout(method, params, MCP_REQUEST_TIMEOUT).await
+    }
+
+    /// Send a JSON-RPC request and read the response with a custom timeout.
+    async fn send_request_with_timeout(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+        timeout: Duration,
+    ) -> Result<JsonRpcResponse> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let request = JsonRpcRequest::new(id, method, params);
 
@@ -147,11 +159,11 @@ impl McpClient {
             let mut stdout = self.stdout.lock().await;
             let mut line = String::new();
             let read_fut = stdout.read_line(&mut line);
-            tokio::time::timeout(MCP_REQUEST_TIMEOUT, read_fut)
+            tokio::time::timeout(timeout, read_fut)
                 .await
                 .map_err(|_| anyhow::anyhow!(
                     "MCP server '{}' timed out after {}s waiting for response to '{}'",
-                    self.server_name, MCP_REQUEST_TIMEOUT.as_secs(), method
+                    self.server_name, timeout.as_secs(), method
                 ))?
                 .context("Failed to read from MCP server stdout")?;
             line
@@ -211,64 +223,7 @@ impl McpClient {
         });
 
         // Use a longer timeout for initialization (server may need startup time)
-        let response = {
-            let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-            let request = JsonRpcRequest::new(id, "initialize", Some(params));
-            let request_json = serde_json::to_string(&request)
-                .context("Failed to serialize JSON-RPC request")?;
-
-            tracing::debug!(
-                server = %self.server_name,
-                method = "initialize",
-                id = id,
-                "Sending MCP initialize request"
-            );
-
-            {
-                let mut stdin = self.stdin.lock().await;
-                stdin.write_all(request_json.as_bytes()).await
-                    .context("Failed to write to MCP server stdin")?;
-                stdin.write_all(b"\n").await
-                    .context("Failed to write newline to MCP server stdin")?;
-                stdin.flush().await
-                    .context("Failed to flush MCP server stdin")?;
-            }
-
-            let response_line = {
-                let mut stdout = self.stdout.lock().await;
-                let mut line = String::new();
-                let read_fut = stdout.read_line(&mut line);
-                tokio::time::timeout(MCP_INIT_TIMEOUT, read_fut)
-                    .await
-                    .map_err(|_| anyhow::anyhow!(
-                        "MCP server '{}' timed out after {}s during initialization",
-                        self.server_name, MCP_INIT_TIMEOUT.as_secs()
-                    ))?
-                    .context("Failed to read from MCP server stdout")?;
-                line
-            };
-
-            if response_line.is_empty() {
-                anyhow::bail!("MCP server '{}' closed stdout unexpectedly during initialization", self.server_name);
-            }
-
-            let response: JsonRpcResponse = serde_json::from_str(&response_line)
-                .with_context(|| format!(
-                    "Failed to parse MCP server response: {}",
-                    response_line.trim()
-                ))?;
-
-            if let Some(ref error) = response.error {
-                tracing::warn!(
-                    server = %self.server_name,
-                    code = error.code,
-                    message = %error.message,
-                    "MCP server returned error"
-                );
-            }
-
-            response
-        };
+        let response = self.send_request_with_timeout("initialize", Some(params), MCP_INIT_TIMEOUT).await?;
 
         if let Some(error) = response.error {
             anyhow::bail!("MCP initialize failed for '{}': {}", self.server_name, error);
