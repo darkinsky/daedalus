@@ -173,24 +173,6 @@ impl GenAiProvider {
 
 #[async_trait]
 impl LlmApi for GenAiProvider {
-    async fn chat(
-        &self,
-        messages: &[ChatMessage],
-        options: Option<&ChatOptions>,
-    ) -> Result<ChatResponse> {
-        let genai_messages = Self::convert_messages(messages);
-        let chat_req = ChatRequest::from_messages(genai_messages);
-        let genai_options = Self::build_options(options);
-
-        let chat_res = self
-            .client
-            .exec_chat(&self.config.model, chat_req, genai_options.as_ref())
-            .await
-            .map_err(|e| anyhow::anyhow!("GenAI chat error: {}", e))?;
-
-        Ok(Self::build_response(&chat_res))
-    }
-
     async fn chat_with_tools(
         &self,
         messages: &[ChatMessage],
@@ -198,16 +180,19 @@ impl LlmApi for GenAiProvider {
         tool_history: &[(Vec<ToolCall>, Vec<ToolResponse>)],
         options: Option<&ChatOptions>,
     ) -> Result<ChatResponse> {
-        // Convert tool definitions from JSON to genai Tool
-        let genai_tools: Vec<GenAiTool> = tools
-            .iter()
-            .filter_map(Self::json_to_genai_tool)
-            .collect();
-
-        // Build the initial request from conversation messages + tools
+        // Build the initial request from conversation messages
         let genai_messages = Self::convert_messages(messages);
-        let mut chat_req = ChatRequest::from_messages(genai_messages)
-            .with_tools(genai_tools);
+        let mut chat_req = ChatRequest::from_messages(genai_messages);
+
+        // Only attach tool definitions if tools are provided.
+        // Sending an empty tools array can cause errors with some API backends.
+        if !tools.is_empty() {
+            let genai_tools: Vec<GenAiTool> = tools
+                .iter()
+                .filter_map(Self::json_to_genai_tool)
+                .collect();
+            chat_req = chat_req.with_tools(genai_tools);
+        }
 
         // Replay tool history: for each prior round, append the assistant's
         // tool calls and the corresponding tool responses.

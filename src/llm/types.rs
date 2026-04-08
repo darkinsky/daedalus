@@ -23,12 +23,6 @@ impl std::fmt::Display for ChatRole {
     }
 }
 
-impl std::fmt::Display for ChatMessage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}] {}", self.role, self.content)
-    }
-}
-
 /// Format a slice of ChatMessages into a JSON string for logging.
 pub fn format_messages_for_log(messages: &[ChatMessage]) -> String {
     let entries: Vec<serde_json::Value> = messages
@@ -101,17 +95,6 @@ pub struct ChatResponse {
     pub usage: Option<TokenUsage>,
     /// Tool calls requested by the model (if any).
     pub tool_calls: Vec<ToolCall>,
-}
-
-/// The result of an agent chat turn, returned to the CLI layer.
-///
-/// Contains the response content plus optional token usage metadata.
-#[derive(Debug, Clone)]
-pub struct ChatResult {
-    /// The assistant's text response.
-    pub content: String,
-    /// Token usage for this turn (if available).
-    pub usage: Option<TokenUsage>,
 }
 
 /// Token usage statistics.
@@ -248,17 +231,5 @@ mod tests {
         assert_eq!(resp.content, "result data");
     }
 
-    #[test]
-    fn test_chat_result() {
-        let result = ChatResult {
-            content: "Hello!".to_string(),
-            usage: Some(TokenUsage {
-                prompt_tokens: Some(10),
-                completion_tokens: Some(5),
-                total_tokens: Some(15),
-            }),
-        };
-        assert_eq!(result.content, "Hello!");
-        assert_eq!(result.usage.as_ref().unwrap().total_tokens, Some(15));
-    }
+
 }

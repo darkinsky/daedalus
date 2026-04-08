@@ -27,8 +27,7 @@ async fn main() -> Result<()> {
 
     // Load MCP configuration and connect to servers
     let mcp_config = mcp::McpConfig::load()?;
-    let has_mcp = !mcp_config.servers.is_empty();
-    let mcp_manager = if has_mcp {
+    let mcp_manager = if !mcp_config.servers.is_empty() {
         tracing::info!(
             servers = mcp_config.servers.len(),
             "Connecting to MCP servers..."

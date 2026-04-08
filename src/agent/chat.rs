@@ -3,7 +3,7 @@ use async_trait::async_trait;
 
 use crate::config::AgentConfig;
 use crate::llm::{
-    ChatMessage, ChatResponse, ChatResult, LlmApi, ToolCall, ToolInfo, ToolResponse,
+    ChatMessage, ChatResponse, LlmApi, ToolCall, ToolInfo, ToolResponse,
     TokenUsage, format_messages_for_log,
 };
 use crate::mcp::McpManager;
@@ -252,7 +252,7 @@ impl ChatAgent {
 
 #[async_trait]
 impl AgentMode for ChatAgent {
-    async fn chat(&mut self, user_input: &str) -> Result<ChatResult> {
+    async fn chat(&mut self, user_input: &str) -> Result<ChatResponse> {
         let request_id = self.session.next_request_id();
 
         // Store user message in session memory
@@ -287,10 +287,7 @@ impl AgentMode for ChatAgent {
             resp
         };
 
-        Ok(ChatResult {
-            content: response.content,
-            usage: response.usage,
-        })
+        Ok(response)
     }
 
     fn attach_mcp(&mut self, mcp: McpManager) {

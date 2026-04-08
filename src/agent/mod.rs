@@ -5,7 +5,7 @@ pub use chat::ChatAgent;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::llm::{ChatResult, ToolInfo};
+use crate::llm::{ChatResponse, ToolInfo};
 use crate::mcp::McpManager;
 use crate::session::Session;
 
@@ -19,7 +19,7 @@ use crate::session::Session;
 #[async_trait]
 pub trait AgentMode: Send + Sync {
     /// Send a user message and get the response (with usage metadata).
-    async fn chat(&mut self, user_input: &str) -> Result<ChatResult>;
+    async fn chat(&mut self, user_input: &str) -> Result<ChatResponse>;
 
     /// Attach an MCP manager to enable tool calling.
     ///

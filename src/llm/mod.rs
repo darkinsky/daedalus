@@ -14,14 +14,15 @@ use async_trait::async_trait;
 pub trait LlmApi: Send + Sync {
     /// Send a chat completion request and return the response.
     ///
-    /// # Arguments
-    /// * `messages` - The conversation history.
-    /// * `options`  - Optional generation parameters (temperature, max_tokens, etc.).
+    /// Default implementation delegates to `chat_with_tools` with empty tools
+    /// and history. Override only if the provider needs a separate code path.
     async fn chat(
         &self,
         messages: &[ChatMessage],
         options: Option<&ChatOptions>,
-    ) -> Result<ChatResponse>;
+    ) -> Result<ChatResponse> {
+        self.chat_with_tools(messages, &[], &[], options).await
+    }
 
     /// Send a chat completion request with tool definitions and prior tool context.
     ///

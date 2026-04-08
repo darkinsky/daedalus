@@ -76,7 +76,7 @@ pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
 
                 render::response(&result.content);
 
-                // Extract token usage from the ChatResult
+                // Extract token usage from the ChatResponse
                 let prompt_tokens = result.usage.as_ref().and_then(|u| u.prompt_tokens);
                 let completion_tokens = result.usage.as_ref().and_then(|u| u.completion_tokens);
 
