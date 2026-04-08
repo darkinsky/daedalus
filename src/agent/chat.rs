@@ -188,7 +188,7 @@ impl ChatAgent {
         messages: &[ChatMessage],
     ) -> Result<(ChatResponse, Vec<(Vec<ToolCall>, Vec<ToolResponse>)>)> {
         let tools = self.mcp.as_ref()
-            .map(|m| m.build_tool_definitions())
+            .map(|mcp| mcp.build_tool_definitions())
             .unwrap_or_default();
 
         // Accumulated tool history: each entry is (tool_calls, tool_responses) for one round.
@@ -205,15 +205,7 @@ impl ChatAgent {
 
             // Accumulate usage from this round
             if let Some(ref usage) = response.usage {
-                total_usage.prompt_tokens = Some(
-                    total_usage.prompt_tokens.unwrap_or(0) + usage.prompt_tokens.unwrap_or(0)
-                );
-                total_usage.completion_tokens = Some(
-                    total_usage.completion_tokens.unwrap_or(0) + usage.completion_tokens.unwrap_or(0)
-                );
-                total_usage.total_tokens = Some(
-                    total_usage.total_tokens.unwrap_or(0) + usage.total_tokens.unwrap_or(0)
-                );
+                total_usage.accumulate(usage);
             }
 
             if response.tool_calls.is_empty() {
@@ -235,8 +227,8 @@ impl ChatAgent {
 
             // Execute each tool call and collect responses
             let mut responses = Vec::new();
-            for tc in &response.tool_calls {
-                let tool_response = self.execute_tool_call(tc).await;
+            for tool_call in &response.tool_calls {
+                let tool_response = self.execute_tool_call(tool_call).await;
                 responses.push(tool_response);
             }
 
@@ -269,12 +261,11 @@ impl AgentMode for ChatAgent {
             let (resp, tool_history) = self.chat_with_tools(request_id, &messages).await?;
 
             // Store tool usage summary in memory so subsequent turns can see it.
-            // The summary is stored as a separate assistant message, keeping the
-            // final response clean.
+            // Uses add_tool_context to avoid injecting fake user messages that
+            // would distort turn_count and conversation history.
             if !tool_history.is_empty() {
                 let summary = Self::summarize_tool_history(&tool_history);
-                self.session.add_assistant_message(&summary);
-                self.session.add_user_message("Based on the tool results above, please provide your response.");
+                self.session.add_tool_context(&summary);
             }
             self.session.add_assistant_message(&resp.content);
 
@@ -299,16 +290,16 @@ impl AgentMode for ChatAgent {
     }
 
     fn has_tools(&self) -> bool {
-        self.mcp.as_ref().map(|m| m.has_servers()).unwrap_or(false)
+        self.mcp.as_ref().map(|mcp| mcp.has_servers()).unwrap_or(false)
     }
 
     fn tool_count(&self) -> usize {
-        self.mcp.as_ref().map(|m| m.tool_count()).unwrap_or(0)
+        self.mcp.as_ref().map(|mcp| mcp.tool_count()).unwrap_or(0)
     }
 
     fn tool_descriptions(&self) -> Vec<ToolInfo> {
         self.mcp.as_ref()
-            .map(|m| m.tool_descriptions())
+            .map(|mcp| mcp.tool_descriptions())
             .unwrap_or_default()
     }
 

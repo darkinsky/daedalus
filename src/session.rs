@@ -7,8 +7,8 @@ use crate::memory::Memory;
 /// A conversation session with a unique ID, title, request counter, and memory.
 ///
 /// Each session owns its own `Memory` instance, which manages the conversation
-/// history for that session. The session fully encapsulates memory access,
-/// providing delegate methods for all memory operations.
+/// history for that session. Session provides direct access to the memory via
+/// `memory()` / `memory_mut()` accessors, plus a few convenience delegates.
 pub struct Session {
     /// Unique session identifier.
     pub id: String,
@@ -47,7 +47,26 @@ impl Session {
         self.request_count
     }
 
-    // ── Memory delegate methods ──
+    /// Return a short prefix of the session ID (first 8 characters).
+    pub fn short_id(&self) -> &str {
+        &self.id[..8]
+    }
+
+    // ── Memory access ──
+
+    /// Return a reference to the underlying memory strategy.
+    #[allow(dead_code)]
+    pub fn memory(&self) -> &dyn Memory {
+        &*self.memory
+    }
+
+    /// Return a mutable reference to the underlying memory strategy.
+    #[allow(dead_code)]
+    pub fn memory_mut(&mut self) -> &mut dyn Memory {
+        &mut *self.memory
+    }
+
+    // ── Convenience delegates (frequently used in hot paths) ──
 
     /// Add a user message to the session's memory.
     pub fn add_user_message(&mut self, content: &str) {
@@ -57,6 +76,11 @@ impl Session {
     /// Add an assistant message to the session's memory.
     pub fn add_assistant_message(&mut self, content: &str) {
         self.memory.add_assistant_message(content);
+    }
+
+    /// Add tool context to the session's memory.
+    pub fn add_tool_context(&mut self, context: &str) {
+        self.memory.add_tool_context(context);
     }
 
     /// Build the message list to send to the LLM (delegated to memory).

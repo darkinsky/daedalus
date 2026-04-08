@@ -1,13 +1,12 @@
 /// All supported slash commands with their descriptions.
 pub const SLASH_COMMANDS: &[(&str, &str)] = &[
-    ("/help", "Show this help message"),
-    ("/new", "Start a new conversation session"),
+    ("/help", "Show this help message (aliases: /h, /?)"),
+    ("/new", "Start a new conversation session (alias: /compact)"),
     ("/clear", "Clear the screen (keep conversation history)"),
-    ("/compact", "Start a new session (clear history)"),
     ("/cost", "Show token usage for the current session"),
     ("/model", "Show current model information"),
     ("/tools", "List available MCP tools"),
-    ("/exit", "Exit the application"),
+    ("/exit", "Exit the application (alias: /quit)"),
 ];
 
 /// Parsed result of a slash command.

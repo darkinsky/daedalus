@@ -25,6 +25,15 @@ pub trait Memory: Send + Sync {
     /// Add an assistant message to memory.
     fn add_assistant_message(&mut self, content: &str);
 
+    /// Add tool context to memory (tool call summaries from the current turn).
+    ///
+    /// This stores tool usage information as an assistant message without
+    /// injecting fake user messages. The default implementation prepends
+    /// the context to the next assistant message by storing it as-is.
+    fn add_tool_context(&mut self, context: &str) {
+        self.add_assistant_message(context);
+    }
+
     /// Build the full message list to send to the LLM.
     ///
     /// This includes the system prompt and whatever conversation history

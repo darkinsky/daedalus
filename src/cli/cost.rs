@@ -15,9 +15,9 @@ impl SessionCost {
     }
 
     /// Record token usage from a single request.
-    pub fn add(&mut self, prompt: u64, completion: u64) {
-        self.prompt_tokens += prompt;
-        self.completion_tokens += completion;
+    pub fn add(&mut self, prompt_tokens: u64, completion_tokens: u64) {
+        self.prompt_tokens += prompt_tokens;
+        self.completion_tokens += completion_tokens;
         self.requests += 1;
     }
 

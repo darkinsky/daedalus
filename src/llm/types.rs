@@ -105,6 +105,27 @@ pub struct TokenUsage {
     pub total_tokens: Option<u64>,
 }
 
+impl TokenUsage {
+    /// Accumulate token usage from another `TokenUsage` into this one.
+    ///
+    /// Each field is summed independently. If both sides are `None`, the
+    /// result stays `None`; otherwise the values are added.
+    pub fn accumulate(&mut self, other: &TokenUsage) {
+        self.prompt_tokens = add_optional_tokens(self.prompt_tokens, other.prompt_tokens);
+        self.completion_tokens = add_optional_tokens(self.completion_tokens, other.completion_tokens);
+        self.total_tokens = add_optional_tokens(self.total_tokens, other.total_tokens);
+    }
+}
+
+/// Add two optional token counts, returning `None` only if both are `None`.
+fn add_optional_tokens(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x + y),
+        (Some(x), None) | (None, Some(x)) => Some(x),
+        (None, None) => None,
+    }
+}
+
 /// Options for chat completion requests.
 #[derive(Debug, Clone, Default)]
 pub struct ChatOptions {
@@ -231,5 +252,46 @@ mod tests {
         assert_eq!(resp.content, "result data");
     }
 
+    #[test]
+    fn test_token_usage_accumulate_both_some() {
+        let mut total = TokenUsage {
+            prompt_tokens: Some(10),
+            completion_tokens: Some(5),
+            total_tokens: Some(15),
+        };
+        let round = TokenUsage {
+            prompt_tokens: Some(20),
+            completion_tokens: Some(10),
+            total_tokens: Some(30),
+        };
+        total.accumulate(&round);
+        assert_eq!(total.prompt_tokens, Some(30));
+        assert_eq!(total.completion_tokens, Some(15));
+        assert_eq!(total.total_tokens, Some(45));
+    }
+
+    #[test]
+    fn test_token_usage_accumulate_from_default() {
+        let mut total = TokenUsage::default();
+        let round = TokenUsage {
+            prompt_tokens: Some(10),
+            completion_tokens: None,
+            total_tokens: Some(10),
+        };
+        total.accumulate(&round);
+        assert_eq!(total.prompt_tokens, Some(10));
+        assert_eq!(total.completion_tokens, None);
+        assert_eq!(total.total_tokens, Some(10));
+    }
+
+    #[test]
+    fn test_token_usage_accumulate_both_none() {
+        let mut total = TokenUsage::default();
+        let round = TokenUsage::default();
+        total.accumulate(&round);
+        assert!(total.prompt_tokens.is_none());
+        assert!(total.completion_tokens.is_none());
+        assert!(total.total_tokens.is_none());
+    }
 
 }

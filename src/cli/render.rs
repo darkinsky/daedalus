@@ -2,6 +2,7 @@ use crossterm::style::{Attribute, Color, Stylize};
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::agent::AgentMode;
+use crate::llm::TokenUsage;
 use super::commands::SLASH_COMMANDS;
 use super::cost::SessionCost;
 
@@ -12,6 +13,15 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Print a dim/muted line (for secondary information).
 fn dim(text: &str) {
     println!("{}", text.with(Color::DarkGrey));
+}
+
+/// Print a key-value line with the key in dim and the value in the given color.
+fn kv_line(key: &str, value: &str, value_color: Color) {
+    println!(
+        "    {}  {}",
+        key.with(Color::DarkGrey),
+        value.with(value_color),
+    );
 }
 
 // ── Banner ──
@@ -37,7 +47,7 @@ pub fn banner(agent: &dyn AgentMode) {
     dim(&format!(
         "  Session:  {} ({})",
         agent.session().title,
-        &agent.session().id[..8],
+        agent.session().short_id(),
     ));
     println!();
     dim("  Type /help for available commands.");
@@ -80,26 +90,10 @@ pub fn cost(cost: &SessionCost) {
             .attribute(Attribute::Bold)
     );
     println!();
-    println!(
-        "    {}  {}",
-        "Requests:".with(Color::DarkGrey),
-        cost.requests().to_string().with(Color::White),
-    );
-    println!(
-        "    {}  {}",
-        "Prompt tokens:".with(Color::DarkGrey),
-        cost.prompt_tokens().to_string().with(Color::White),
-    );
-    println!(
-        "    {}  {}",
-        "Completion tokens:".with(Color::DarkGrey),
-        cost.completion_tokens().to_string().with(Color::White),
-    );
-    println!(
-        "    {}  {}",
-        "Total tokens:".with(Color::DarkGrey),
-        cost.total_tokens().to_string().with(Color::Cyan),
-    );
+    kv_line("Requests:", &cost.requests().to_string(), Color::White);
+    kv_line("Prompt tokens:", &cost.prompt_tokens().to_string(), Color::White);
+    kv_line("Completion tokens:", &cost.completion_tokens().to_string(), Color::White);
+    kv_line("Total tokens:", &cost.total_tokens().to_string(), Color::Cyan);
     println!();
 }
 
@@ -108,27 +102,11 @@ pub fn cost(cost: &SessionCost) {
 /// Print the `/model` output.
 pub fn model_info(agent: &dyn AgentMode) {
     println!();
-    println!(
-        "    {}  {}",
-        "Provider:".with(Color::DarkGrey),
-        agent.provider_name().with(Color::White),
-    );
-    println!(
-        "    {}  {}",
-        "Model:".with(Color::DarkGrey),
-        agent.model_name().with(Color::Cyan),
-    );
-    println!(
-        "    {}  {}",
-        "Mode:".with(Color::DarkGrey),
-        agent.mode_name().with(Color::White),
-    );
+    kv_line("Provider:", agent.provider_name(), Color::White);
+    kv_line("Model:", agent.model_name(), Color::Cyan);
+    kv_line("Mode:", agent.mode_name(), Color::White);
     if agent.has_tools() {
-        println!(
-            "    {}  {}",
-            "Tools:".with(Color::DarkGrey),
-            format!("{} available", agent.tool_count()).with(Color::Green),
-        );
+        kv_line("Tools:", &format!("{} available", agent.tool_count()), Color::Green);
     }
     println!();
 }
@@ -162,14 +140,10 @@ pub fn response(content: &str) {
 }
 
 /// Print a compact token-usage / elapsed-time line after each response.
-pub fn response_footer(
-    prompt_tokens: Option<u64>,
-    completion_tokens: Option<u64>,
-    elapsed: f64,
-) {
+pub fn response_footer(usage: Option<&TokenUsage>, elapsed: f64) {
     let parts: Vec<String> = [
-        prompt_tokens.map(|t| format!("{}↑", t)),
-        completion_tokens.map(|t| format!("{}↓", t)),
+        usage.and_then(|u| u.prompt_tokens).map(|t| format!("{}↑", t)),
+        usage.and_then(|u| u.completion_tokens).map(|t| format!("{}↓", t)),
         Some(format!("{:.1}s", elapsed)),
     ]
     .into_iter()
@@ -194,7 +168,7 @@ pub fn new_session(agent: &dyn AgentMode) {
     dim(&format!(
         "  Session: {} ({})",
         agent.session().title,
-        &agent.session().id[..8],
+        agent.session().short_id(),
     ));
     println!();
 }
@@ -204,7 +178,7 @@ pub fn screen_cleared(agent: &dyn AgentMode) {
     dim(&format!(
         "  Screen cleared. Session: {} ({})",
         agent.session().title,
-        &agent.session().id[..8],
+        agent.session().short_id(),
     ));
     println!();
 }

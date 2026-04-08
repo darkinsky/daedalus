@@ -7,7 +7,7 @@ mod mcp;
 mod memory;
 mod session;
 
-use crate::agent::AgentMode;
+use agent::AgentMode;
 use anyhow::Result;
 
 #[tokio::main]
@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
     // Build the chat agent and optionally attach MCP
     let mut agent = agent::ChatAgent::new(provider, &config);
     if let Some(manager) = mcp_manager {
-        AgentMode::attach_mcp(&mut agent, manager);
+        agent.attach_mcp(manager);
     }
 
     // Run the interactive CLI

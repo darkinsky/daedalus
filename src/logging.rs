@@ -202,25 +202,12 @@ impl LogConfig {
             config.format = LogFormat::parse_or_default(&format);
         }
 
-        if let Ok(val) = std::env::var("DAEDALUS_LOG_FILE") {
-            config.with_file = val.eq_ignore_ascii_case("true") || val == "1";
-        }
-
-        if let Ok(val) = std::env::var("DAEDALUS_LOG_LINE") {
-            config.with_line_number = val.eq_ignore_ascii_case("true") || val == "1";
-        }
-
-        if let Ok(val) = std::env::var("DAEDALUS_LOG_TARGET") {
-            config.with_target = val.eq_ignore_ascii_case("true") || val == "1";
-        }
-
-        if let Ok(val) = std::env::var("DAEDALUS_LOG_THREAD_NAMES") {
-            config.with_thread_names = val.eq_ignore_ascii_case("true") || val == "1";
-        }
-
-        if let Ok(val) = std::env::var("DAEDALUS_LOG_ANSI") {
-            config.with_ansi = val.eq_ignore_ascii_case("true") || val == "1";
-        }
+        config.with_file = env_bool("DAEDALUS_LOG_FILE", config.with_file);
+        config.with_line_number = env_bool("DAEDALUS_LOG_LINE", config.with_line_number);
+        config.with_target = env_bool("DAEDALUS_LOG_TARGET", config.with_target);
+        config.with_thread_names = env_bool("DAEDALUS_LOG_THREAD_NAMES", config.with_thread_names);
+        config.with_thread_ids = env_bool("DAEDALUS_LOG_THREAD_IDS", config.with_thread_ids);
+        config.with_ansi = env_bool("DAEDALUS_LOG_ANSI", config.with_ansi);
 
         if let Ok(dir) = std::env::var("DAEDALUS_LOG_DIR")
             && !dir.is_empty() {
@@ -373,4 +360,14 @@ where
             apply_display_opts!(fmt::layer().pretty(), timer, writer, opts),
         ),
     }
+}
+
+/// Read a boolean value from an environment variable.
+///
+/// Returns `default` if the variable is not set. Recognizes "true" (case-insensitive)
+/// and "1" as truthy values; everything else is treated as `false`.
+fn env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .map(|val| val.eq_ignore_ascii_case("true") || val == "1")
+        .unwrap_or(default)
 }

@@ -9,7 +9,7 @@ use crate::llm::ToolInfo;
 /// The MCP manager — owns all MCP client connections and provides
 /// a unified interface for tool discovery and execution.
 pub struct McpManager {
-    /// All connected MCP clients, keyed by server name.
+    /// All connected MCP clients.
     clients: Vec<McpClient>,
 }
 

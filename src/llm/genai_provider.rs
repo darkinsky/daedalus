@@ -156,12 +156,12 @@ impl GenAiProvider {
             .map(Self::from_genai_tool_call)
             .collect();
 
-        let u = &chat_res.usage;
-        let usage = if u.prompt_tokens.is_some() || u.completion_tokens.is_some() || u.total_tokens.is_some() {
+        let usage = &chat_res.usage;
+        let usage = if usage.prompt_tokens.is_some() || usage.completion_tokens.is_some() || usage.total_tokens.is_some() {
             Some(TokenUsage {
-                prompt_tokens: u.prompt_tokens.map(|v| v as u64),
-                completion_tokens: u.completion_tokens.map(|v| v as u64),
-                total_tokens: u.total_tokens.map(|v| v as u64),
+                prompt_tokens: usage.prompt_tokens.map(|v| v as u64),
+                completion_tokens: usage.completion_tokens.map(|v| v as u64),
+                total_tokens: usage.total_tokens.map(|v| v as u64),
             })
         } else {
             None

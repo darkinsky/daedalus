@@ -1,4 +1,5 @@
 mod commands;
+mod completer;
 mod cost;
 mod render;
 mod repl;
