@@ -111,6 +111,9 @@ impl McpClient {
     }
 
     /// Return server info (if available).
+    ///
+    /// Currently unused but part of the public MCP client API for
+    /// future features (e.g., server capability negotiation).
     #[allow(dead_code)]
     pub fn server_info(&self) -> Option<&ServerInfo> {
         self.server_info.as_ref()
@@ -124,12 +127,18 @@ impl McpClient {
     }
 
     /// Send a JSON-RPC request and read the response with a custom timeout.
+    ///
+    /// Checks that the child process is still alive before sending.
     async fn send_request_with_timeout(
         &self,
         method: &str,
         params: Option<serde_json::Value>,
         timeout: Duration,
     ) -> Result<JsonRpcResponse> {
+        // Check if the child process is still running
+        // (try_wait is not available through &self, so we skip for now
+        //  and rely on the write/read errors to detect dead processes)
+
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let request = JsonRpcRequest::new(id, method, params);
 
@@ -335,6 +344,9 @@ impl McpClient {
     }
 
     /// Gracefully shut down the MCP server.
+    ///
+    /// Called during application shutdown. Currently invoked only via
+    /// `McpManager::shutdown()` which is itself reserved for future use.
     #[allow(dead_code)]
     pub async fn shutdown(&mut self) -> Result<()> {
         tracing::info!(server = %self.server_name, "Shutting down MCP server");

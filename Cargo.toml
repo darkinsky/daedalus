@@ -10,6 +10,7 @@ chrono = "0.4"
 crossterm = "0.28"
 genai = "0.5.3"
 indicatif = "0.17"
+reqwest = { version = "0.12", features = ["json"] }
 termimad = "0.30"
 uuid = { version = "1.0", features = ["v4"] }
 serde = { version = "1.0.228", features = ["derive"] }

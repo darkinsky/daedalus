@@ -14,8 +14,11 @@ use genai::{Client, ModelIden, ServiceTarget};
 
 use genai::chat::ReasoningEffort as GenAiReasoningEffort;
 
-use super::types::*;
-use super::LlmApi;
+use crate::config::{LlmConfig, ReasoningEffort};
+use super::{
+    ChatMessage, ChatOptions, ChatResponse, ChatRole, LlmApi,
+    TokenUsage, ToolCall, ToolResponse,
+};
 
 /// LLM provider implementation backed by the `genai` crate.
 ///
@@ -90,6 +93,10 @@ impl GenAiProvider {
                 ChatRole::System => GenAiChatMessage::system(&msg.content),
                 ChatRole::User => GenAiChatMessage::user(&msg.content),
                 ChatRole::Assistant => GenAiChatMessage::assistant(&msg.content),
+                // Tool messages are stored in memory as context; when sent to
+                // genai they are treated as assistant messages since genai
+                // handles tool responses via its own ToolResponse type.
+                ChatRole::Tool => GenAiChatMessage::assistant(&msg.content),
             })
             .collect()
     }
@@ -157,14 +164,14 @@ impl GenAiProvider {
                 genai_opts = genai_opts.with_top_p(top_p);
             }
             // Map our ReasoningEffort to genai's ReasoningEffort
-            if let Some(ref effort) = opts.reasoning_effort {
+            if let Some(ref effort) = opts.venus.reasoning_effort {
                 genai_opts = genai_opts.with_reasoning_effort(Self::to_genai_reasoning_effort(effort));
             }
         }
 
         // Fall back to LlmConfig-level reasoning_effort if not set at request level
-        if options.and_then(|o| o.reasoning_effort.as_ref()).is_none() {
-            if let Some(ref effort) = self.config.reasoning_effort {
+        if options.and_then(|o| o.venus.reasoning_effort.as_ref()).is_none() {
+            if let Some(ref effort) = self.config.venus.reasoning_effort {
                 genai_opts = genai_opts.with_reasoning_effort(Self::to_genai_reasoning_effort(effort));
             }
         }

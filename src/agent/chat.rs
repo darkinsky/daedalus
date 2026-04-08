@@ -59,7 +59,7 @@ impl ChatAgent {
 
         tracing::info!(
             mode = "chat",
-            memory_strategy = session.strategy_name(),
+            memory_strategy = session.memory().strategy_name(),
             provider = llm.provider_name(),
             model = llm.model_name(),
             "ChatAgent initialized"
@@ -93,8 +93,8 @@ impl ChatAgent {
             model = self.llm.model_name(),
             role = "user",
             message = user_input,
-            memory_strategy = self.session.strategy_name(),
-            turn_count = self.session.turn_count(),
+            memory_strategy = self.session.memory().strategy_name(),
+            turn_count = self.session.memory().turn_count(),
             message_count = messages.len(),
             llm_input = llm_input.as_str(),
             "LLM request: user input"
@@ -257,10 +257,10 @@ impl AgentMode for ChatAgent {
         let request_id = self.session.next_request_id();
 
         // Store user message in session memory
-        self.session.add_user_message(user_input);
+        self.session.memory_mut().add_user_message(user_input);
 
         // Build the full message list from session memory
-        let messages = self.session.build_messages();
+        let messages = self.session.memory().build_messages();
 
         // Log the request
         self.log_request(request_id, user_input, &messages);
@@ -274,16 +274,16 @@ impl AgentMode for ChatAgent {
             // would distort turn_count and conversation history.
             if !tool_history.is_empty() {
                 let summary = Self::summarize_tool_history(&tool_history);
-                self.session.add_tool_context(&summary);
+                self.session.memory_mut().add_tool_context(&summary);
             }
-            self.session.add_assistant_message(&resp.content);
+            self.session.memory_mut().add_assistant_message(&resp.content);
 
             resp
         } else {
             // Simple chat without tools
             let resp = self.llm.chat(&messages, None).await?;
             self.log_response(request_id, &resp);
-            self.session.add_assistant_message(&resp.content);
+            self.session.memory_mut().add_assistant_message(&resp.content);
             resp
         };
 

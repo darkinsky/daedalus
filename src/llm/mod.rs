@@ -1,7 +1,21 @@
 mod types;
 mod genai_provider;
+mod venus_provider;
 
-pub use types::*;
+// Explicit re-exports instead of glob (`pub use types::*`).
+// This makes it clear which symbols come from the llm module and
+// prevents accidental namespace pollution as the type set grows.
+pub use types::{
+    ChatMessage, ChatOptions, ChatRole, ChatResponse,
+    TokenUsage, ToolCall, ToolInfo, ToolResponse,
+    format_messages_for_log,
+};
+
+// Re-export config types that LLM consumers commonly need.
+// ReasoningEffort is used by provider implementations and tests via `use crate::llm::*`.
+#[allow(unused_imports)]
+pub use crate::config::{LlmConfig, ReasoningEffort, VenusExtensions};
+
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -56,11 +70,25 @@ pub trait LlmApi: Send + Sync {
 
 /// Factory function: create an LLM provider from configuration.
 ///
-/// Uses `GenAiProvider` backed by the `genai` crate's adapter system.
-/// Supports standard OpenAI, Anthropic, Gemini, and OpenAI-compatible
-/// proxies (e.g., Venus). Advanced options like `reasoning_effort` are
-/// mapped to genai's built-in `ReasoningEffort`.
+/// Selects the provider implementation based on configuration:
+///
+/// - **VenusProvider**: Used when Venus-specific advanced parameters are
+///   configured (`thinking_enabled` or `thinking_tokens`). This provider
+///   sends raw HTTP requests, giving full control over the request body
+///   to support Venus proxy extensions.
+/// - **GenAiProvider** (default): Uses the `genai` crate's adapter system.
+///   Supports standard OpenAI, Anthropic, Gemini, and compatible APIs.
+///   Also handles `reasoning_effort` natively via genai.
 pub fn create_provider(config: LlmConfig) -> Result<Box<dyn LlmApi>> {
-    let provider = genai_provider::GenAiProvider::new(config)?;
-    Ok(Box::new(provider))
+    let needs_venus = config.venus.thinking_enabled.is_some()
+        || config.venus.thinking_tokens.is_some();
+
+    if needs_venus {
+        tracing::info!("Using VenusProvider (thinking parameters detected)");
+        let provider = venus_provider::VenusProvider::new(config)?;
+        Ok(Box::new(provider))
+    } else {
+        let provider = genai_provider::GenAiProvider::new(config)?;
+        Ok(Box::new(provider))
+    }
 }

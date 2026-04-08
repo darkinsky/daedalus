@@ -60,13 +60,7 @@ async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &mut SessionC
             render::response(&result.content);
 
             // Track token usage for the session
-            let prompt_tokens = result.usage.as_ref().and_then(|u| u.prompt_tokens);
-            let completion_tokens = result.usage.as_ref().and_then(|u| u.completion_tokens);
-
-            cost.add(
-                prompt_tokens.unwrap_or(0),
-                completion_tokens.unwrap_or(0),
-            );
+            cost.add_usage(result.usage.as_ref());
 
             render::response_footer(result.usage.as_ref(), elapsed);
             println!();

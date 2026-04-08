@@ -1,14 +1,13 @@
 use chrono::Local;
 use uuid::Uuid;
 
-use crate::llm::ChatMessage;
 use crate::memory::Memory;
 
 /// A conversation session with a unique ID, title, request counter, and memory.
 ///
 /// Each session owns its own `Memory` instance, which manages the conversation
-/// history for that session. Session provides direct access to the memory via
-/// `memory()` / `memory_mut()` accessors, plus a few convenience delegates.
+/// history for that session. Callers access memory directly via `memory()` /
+/// `memory_mut()` accessors rather than through thin delegation methods.
 pub struct Session {
     /// Unique session identifier.
     pub id: String,
@@ -17,6 +16,8 @@ pub struct Session {
     /// Auto-incrementing request counter (number of completed requests).
     pub request_count: u64,
     /// Timestamp when the session was created.
+    ///
+    /// Reserved for future use (e.g., session persistence, display in UI).
     #[allow(dead_code)]
     pub created_at: String,
     /// Conversation memory for this session.
@@ -52,55 +53,13 @@ impl Session {
         &self.id[..8]
     }
 
-    // ── Memory access ──
-
     /// Return a reference to the underlying memory strategy.
-    #[allow(dead_code)]
     pub fn memory(&self) -> &dyn Memory {
         &*self.memory
     }
 
     /// Return a mutable reference to the underlying memory strategy.
-    #[allow(dead_code)]
     pub fn memory_mut(&mut self) -> &mut dyn Memory {
         &mut *self.memory
-    }
-
-    // ── Convenience delegates (frequently used in hot paths) ──
-
-    /// Add a user message to the session's memory.
-    pub fn add_user_message(&mut self, content: &str) {
-        self.memory.add_user_message(content);
-    }
-
-    /// Add an assistant message to the session's memory.
-    pub fn add_assistant_message(&mut self, content: &str) {
-        self.memory.add_assistant_message(content);
-    }
-
-    /// Add tool context to the session's memory.
-    pub fn add_tool_context(&mut self, context: &str) {
-        self.memory.add_tool_context(context);
-    }
-
-    /// Build the message list to send to the LLM (delegated to memory).
-    pub fn build_messages(&self) -> Vec<ChatMessage> {
-        self.memory.build_messages()
-    }
-
-    /// Return the number of conversation turns stored.
-    pub fn turn_count(&self) -> usize {
-        self.memory.turn_count()
-    }
-
-    /// Return the memory strategy name.
-    pub fn strategy_name(&self) -> &str {
-        self.memory.strategy_name()
-    }
-
-    /// Clear all conversation history (but keep the system prompt).
-    #[allow(dead_code)]
-    pub fn clear_memory(&mut self) {
-        self.memory.clear();
     }
 }

@@ -1,3 +1,5 @@
+use crate::llm::TokenUsage;
+
 /// Tracks cumulative token usage across a session.
 pub struct SessionCost {
     prompt_tokens: u64,
@@ -15,9 +17,14 @@ impl SessionCost {
     }
 
     /// Record token usage from a single request.
-    pub fn add(&mut self, prompt_tokens: u64, completion_tokens: u64) {
-        self.prompt_tokens += prompt_tokens;
-        self.completion_tokens += completion_tokens;
+    ///
+    /// Accepts an optional `&TokenUsage` directly, avoiding the need for
+    /// callers to manually extract and unwrap individual token fields.
+    pub fn add_usage(&mut self, usage: Option<&TokenUsage>) {
+        if let Some(u) = usage {
+            self.prompt_tokens += u.prompt_tokens.unwrap_or(0);
+            self.completion_tokens += u.completion_tokens.unwrap_or(0);
+        }
         self.requests += 1;
     }
 

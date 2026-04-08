@@ -24,10 +24,13 @@ impl JsonRpcRequest {
 }
 
 /// A JSON-RPC 2.0 response.
+///
+/// Some fields (e.g., `jsonrpc`, `id`) are required by the JSON-RPC spec
+/// for correct deserialization but are not read directly by our code.
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct JsonRpcResponse {
-    #[allow(dead_code)]
+    /// Protocol version string (always "2.0"). Required for deserialization.
     pub jsonrpc: String,
     pub id: Option<u64>,
     pub result: Option<serde_json::Value>,
@@ -35,11 +38,15 @@ pub struct JsonRpcResponse {
 }
 
 /// A JSON-RPC 2.0 error object.
+///
+/// The `data` field is part of the JSON-RPC spec and deserialized for
+/// completeness, though we currently only use `code` and `message`.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct JsonRpcError {
     pub code: i64,
     pub message: String,
-    #[allow(dead_code)]
+    /// Optional structured error data (reserved for future use).
     pub data: Option<serde_json::Value>,
 }
 
@@ -52,6 +59,9 @@ impl std::fmt::Display for JsonRpcError {
 // ── MCP protocol types ──
 
 /// Server capabilities returned by `initialize`.
+///
+/// Fields are preserved for future use (e.g., checking if a server
+/// supports tools before calling `tools/list`).
 #[derive(Debug, Deserialize, Default)]
 #[allow(dead_code)]
 pub struct ServerCapabilities {

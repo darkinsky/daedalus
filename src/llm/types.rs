@@ -1,3 +1,8 @@
+// Note: LlmConfig and ReasoningEffort are defined in `crate::config` and
+// re-exported at the `llm` module level (see mod.rs). They are not
+// re-exported here to avoid duplicate paths.
+use crate::config::VenusExtensions;
+
 /// A single message in a conversation.
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
@@ -11,6 +16,12 @@ pub enum ChatRole {
     System,
     User,
     Assistant,
+    /// A tool/function response message (OpenAI `tool` role).
+    ///
+    /// Reserved for future use when memory needs to distinguish tool
+    /// responses from regular assistant messages.
+    #[allow(dead_code)]
+    Tool,
 }
 
 impl std::fmt::Display for ChatRole {
@@ -19,6 +30,7 @@ impl std::fmt::Display for ChatRole {
             ChatRole::System => write!(f, "system"),
             ChatRole::User => write!(f, "user"),
             ChatRole::Assistant => write!(f, "assistant"),
+            ChatRole::Tool => write!(f, "tool"),
         }
     }
 }
@@ -48,6 +60,15 @@ impl ChatMessage {
 
     pub fn assistant(content: impl Into<String>) -> Self {
         Self { role: ChatRole::Assistant, content: content.into() }
+    }
+
+    /// Create a tool message.
+    ///
+    /// Reserved for future use when tool responses are stored as
+    /// distinct message types in conversation memory.
+    #[allow(dead_code)]
+    pub fn tool(content: impl Into<String>) -> Self {
+        Self { role: ChatRole::Tool, content: content.into() }
     }
 }
 
@@ -129,86 +150,17 @@ fn add_optional_tokens(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     }
 }
 
-/// Reasoning effort level for models that support it.
-///
-/// Maps to OpenAI's `reasoning_effort` and Venus proxy's `thinking_level`/`reasoning_effort`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReasoningEffort {
-    Low,
-    Medium,
-    High,
-}
-
-impl std::fmt::Display for ReasoningEffort {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ReasoningEffort::Low => write!(f, "low"),
-            ReasoningEffort::Medium => write!(f, "medium"),
-            ReasoningEffort::High => write!(f, "high"),
-        }
-    }
-}
-
-impl std::str::FromStr for ReasoningEffort {
-    type Err = String;
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "low" => Ok(ReasoningEffort::Low),
-            "medium" => Ok(ReasoningEffort::Medium),
-            "high" => Ok(ReasoningEffort::High),
-            _ => Err(format!("Invalid reasoning effort: '{}'. Expected: low, medium, high", s)),
-        }
-    }
-}
-
 /// Options for chat completion requests.
 ///
 /// Includes standard parameters (temperature, max_tokens, top_p) and
-/// Venus API proxy advanced parameters (thinking, reasoning_effort).
+/// Venus API proxy advanced parameters via `VenusExtensions`.
 #[derive(Debug, Clone, Default)]
 pub struct ChatOptions {
     pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
     pub top_p: Option<f64>,
-
-    // ── Venus API proxy advanced parameters ──
-
-    /// Enable thinking/reasoning mode for supported models.
-    /// Maps to Venus `thinking_enabled` (Claude, Gemini, VenusLLMServing).
-    pub thinking_enabled: Option<bool>,
-
-    /// Maximum tokens for the thinking/reasoning process.
-    /// Maps to Venus `thinking_tokens` (Claude, Gemini).
-    /// Must be > 1024 and <= max_tokens.
-    pub thinking_tokens: Option<u32>,
-
-    /// Reasoning effort level.
-    /// Maps to OpenAI `reasoning_effort` (o-series) and
-    /// Gemini `thinking_level`/`reasoning_effort` (gemini-3 series).
-    pub reasoning_effort: Option<ReasoningEffort>,
-}
-
-/// Configuration for an LLM provider.
-#[derive(Debug, Clone)]
-pub struct LlmConfig {
-    /// API key for authentication.
-    pub api_key: String,
-    /// Model identifier (e.g., "gpt-4o", "claude-sonnet-4-6").
-    pub model: String,
-    /// Optional custom API base URL.
-    pub api_base: Option<String>,
-    /// Adapter kind hint (e.g., "openai", "anthropic", "gemini").
-    /// Defaults to "openai" if not specified.
-    pub adapter_kind: Option<String>,
-
-    // ── Venus API proxy advanced options ──
-
-    /// Enable thinking/reasoning mode for supported models.
-    pub thinking_enabled: Option<bool>,
-    /// Maximum tokens for the thinking/reasoning process.
-    pub thinking_tokens: Option<u32>,
-    /// Reasoning effort level (low/medium/high).
-    pub reasoning_effort: Option<ReasoningEffort>,
+    /// Venus API proxy advanced parameters (thinking, reasoning_effort).
+    pub venus: VenusExtensions,
 }
 
 /// A tool description exposed to the CLI layer for `/tools` display.
@@ -225,6 +177,7 @@ pub struct ToolInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{LlmConfig, ReasoningEffort, VenusExtensions};
 
     #[test]
     fn test_chat_message_constructors() {
@@ -239,6 +192,10 @@ mod tests {
         let asst = ChatMessage::assistant("Hi there");
         assert_eq!(asst.role, ChatRole::Assistant);
         assert_eq!(asst.content, "Hi there");
+
+        let tool = ChatMessage::tool("tool result");
+        assert_eq!(tool.role, ChatRole::Tool);
+        assert_eq!(tool.content, "tool result");
     }
 
     #[test]
@@ -252,6 +209,15 @@ mod tests {
         assert_eq!(ChatRole::User, ChatRole::User);
         assert_ne!(ChatRole::User, ChatRole::Assistant);
         assert_ne!(ChatRole::System, ChatRole::User);
+        assert_ne!(ChatRole::Tool, ChatRole::Assistant);
+    }
+
+    #[test]
+    fn test_chat_role_display() {
+        assert_eq!(ChatRole::System.to_string(), "system");
+        assert_eq!(ChatRole::User.to_string(), "user");
+        assert_eq!(ChatRole::Assistant.to_string(), "assistant");
+        assert_eq!(ChatRole::Tool.to_string(), "tool");
     }
 
     #[test]
@@ -260,9 +226,9 @@ mod tests {
         assert!(opts.temperature.is_none());
         assert!(opts.max_tokens.is_none());
         assert!(opts.top_p.is_none());
-        assert!(opts.thinking_enabled.is_none());
-        assert!(opts.thinking_tokens.is_none());
-        assert!(opts.reasoning_effort.is_none());
+        assert!(opts.venus.thinking_enabled.is_none());
+        assert!(opts.venus.thinking_tokens.is_none());
+        assert!(opts.venus.reasoning_effort.is_none());
     }
 
     #[test]
@@ -322,16 +288,18 @@ mod tests {
             model: "gpt-4o".to_string(),
             api_base: Some("https://example.com".to_string()),
             adapter_kind: None,
-            thinking_enabled: Some(true),
-            thinking_tokens: Some(2048),
-            reasoning_effort: Some(ReasoningEffort::High),
+            venus: VenusExtensions {
+                thinking_enabled: Some(true),
+                thinking_tokens: Some(2048),
+                reasoning_effort: Some(ReasoningEffort::High),
+            },
         };
         assert_eq!(config.api_key, "test-key");
         assert_eq!(config.model, "gpt-4o");
         assert_eq!(config.api_base.unwrap(), "https://example.com");
-        assert_eq!(config.thinking_enabled, Some(true));
-        assert_eq!(config.thinking_tokens, Some(2048));
-        assert_eq!(config.reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(config.venus.thinking_enabled, Some(true));
+        assert_eq!(config.venus.thinking_tokens, Some(2048));
+        assert_eq!(config.venus.reasoning_effort, Some(ReasoningEffort::High));
     }
 
     #[test]
@@ -382,5 +350,4 @@ mod tests {
         assert!(total.completion_tokens.is_none());
         assert!(total.total_tokens.is_none());
     }
-
 }

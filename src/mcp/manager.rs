@@ -16,20 +16,37 @@ pub struct McpManager {
 impl McpManager {
     /// Create a new MCP manager and connect to all configured servers.
     ///
+    /// Servers are connected in parallel for faster startup.
     /// Servers that fail to connect are logged and skipped (non-fatal).
     pub async fn from_config(config: &McpConfig) -> Self {
-        let mut clients = Vec::new();
+        use tokio::task::JoinSet;
+
+        let mut join_set = JoinSet::new();
 
         for (name, server_config) in &config.servers {
-            let args: Vec<&str> = server_config.args.iter().map(|s| s.as_str()).collect();
-            let env: Vec<(&str, &str)> = server_config.env.iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
+            let name = name.clone();
+            let command = server_config.command.clone();
+            let args: Vec<String> = server_config.args.clone();
+            let env: Vec<(String, String)> = server_config.env.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
 
-            let env_ref = if env.is_empty() { None } else { Some(env.as_slice()) };
+            join_set.spawn(async move {
+                let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                let env_refs: Vec<(&str, &str)> = env.iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect();
+                let env_ref = if env_refs.is_empty() { None } else { Some(env_refs.as_slice()) };
 
-            match McpClient::new(name, &server_config.command, &args, env_ref).await {
-                Ok(client) => {
+                let result = McpClient::new(&name, &command, &arg_refs, env_ref).await;
+                (name, result)
+            });
+        }
+
+        let mut clients = Vec::new();
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok((name, Ok(client))) => {
                     tracing::info!(
                         server = %name,
                         tools = client.tools().len(),
@@ -37,11 +54,17 @@ impl McpManager {
                     );
                     clients.push(client);
                 }
-                Err(e) => {
+                Ok((name, Err(e))) => {
                     tracing::error!(
                         server = %name,
                         error = %e,
                         "Failed to connect to MCP server (skipping)"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "MCP server connection task panicked"
                     );
                 }
             }
@@ -51,6 +74,8 @@ impl McpManager {
     }
 
     /// Create an empty manager (no MCP servers).
+    ///
+    /// Useful for testing or when MCP is explicitly disabled.
     #[allow(dead_code)]
     pub fn empty() -> Self {
         Self { clients: Vec::new() }
@@ -135,6 +160,8 @@ impl McpManager {
     }
 
     /// Shut down all MCP servers gracefully.
+    ///
+    /// Reserved for future use during application shutdown.
     #[allow(dead_code)]
     pub async fn shutdown(&mut self) {
         for client in &mut self.clients {

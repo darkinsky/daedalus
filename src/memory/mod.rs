@@ -17,7 +17,6 @@ use crate::llm::ChatMessage;
 /// In the future, more strategies can be added, such as:
 /// - Summary-based memory (compress older messages into a summary).
 /// - RAG-based memory (retrieve relevant past context).
-#[allow(dead_code)]
 pub trait Memory: Send + Sync {
     /// Add a user message to memory.
     fn add_user_message(&mut self, content: &str);
@@ -41,6 +40,9 @@ pub trait Memory: Send + Sync {
     fn build_messages(&self) -> Vec<ChatMessage>;
 
     /// Clear all conversation history (but keep the system prompt).
+    ///
+    /// Reserved for future use (e.g., explicit memory reset commands).
+    #[allow(dead_code)]
     fn clear(&mut self);
 
     /// Return the number of conversation turns (user + assistant pairs) stored.
