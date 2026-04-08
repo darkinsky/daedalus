@@ -1,21 +1,22 @@
 mod chat;
 
 pub use chat::ChatAgent;
+pub use chat::MemoryFactory;
 
 use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::session::Session;
 
-/// The running mode trait — unified interface for different agent modes.
+/// The agent mode trait — unified interface for different agent modes.
 ///
 /// Currently we have:
 /// - `ChatAgent`: Simple chat mode (multi-turn conversation, no tool use).
 ///
-/// In the future, we will add:
-/// - `AgentMode`: Full agent mode with tool calling, planning, and execution.
+/// In the future, more modes can be added, such as:
+/// - Full agent mode with tool calling, planning, and execution.
 #[async_trait]
-pub trait Mode: Send + Sync {
+pub trait AgentMode: Send + Sync {
     /// Send a user message and get the response.
     async fn chat(&mut self, user_input: &str) -> Result<String>;
 

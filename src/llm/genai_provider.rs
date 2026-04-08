@@ -59,7 +59,7 @@ impl GenAiProvider {
     }
 
     /// Convert our provider-agnostic ChatMessage to genai's ChatMessage.
-    fn to_genai_messages(messages: &[ChatMessage]) -> Vec<GenAiChatMessage> {
+    fn convert_messages(messages: &[ChatMessage]) -> Vec<GenAiChatMessage> {
         messages
             .iter()
             .map(|msg| match msg.role {
@@ -79,7 +79,7 @@ impl LlmApi for GenAiProvider {
         options: Option<&ChatOptions>,
     ) -> Result<ChatResponse> {
         // Build the ChatRequest from our messages
-        let genai_messages = Self::to_genai_messages(messages);
+        let genai_messages = Self::convert_messages(messages);
         let chat_req = ChatRequest::from_messages(genai_messages);
 
         // Build genai ChatOptions if provided

@@ -1,15 +1,15 @@
 use anyhow::Result;
 
-use crate::agent::Mode;
+use crate::agent::AgentMode;
 
-/// Print session info banner.
-fn print_session_info(agent: &dyn Mode) {
+/// Print session banner (title and short ID).
+fn print_session_banner(agent: &dyn AgentMode) {
     let session = agent.session();
     println!("  📋 Session: {} ({})", session.title, &session.id[..8]);
 }
 
 /// Run an interactive REPL loop for the given mode.
-pub async fn run_interactive(agent: &mut dyn Mode) -> Result<()> {
+pub async fn run_interactive(agent: &mut dyn AgentMode) -> Result<()> {
     use std::io::{self, BufRead, Write};
 
     println!("╔══════════════════════════════════════════╗");
@@ -24,14 +24,14 @@ pub async fn run_interactive(agent: &mut dyn Mode) -> Result<()> {
         agent.model_name(),
         agent.mode_name()
     );
-    print_session_info(agent);
+    print_session_banner(agent);
     println!();
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
     loop {
-        let request_id = agent.session().request_id + 1;
+        let request_id = agent.session().request_count + 1;
         print!("[{}] You > ", request_id);
         stdout.flush()?;
 
@@ -53,7 +53,7 @@ pub async fn run_interactive(agent: &mut dyn Mode) -> Result<()> {
             agent.new_session();
             println!();
             println!("✨ New session started!");
-            print_session_info(agent);
+            print_session_banner(agent);
             println!();
             continue;
         }

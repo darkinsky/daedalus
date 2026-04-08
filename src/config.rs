@@ -1,14 +1,12 @@
 use anyhow::{Context, Result};
 
+use crate::llm::LlmConfig;
+
 /// Agent configuration loaded from environment variables.
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
-    /// OpenAI API key
-    pub api_key: String,
-    /// Model name (e.g., "gpt-4", "gpt-4o", "gpt-3.5-turbo")
-    pub model: String,
-    /// Optional API base URL for custom endpoints
-    pub api_base: Option<String>,
+    /// LLM provider configuration (api_key, model, api_base).
+    pub llm: LlmConfig,
     /// System prompt for the agent
     pub system_prompt: String,
 }
@@ -38,10 +36,22 @@ impl AgentConfig {
         });
 
         Ok(Self {
-            api_key,
-            model,
-            api_base,
+            llm: LlmConfig {
+                api_key,
+                model,
+                api_base,
+            },
             system_prompt,
         })
+    }
+
+    /// Convenience accessor for the model name.
+    pub fn model(&self) -> &str {
+        &self.llm.model
+    }
+
+    /// Convenience accessor for the API base URL.
+    pub fn api_base(&self) -> Option<&str> {
+        self.llm.api_base.as_deref()
     }
 }

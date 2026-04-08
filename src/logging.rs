@@ -23,8 +23,8 @@ pub enum LogFormat {
 }
 
 impl LogFormat {
-    /// Parse a log format string (case-insensitive).
-    pub fn from_str_loose(s: &str) -> Self {
+    /// Parse a log format string (case-insensitive), falling back to default.
+    pub fn parse_or_default(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "json" => Self::Json,
             "compact" => Self::Compact,
@@ -49,8 +49,8 @@ pub enum LogRotation {
 }
 
 impl LogRotation {
-    /// Parse a rotation string (case-insensitive).
-    pub fn from_str_loose(s: &str) -> Self {
+    /// Parse a rotation string (case-insensitive), falling back to default.
+    pub fn parse_or_default(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "minutely" | "minute" => Self::Minutely,
             "hourly" | "hour" => Self::Hourly,
@@ -69,6 +69,63 @@ impl LogRotation {
             Self::Never => tracing_appender::rolling::Rotation::NEVER,
         }
     }
+}
+
+/// Display options for a log layer.
+///
+/// Extracted to avoid repeating the same six booleans in every layer builder.
+#[derive(Debug, Clone)]
+struct LayerDisplayOpts {
+    with_file: bool,
+    with_line_number: bool,
+    with_target: bool,
+    with_thread_names: bool,
+    with_thread_ids: bool,
+    with_ansi: bool,
+}
+
+impl LayerDisplayOpts {
+    /// Build display options from user-facing `LogConfig` (for stderr).
+    fn from_config(config: &LogConfig) -> Self {
+        Self {
+            with_file: config.with_file,
+            with_line_number: config.with_line_number,
+            with_target: config.with_target,
+            with_thread_names: config.with_thread_names,
+            with_thread_ids: config.with_thread_ids,
+            with_ansi: config.with_ansi,
+        }
+    }
+
+    /// Build display options for file logging (full metadata, no ANSI).
+    fn for_file() -> Self {
+        Self {
+            with_file: true,
+            with_line_number: true,
+            with_target: true,
+            with_thread_names: true,
+            with_thread_ids: true,
+            with_ansi: false,
+        }
+    }
+}
+
+/// Apply common display options to a tracing layer.
+///
+/// This macro eliminates the repetitive `.with_file(...).with_line_number(...)`
+/// chains that were previously duplicated across every format variant.
+macro_rules! apply_display_opts {
+    ($layer:expr, $timer:expr, $writer:expr, $opts:expr) => {
+        $layer
+            .with_timer($timer)
+            .with_writer($writer)
+            .with_file($opts.with_file)
+            .with_line_number($opts.with_line_number)
+            .with_target($opts.with_target)
+            .with_thread_names($opts.with_thread_names)
+            .with_thread_ids($opts.with_thread_ids)
+            .with_ansi($opts.with_ansi)
+    };
 }
 
 /// Logging configuration.
@@ -142,7 +199,7 @@ impl LogConfig {
         }
 
         if let Ok(format) = std::env::var("DAEDALUS_LOG_FORMAT") {
-            config.format = LogFormat::from_str_loose(&format);
+            config.format = LogFormat::parse_or_default(&format);
         }
 
         if let Ok(val) = std::env::var("DAEDALUS_LOG_FILE") {
@@ -178,11 +235,11 @@ impl LogConfig {
         }
 
         if let Ok(rotation) = std::env::var("DAEDALUS_LOG_ROTATION") {
-            config.rotation = LogRotation::from_str_loose(&rotation);
+            config.rotation = LogRotation::parse_or_default(&rotation);
         }
 
         if let Ok(file_format) = std::env::var("DAEDALUS_LOG_FILE_FORMAT") {
-            config.file_format = Some(LogFormat::from_str_loose(&file_format));
+            config.file_format = Some(LogFormat::parse_or_default(&file_format));
         }
 
         config
@@ -227,9 +284,6 @@ pub fn init(config: &LogConfig) -> Result<LogGuard> {
     let filter = config.build_filter();
     let timer = local_timer();
 
-    // Build the stderr (console) layer
-    let stderr_layer = build_stderr_layer(config, timer.clone());
-
     if let Some(ref log_dir) = config.log_dir {
         // File logging mode: output to rolling file only (no stderr)
         let rotation = config.rotation.to_appender_rotation();
@@ -240,9 +294,9 @@ pub fn init(config: &LogConfig) -> Result<LogGuard> {
         );
         let (non_blocking, file_guard) = tracing_appender::non_blocking(file_appender);
 
-        // File layer: configurable format, no ANSI, with full metadata
         let file_format = config.file_format.as_ref().unwrap_or(&LogFormat::Json);
-        let file_layer = build_layer(file_format, non_blocking, timer);
+        let file_opts = LayerDisplayOpts::for_file();
+        let file_layer = build_format_layer(file_format, non_blocking, timer, &file_opts);
 
         tracing_subscriber::registry()
             .with(filter)
@@ -262,6 +316,9 @@ pub fn init(config: &LogConfig) -> Result<LogGuard> {
         })
     } else {
         // No file logging — stderr only
+        let stderr_opts = LayerDisplayOpts::from_config(config);
+        let stderr_layer = build_format_layer(&config.format, std::io::stderr, timer, &stderr_opts);
+
         tracing_subscriber::registry()
             .with(filter)
             .with(stderr_layer)
@@ -289,24 +346,16 @@ fn local_timer() -> OffsetTime<time::format_description::well_known::Rfc3339> {
     )
 }
 
-/// Build the stderr formatting layer based on the configured format.
-fn build_stderr_layer<S>(
-    config: &LogConfig,
-    timer: OffsetTime<time::format_description::well_known::Rfc3339>,
-) -> Box<dyn tracing_subscriber::Layer<S> + Send + Sync>
-where
-    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-{
-    build_layer_with_opts(&config.format, std::io::stderr, config, timer)
-}
-
-/// Build a formatting layer for an arbitrary writer (file, stderr, etc.).
+/// Build a formatting layer for the given format, writer, and display options.
 ///
-/// File layers always disable ANSI and enable full metadata.
-fn build_layer<S, W>(
+/// This is the single entry point for creating all log layers (both stderr and
+/// file), eliminating the previous code duplication between `build_layer` and
+/// `build_layer_with_opts`.
+fn build_format_layer<S, W>(
     format: &LogFormat,
     writer: W,
     timer: OffsetTime<time::format_description::well_known::Rfc3339>,
+    opts: &LayerDisplayOpts,
 ) -> Box<dyn tracing_subscriber::Layer<S> + Send + Sync>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
@@ -314,113 +363,16 @@ where
 {
     match format {
         LogFormat::Json => Box::new(
-            fmt::layer()
-                .json()
-                .with_timer(timer)
-                .with_writer(writer)
-                .with_file(true)
-                .with_line_number(true)
-                .with_target(true)
-                .with_thread_names(true)
-                .with_thread_ids(true)
-                .with_ansi(false),
+            apply_display_opts!(fmt::layer().json(), timer, writer, opts),
         ),
         LogFormat::Compact => Box::new(
-            fmt::layer()
-                .compact()
-                .with_timer(timer)
-                .with_writer(writer)
-                .with_file(true)
-                .with_line_number(true)
-                .with_target(true)
-                .with_thread_names(true)
-                .with_thread_ids(true)
-                .with_ansi(false),
+            apply_display_opts!(fmt::layer().compact(), timer, writer, opts),
         ),
         LogFormat::Full => Box::new(
-            fmt::layer()
-                .with_timer(timer)
-                .with_writer(writer)
-                .with_file(true)
-                .with_line_number(true)
-                .with_target(true)
-                .with_thread_names(true)
-                .with_thread_ids(true)
-                .with_ansi(false),
+            apply_display_opts!(fmt::layer(), timer, writer, opts),
         ),
         LogFormat::Pretty => Box::new(
-            fmt::layer()
-                .pretty()
-                .with_timer(timer)
-                .with_writer(writer)
-                .with_file(true)
-                .with_line_number(true)
-                .with_target(true)
-                .with_thread_names(true)
-                .with_thread_ids(true)
-                .with_ansi(false),
-        ),
-    }
-}
-
-/// Build a formatting layer with user-configurable options (for stderr).
-fn build_layer_with_opts<S, W>(
-    format: &LogFormat,
-    writer: W,
-    config: &LogConfig,
-    timer: OffsetTime<time::format_description::well_known::Rfc3339>,
-) -> Box<dyn tracing_subscriber::Layer<S> + Send + Sync>
-where
-    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-    W: for<'w> fmt::MakeWriter<'w> + Send + Sync + 'static,
-{
-    match format {
-        LogFormat::Json => Box::new(
-            fmt::layer()
-                .json()
-                .with_timer(timer)
-                .with_writer(writer)
-                .with_file(config.with_file)
-                .with_line_number(config.with_line_number)
-                .with_target(config.with_target)
-                .with_thread_names(config.with_thread_names)
-                .with_thread_ids(config.with_thread_ids)
-                .with_ansi(false),
-        ),
-        LogFormat::Compact => Box::new(
-            fmt::layer()
-                .compact()
-                .with_timer(timer)
-                .with_writer(writer)
-                .with_file(config.with_file)
-                .with_line_number(config.with_line_number)
-                .with_target(config.with_target)
-                .with_thread_names(config.with_thread_names)
-                .with_thread_ids(config.with_thread_ids)
-                .with_ansi(config.with_ansi),
-        ),
-        LogFormat::Full => Box::new(
-            fmt::layer()
-                .with_timer(timer)
-                .with_writer(writer)
-                .with_file(true)
-                .with_line_number(true)
-                .with_target(true)
-                .with_thread_names(true)
-                .with_thread_ids(true)
-                .with_ansi(config.with_ansi),
-        ),
-        LogFormat::Pretty => Box::new(
-            fmt::layer()
-                .pretty()
-                .with_timer(timer)
-                .with_writer(writer)
-                .with_file(config.with_file)
-                .with_line_number(config.with_line_number)
-                .with_target(config.with_target)
-                .with_thread_names(config.with_thread_names)
-                .with_thread_ids(config.with_thread_ids)
-                .with_ansi(config.with_ansi),
+            apply_display_opts!(fmt::layer().pretty(), timer, writer, opts),
         ),
     }
 }
