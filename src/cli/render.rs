@@ -127,6 +127,28 @@ pub fn spinner() -> ProgressBar {
     pb
 }
 
+// ── Reasoning content ──
+
+/// Render the reasoning/thinking process from a reasoning model.
+///
+/// Displayed in dim style with a vertical border to visually distinguish
+/// it from the final response content.
+pub fn reasoning_content(reasoning: &str) {
+    println!();
+    println!(
+        "  {} {}",
+        "💭".to_string(),
+        "Reasoning:".with(Color::DarkGrey).attribute(Attribute::Italic),
+    );
+    for line in reasoning.lines() {
+        println!(
+            "  {}  {}",
+            "┊".with(Color::DarkGrey),
+            line.with(Color::DarkGrey),
+        );
+    }
+}
+
 // ── Response rendering ──
 
 /// Render the assistant's response with terminal markdown support.

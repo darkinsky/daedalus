@@ -196,6 +196,8 @@ impl ChatAgent {
 
         // Accumulate token usage across all rounds
         let mut total_usage = TokenUsage::default();
+        // Keep the reasoning_content from the final round
+        let mut last_reasoning_content: Option<String> = None;
 
         for round in 0..MAX_TOOL_ROUNDS {
             let response = self.llm.chat_with_tools(
@@ -211,12 +213,19 @@ impl ChatAgent {
             if response.tool_calls.is_empty() {
                 // No tool calls — this is the final response.
                 // Replace usage with accumulated total.
+                // Use reasoning_content from this final round.
                 let final_response = ChatResponse {
                     content: response.content,
+                    reasoning_content: response.reasoning_content.or(last_reasoning_content),
                     usage: Some(total_usage),
                     tool_calls: vec![],
                 };
                 return Ok((final_response, tool_history));
+            }
+
+            // Preserve reasoning_content from intermediate rounds
+            if response.reasoning_content.is_some() {
+                last_reasoning_content = response.reasoning_content;
             }
 
             tracing::info!(

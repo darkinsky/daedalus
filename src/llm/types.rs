@@ -91,6 +91,9 @@ impl ToolResponse {
 pub struct ChatResponse {
     /// The text content of the response.
     pub content: String,
+    /// Optional reasoning/thinking content returned by reasoning models
+    /// (e.g., Claude extended thinking, DeepSeek-R1, OpenAI o1/o3).
+    pub reasoning_content: Option<String>,
     /// Token usage information (if available).
     pub usage: Option<TokenUsage>,
     /// Tool calls requested by the model (if any).
@@ -126,12 +129,63 @@ fn add_optional_tokens(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     }
 }
 
+/// Reasoning effort level for models that support it.
+///
+/// Maps to OpenAI's `reasoning_effort` and Venus proxy's `thinking_level`/`reasoning_effort`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+}
+
+impl std::fmt::Display for ReasoningEffort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReasoningEffort::Low => write!(f, "low"),
+            ReasoningEffort::Medium => write!(f, "medium"),
+            ReasoningEffort::High => write!(f, "high"),
+        }
+    }
+}
+
+impl std::str::FromStr for ReasoningEffort {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "low" => Ok(ReasoningEffort::Low),
+            "medium" => Ok(ReasoningEffort::Medium),
+            "high" => Ok(ReasoningEffort::High),
+            _ => Err(format!("Invalid reasoning effort: '{}'. Expected: low, medium, high", s)),
+        }
+    }
+}
+
 /// Options for chat completion requests.
+///
+/// Includes standard parameters (temperature, max_tokens, top_p) and
+/// Venus API proxy advanced parameters (thinking, reasoning_effort).
 #[derive(Debug, Clone, Default)]
 pub struct ChatOptions {
     pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
     pub top_p: Option<f64>,
+
+    // ── Venus API proxy advanced parameters ──
+
+    /// Enable thinking/reasoning mode for supported models.
+    /// Maps to Venus `thinking_enabled` (Claude, Gemini, VenusLLMServing).
+    pub thinking_enabled: Option<bool>,
+
+    /// Maximum tokens for the thinking/reasoning process.
+    /// Maps to Venus `thinking_tokens` (Claude, Gemini).
+    /// Must be > 1024 and <= max_tokens.
+    pub thinking_tokens: Option<u32>,
+
+    /// Reasoning effort level.
+    /// Maps to OpenAI `reasoning_effort` (o-series) and
+    /// Gemini `thinking_level`/`reasoning_effort` (gemini-3 series).
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// Configuration for an LLM provider.
@@ -146,6 +200,15 @@ pub struct LlmConfig {
     /// Adapter kind hint (e.g., "openai", "anthropic", "gemini").
     /// Defaults to "openai" if not specified.
     pub adapter_kind: Option<String>,
+
+    // ── Venus API proxy advanced options ──
+
+    /// Enable thinking/reasoning mode for supported models.
+    pub thinking_enabled: Option<bool>,
+    /// Maximum tokens for the thinking/reasoning process.
+    pub thinking_tokens: Option<u32>,
+    /// Reasoning effort level (low/medium/high).
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// A tool description exposed to the CLI layer for `/tools` display.
@@ -197,6 +260,24 @@ mod tests {
         assert!(opts.temperature.is_none());
         assert!(opts.max_tokens.is_none());
         assert!(opts.top_p.is_none());
+        assert!(opts.thinking_enabled.is_none());
+        assert!(opts.thinking_tokens.is_none());
+        assert!(opts.reasoning_effort.is_none());
+    }
+
+    #[test]
+    fn test_reasoning_effort_parse() {
+        assert_eq!("low".parse::<ReasoningEffort>().unwrap(), ReasoningEffort::Low);
+        assert_eq!("Medium".parse::<ReasoningEffort>().unwrap(), ReasoningEffort::Medium);
+        assert_eq!("HIGH".parse::<ReasoningEffort>().unwrap(), ReasoningEffort::High);
+        assert!("invalid".parse::<ReasoningEffort>().is_err());
+    }
+
+    #[test]
+    fn test_reasoning_effort_display() {
+        assert_eq!(ReasoningEffort::Low.to_string(), "low");
+        assert_eq!(ReasoningEffort::Medium.to_string(), "medium");
+        assert_eq!(ReasoningEffort::High.to_string(), "high");
     }
 
     #[test]
@@ -211,6 +292,7 @@ mod tests {
     fn test_chat_response_with_usage() {
         let resp = ChatResponse {
             content: "Hello!".to_string(),
+            reasoning_content: None,
             usage: Some(TokenUsage {
                 prompt_tokens: Some(10),
                 completion_tokens: Some(5),
@@ -226,6 +308,7 @@ mod tests {
     fn test_chat_response_without_usage() {
         let resp = ChatResponse {
             content: "No usage info".to_string(),
+            reasoning_content: None,
             usage: None,
             tool_calls: vec![],
         };
@@ -239,10 +322,16 @@ mod tests {
             model: "gpt-4o".to_string(),
             api_base: Some("https://example.com".to_string()),
             adapter_kind: None,
+            thinking_enabled: Some(true),
+            thinking_tokens: Some(2048),
+            reasoning_effort: Some(ReasoningEffort::High),
         };
         assert_eq!(config.api_key, "test-key");
         assert_eq!(config.model, "gpt-4o");
         assert_eq!(config.api_base.unwrap(), "https://example.com");
+        assert_eq!(config.thinking_enabled, Some(true));
+        assert_eq!(config.thinking_tokens, Some(2048));
+        assert_eq!(config.reasoning_effort, Some(ReasoningEffort::High));
     }
 
     #[test]

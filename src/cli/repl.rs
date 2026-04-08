@@ -50,6 +50,13 @@ async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &mut SessionC
             let elapsed = start.elapsed().as_secs_f64();
             spinner.finish_and_clear();
 
+            // Show reasoning/thinking process if present
+            if let Some(ref reasoning) = result.reasoning_content {
+                if !reasoning.is_empty() {
+                    render::reasoning_content(reasoning);
+                }
+            }
+
             render::response(&result.content);
 
             // Track token usage for the session

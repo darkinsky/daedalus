@@ -12,6 +12,8 @@ use genai::chat::{
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
 
+use genai::chat::ReasoningEffort as GenAiReasoningEffort;
+
 use super::types::*;
 use super::LlmApi;
 
@@ -130,10 +132,21 @@ impl GenAiProvider {
         Some(tool)
     }
 
-    /// Build genai ChatOptions from our ChatOptions.
-    fn build_options(options: Option<&ChatOptions>) -> Option<genai::chat::ChatOptions> {
-        options.map(|opts| {
-            let mut genai_opts = genai::chat::ChatOptions::default();
+    /// Build genai ChatOptions from our ChatOptions and LlmConfig.
+    ///
+    /// Always enables `capture_reasoning_content` and `normalize_reasoning_content`
+    /// so that reasoning models (Claude extended thinking, DeepSeek-R1, OpenAI o1/o3)
+    /// return their thinking process. For non-reasoning models this is a no-op.
+    ///
+    /// Maps `reasoning_effort` from our config to genai's `ReasoningEffort`.
+    /// For Venus proxy's `thinking_enabled`/`thinking_tokens`, these are handled
+    /// at the HTTP level since genai's OpenAI adapter doesn't support them natively.
+    fn build_options(&self, options: Option<&ChatOptions>) -> genai::chat::ChatOptions {
+        let mut genai_opts = genai::chat::ChatOptions::default()
+            .with_capture_reasoning_content(true)
+            .with_normalize_reasoning_content(true);
+
+        if let Some(opts) = options {
             if let Some(temp) = opts.temperature {
                 genai_opts = genai_opts.with_temperature(temp);
             }
@@ -143,13 +156,35 @@ impl GenAiProvider {
             if let Some(top_p) = opts.top_p {
                 genai_opts = genai_opts.with_top_p(top_p);
             }
-            genai_opts
-        })
+            // Map our ReasoningEffort to genai's ReasoningEffort
+            if let Some(ref effort) = opts.reasoning_effort {
+                genai_opts = genai_opts.with_reasoning_effort(Self::to_genai_reasoning_effort(effort));
+            }
+        }
+
+        // Fall back to LlmConfig-level reasoning_effort if not set at request level
+        if options.and_then(|o| o.reasoning_effort.as_ref()).is_none() {
+            if let Some(ref effort) = self.config.reasoning_effort {
+                genai_opts = genai_opts.with_reasoning_effort(Self::to_genai_reasoning_effort(effort));
+            }
+        }
+
+        genai_opts
+    }
+
+    /// Convert our ReasoningEffort to genai's ReasoningEffort.
+    fn to_genai_reasoning_effort(effort: &ReasoningEffort) -> GenAiReasoningEffort {
+        match effort {
+            ReasoningEffort::Low => GenAiReasoningEffort::Low,
+            ReasoningEffort::Medium => GenAiReasoningEffort::Medium,
+            ReasoningEffort::High => GenAiReasoningEffort::High,
+        }
     }
 
     /// Build a ChatResponse from a genai ChatResponse.
     fn build_response(chat_res: &genai::chat::ChatResponse) -> ChatResponse {
         let content = chat_res.first_text().unwrap_or("").to_string();
+        let reasoning_content = chat_res.reasoning_content.clone();
         let tool_calls: Vec<ToolCall> = chat_res
             .tool_calls()
             .into_iter()
@@ -167,7 +202,7 @@ impl GenAiProvider {
             None
         };
 
-        ChatResponse { content, usage, tool_calls }
+        ChatResponse { content, reasoning_content, usage, tool_calls }
     }
 }
 
@@ -206,11 +241,11 @@ impl LlmApi for GenAiProvider {
             }
         }
 
-        let genai_options = Self::build_options(options);
+        let genai_options = self.build_options(options);
 
         let chat_res = self
             .client
-            .exec_chat(&self.config.model, chat_req, genai_options.as_ref())
+            .exec_chat(&self.config.model, chat_req, Some(&genai_options))
             .await
             .map_err(|e| anyhow::anyhow!("GenAI chat error: {}", e))?;
 

@@ -22,7 +22,12 @@ impl AgentConfig {
     /// - `OPENAI_BASE_URL`: Custom API base URL
     /// - `DAEDALUS_ADAPTER_KIND`: LLM adapter kind ("openai", "anthropic", "gemini", "groq", "cohere")
     /// - `DAEDALUS_SYSTEM_PROMPT`: Custom system prompt
+    /// - `DAEDALUS_THINKING_ENABLED`: Enable thinking mode ("true"/"false")
+    /// - `DAEDALUS_THINKING_TOKENS`: Max tokens for thinking (e.g., "2048")
+    /// - `DAEDALUS_REASONING_EFFORT`: Reasoning effort level ("low"/"medium"/"high")
     pub fn from_env() -> Result<Self> {
+        use crate::llm::ReasoningEffort;
+
         let api_key = std::env::var("OPENAI_API_KEY")
             .context("OPENAI_API_KEY environment variable is required")?;
 
@@ -31,6 +36,18 @@ impl AgentConfig {
         let api_base = std::env::var("OPENAI_BASE_URL").ok();
 
         let adapter_kind = std::env::var("DAEDALUS_ADAPTER_KIND").ok();
+
+        let thinking_enabled = std::env::var("DAEDALUS_THINKING_ENABLED")
+            .ok()
+            .map(|v| v.to_lowercase() == "true");
+
+        let thinking_tokens = std::env::var("DAEDALUS_THINKING_TOKENS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok());
+
+        let reasoning_effort = std::env::var("DAEDALUS_REASONING_EFFORT")
+            .ok()
+            .and_then(|v| v.parse::<ReasoningEffort>().ok());
 
         let system_prompt = std::env::var("DAEDALUS_SYSTEM_PROMPT").unwrap_or_else(|_| {
             "You are Daedalus, a helpful AI assistant. \
@@ -44,6 +61,9 @@ impl AgentConfig {
                 model,
                 api_base,
                 adapter_kind,
+                thinking_enabled,
+                thinking_tokens,
+                reasoning_effort,
             },
             system_prompt,
         })

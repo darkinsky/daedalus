@@ -55,6 +55,11 @@ pub trait LlmApi: Send + Sync {
 }
 
 /// Factory function: create an LLM provider from configuration.
+///
+/// Uses `GenAiProvider` backed by the `genai` crate's adapter system.
+/// Supports standard OpenAI, Anthropic, Gemini, and OpenAI-compatible
+/// proxies (e.g., Venus). Advanced options like `reasoning_effort` are
+/// mapped to genai's built-in `ReasoningEffort`.
 pub fn create_provider(config: LlmConfig) -> Result<Box<dyn LlmApi>> {
     let provider = genai_provider::GenAiProvider::new(config)?;
     Ok(Box::new(provider))
