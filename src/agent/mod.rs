@@ -1,7 +1,6 @@
 mod chat;
 
 pub use chat::ChatAgent;
-pub use chat::MemoryFactory;
 
 use anyhow::Result;
 use async_trait::async_trait;
