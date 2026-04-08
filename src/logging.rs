@@ -222,17 +222,15 @@ impl LogConfig {
             config.with_ansi = val.eq_ignore_ascii_case("true") || val == "1";
         }
 
-        if let Ok(dir) = std::env::var("DAEDALUS_LOG_DIR") {
-            if !dir.is_empty() {
+        if let Ok(dir) = std::env::var("DAEDALUS_LOG_DIR")
+            && !dir.is_empty() {
                 config.log_dir = Some(dir);
             }
-        }
 
-        if let Ok(prefix) = std::env::var("DAEDALUS_LOG_FILE_PREFIX") {
-            if !prefix.is_empty() {
+        if let Ok(prefix) = std::env::var("DAEDALUS_LOG_FILE_PREFIX")
+            && !prefix.is_empty() {
                 config.log_file_prefix = prefix;
             }
-        }
 
         if let Ok(rotation) = std::env::var("DAEDALUS_LOG_ROTATION") {
             config.rotation = LogRotation::parse_or_default(&rotation);

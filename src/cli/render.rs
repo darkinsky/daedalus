@@ -31,6 +31,9 @@ pub fn banner(agent: &dyn AgentMode) {
         agent.provider_name(),
     ));
     dim(&format!("  Mode:     {}", agent.mode_name()));
+    if agent.has_tools() {
+        dim(&format!("  Tools:    {} available", agent.tool_count()));
+    }
     dim(&format!(
         "  Session:  {} ({})",
         agent.session().title,
@@ -120,6 +123,13 @@ pub fn model_info(agent: &dyn AgentMode) {
         "Mode:".with(Color::DarkGrey),
         agent.mode_name().with(Color::White),
     );
+    if agent.has_tools() {
+        println!(
+            "    {}  {}",
+            "Tools:".with(Color::DarkGrey),
+            format!("{} available", agent.tool_count()).with(Color::Green),
+        );
+    }
     println!();
 }
 
@@ -196,6 +206,42 @@ pub fn screen_cleared(agent: &dyn AgentMode) {
         agent.session().title,
         &agent.session().id[..8],
     ));
+    println!();
+}
+
+// ── Tools list ──
+
+/// Print the `/tools` output — list all available MCP tools.
+pub fn tools_list(agent: &dyn AgentMode) {
+    println!();
+    if !agent.has_tools() {
+        dim("  No MCP tools available.");
+        dim("  Configure MCP servers in mcp.json to enable tool calling.");
+        println!();
+        return;
+    }
+
+    println!(
+        "{}",
+        format!("  Available MCP tools ({}):", agent.tool_count())
+            .with(Color::White)
+            .attribute(Attribute::Bold)
+    );
+    println!();
+
+    for tool in agent.tool_descriptions() {
+        println!(
+            "    {}  {}",
+            tool.name.with(Color::Cyan),
+            format!("({})", tool.server).with(Color::DarkGrey),
+        );
+        if !tool.description.is_empty() {
+            dim(&format!("      {}", tool.description));
+        }
+    }
+
+    println!();
+    dim("    The LLM will automatically use these tools when needed.");
     println!();
 }
 

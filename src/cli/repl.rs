@@ -51,6 +51,7 @@ pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
                 }
                 Command::Cost => render::cost(&cost),
                 Command::Model => render::model_info(agent),
+                Command::Tools => render::tools_list(agent),
                 Command::Unknown(raw) => render::unknown_command(raw),
             }
             continue;
@@ -69,16 +70,15 @@ pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
         let start = Instant::now();
 
         match agent.chat(input).await {
-            Ok(answer) => {
+            Ok(result) => {
                 let elapsed = start.elapsed().as_secs_f64();
                 spinner.finish_and_clear();
 
-                render::response(&answer);
+                render::response(&result.content);
 
-                // Token usage placeholder — will be populated when we wire
-                // ChatResponse usage data through the AgentMode trait.
-                let prompt_tokens: Option<u64> = None;
-                let completion_tokens: Option<u64> = None;
+                // Extract token usage from the ChatResult
+                let prompt_tokens = result.usage.as_ref().and_then(|u| u.prompt_tokens);
+                let completion_tokens = result.usage.as_ref().and_then(|u| u.completion_tokens);
 
                 cost.add(
                     prompt_tokens.unwrap_or(0),
