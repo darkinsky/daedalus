@@ -87,14 +87,19 @@ graph TD
 
 ```
 用户输入 → REPL.handle_chat()
-  → agent.chat(input)
-    → chat_with_tools(messages)
+  → agent.chat(input, tool_callback)
+    → chat_with_tools(messages, on_tool_event)
       → LOOP (最多 10 轮):
         → llm.chat_with_tools(messages, tools, tool_history)
         → 如果 response.tool_calls 非空:
-          → 对每个 tool_call: tool_router.execute(call)
-            → 优先查找 built-in 工具
-            → 回退到 MCP 服务器
+          → 发送 RoundStart 事件
+          → 发送所有 ToolCallStart 事件
+          → 并行执行所有工具 (futures::join_all)
+            → tool_router.execute(call)
+              → 优先查找 built-in 工具
+              → 回退到 MCP 服务器
+          → 发送所有 ToolCallComplete 事件
+          → 发送 RoundComplete 事件
           → 收集 ToolResponse
           → tool_history.push((calls, responses))
           → 继续循环
@@ -122,6 +127,7 @@ main()
 
 - **语言**：Rust 2024 edition (1.85+)
 - **异步运行时**：tokio 1.44 (full features)
+- **并行工具执行**：futures 0.3（join_all）
 - **LLM 适配**：genai 0.5.3（多 Provider 适配器）、reqwest 0.12（Venus HTTP 直连）
 - **终端交互**：rustyline 15.0（行编辑 + 补全）、crossterm 0.28（ANSI 样式）、termimad 0.30（Markdown 渲染）、indicatif 0.17（进度条/spinner）
 - **序列化**：serde 1.0 + serde_json 1.0
@@ -137,3 +143,5 @@ main()
 5. **OpenAI JSON 作为中间格式**：工具定义使用 OpenAI function-calling JSON 作为 Provider 无关的中间表示，各 Provider 各自转换。
 6. **近因效应利用**：系统提示词中 Critical Reminders 放在最后，利用 LLM 的近因偏差确保硬规则最被重视。
 7. **内置工具始终可用**：文件系统等基础工具通过 `BuiltinToolRegistry` 内置，无需外部 MCP 配置即可使用。工具路由优先级：内置工具 > MCP 工具。
+8. **工具调用并行执行**：同一轮中的多个工具调用通过 `futures::future::join_all` 并行执行，总耗时 = max(各工具耗时)。
+9. **工具执行可观测性**：通过 `ToolEvent` 回调机制，CLI 层实时渲染工具执行进度（开始/完成/成功/失败）。

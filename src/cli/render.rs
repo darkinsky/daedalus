@@ -1,7 +1,7 @@
 use crossterm::style::{Attribute, Color, Stylize};
 use indicatif::{ProgressBar, ProgressStyle};
 
-use crate::agent::AgentMode;
+use crate::agent::{AgentMode, ToolEvent};
 use crate::llm::TokenUsage;
 use super::commands::SLASH_COMMANDS;
 use super::cost::SessionCost;
@@ -240,6 +240,53 @@ pub fn tools_list(agent: &dyn AgentMode) {
     println!();
     print_dim("    The LLM will automatically use these tools when needed.");
     println!();
+}
+
+// ── Tool execution events ──
+
+/// Render a tool execution event to the terminal.
+///
+/// Called in real-time during the tool-calling loop to show progress.
+pub fn tool_event(event: &ToolEvent) {
+    match event {
+        ToolEvent::RoundStart { round } => {
+            println!(
+                "  🔧 {}",
+                format!("Tool round {}", round)
+                    .with(Color::Cyan)
+                    .attribute(Attribute::Bold),
+            );
+        }
+        ToolEvent::ToolCallStart { tool_name, source } => {
+            println!(
+                "  {}  {} {}",
+                "▸".with(Color::Yellow),
+                tool_name.as_str().with(Color::White).attribute(Attribute::Bold),
+                format!("({})", source).with(Color::DarkGrey),
+            );
+        }
+        ToolEvent::ToolCallComplete { tool_name, success, result_preview } => {
+            let (icon, color) = if *success {
+                ("✓", Color::Green)
+            } else {
+                ("✗", Color::Red)
+            };
+            let label = if *success { "" } else { &format!("{}: ", tool_name) };
+            println!(
+                "    {} {}{}",
+                icon.with(color),
+                label.with(color),
+                result_preview.as_str().with(Color::DarkGrey),
+            );
+        }
+        ToolEvent::RoundComplete { tool_count } => {
+            println!(
+                "  {}",
+                format!("  {} tool call(s) completed", tool_count).with(Color::DarkGrey),
+            );
+            println!();
+        }
+    }
 }
 
 // ── Error / exit ──

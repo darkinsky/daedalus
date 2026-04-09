@@ -357,6 +357,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "crossterm 0.28.1",
+ "futures",
  "genai",
  "indicatif",
  "reqwest 0.12.28",

@@ -1,7 +1,7 @@
 # CLI — 交互式 REPL 界面
 
-> 最后更新：2026-04-08
-> 来源：存量代码分析
+> 最后更新：2026-04-09
+> 来源：存量代码分析 + 工具事件渲染迭代
 
 ## 1. 模块概述
 
@@ -63,10 +63,36 @@ CLI 模块提供 Claude Code 风格的终端交互界面，包含 REPL 主循环
 
 - **Markdown 渲染**：使用 `termimad::MadSkin` 渲染 Assistant 响应
 - **思考过程**：💭 标记 + dim 样式 + 竖线边框（`┊`）
+- **工具执行进度**：实时展示工具调用过程（见下方 5.1 节）
 - **响应 footer**：`↑10 · ↓5 · 1.2s` 格式显示 token 用量和耗时
-- **Spinner**：自定义 Unicode Braille 字符动画（`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`）
+- **Spinner**：自定义 Unicode Braille 字符动画（`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`），用 `Arc` 包装以便在工具事件回调中暂停/恢复
 
 视觉风格大量使用 ANSI 颜色（Cyan 主色、DarkGrey 辅助、Yellow 警告、Red 错误），模仿 Claude Code 的终端体验。[置信度：高]
+
+### 5.1 工具执行事件渲染
+
+> 📍 **代码位置**：`src/cli/render.rs:tool_event()` + `src/cli/repl.rs:build_tool_event_callback()`
+
+当 LLM 请求工具调用时，CLI 实时展示每一步的执行过程，而非只显示 spinner 等待最终结果。
+
+**终端效果**：
+```
+  🔧 Tool round 1
+  ▸  list_directory (built-in)
+  ▸  read_file (built-in)
+    ✓ Found 12 entries in /data/workspace/...
+    ✓ File content (245 lines)...
+    2 tool call(s) completed
+
+  ⠋ Thinking…
+```
+
+**Spinner 协调机制**：
+- `repl.rs` 中 spinner 用 `Arc<ProgressBar>` 包装
+- `build_tool_event_callback()` 构建回调闭包，闭包中先 `finish_and_clear()` 暂停 spinner，输出事件后 `enable_steady_tick()` 恢复
+- 这确保工具事件输出不与 spinner 动画交错
+
+[置信度：高]
 
 ## 6. Tab 补全与内联提示
 
@@ -89,4 +115,5 @@ CLI 模块提供 Claude Code 风格的终端交互界面，包含 REPL 主循环
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-09 | 新增工具执行事件渲染（5.1 节）；Spinner 改为 Arc 包装 | 工具事件渲染迭代 |
 | 2026-04-08 | 初始创建 | 存量代码分析 Phase A |

@@ -11,7 +11,7 @@ use crate::memory::Memory;
 use crate::prompt::PromptBuilder;
 use crate::session::Session;
 
-use super::AgentMode;
+use super::{AgentMode, ToolEvent, ToolEventCallback};
 use super::tool_router::ToolRouter;
 
 /// A factory function type for creating memory instances.
@@ -29,11 +29,21 @@ const MAX_TOOL_ROUNDS: usize = 10;
 ///
 /// Prevents excessively large tool arguments or results from bloating
 /// the conversation memory and wasting tokens.
+///
+/// Uses `char_indices` to ensure truncation never splits a multi-byte
+/// UTF-8 character, which would cause a panic.
 fn truncate_for_summary(s: &str, max_len: usize) -> &str {
     if s.len() <= max_len {
         s
     } else {
-        &s[..max_len]
+        // Find the last char boundary at or before max_len
+        let end = s[..=max_len.min(s.len() - 1)]
+            .char_indices()
+            .rev()
+            .find(|(i, _)| *i <= max_len)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        &s[..end]
     }
 }
 
@@ -235,6 +245,33 @@ impl ChatAgent {
         parts.join("\n")
     }
 
+    /// Emit a tool event to the optional callback.
+    fn emit_event(callback: Option<&ToolEventCallback>, event: ToolEvent) {
+        if let Some(cb) = callback {
+            cb(event);
+        }
+    }
+
+    /// Truncate a string for display preview, appending "…" if truncated.
+    ///
+    /// Uses `char_indices` to ensure truncation never splits a multi-byte
+    /// UTF-8 character, which would cause a panic.
+    fn preview_string(s: &str, max_len: usize) -> String {
+        let first_line = s.lines().next().unwrap_or(s);
+        if first_line.len() <= max_len {
+            first_line.to_string()
+        } else {
+            // Find the last char boundary at or before max_len
+            let end = first_line[..=max_len.min(first_line.len() - 1)]
+                .char_indices()
+                .rev()
+                .find(|(i, _)| *i <= max_len)
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            format!("{}…", &first_line[..end])
+        }
+    }
+
     /// Run the tool-calling loop.
     ///
     /// Iterates: LLM response → tool calls → execute via ToolRouter → feed results back.
@@ -244,6 +281,7 @@ impl ChatAgent {
         &self,
         request_id: u64,
         messages: &[ChatMessage],
+        on_tool_event: Option<&ToolEventCallback>,
     ) -> Result<(ChatResponse, Vec<(Vec<ToolCall>, Vec<ToolResponse>)>)> {
         let tools = self.tool_router.build_tool_definitions();
         let mut tool_history: Vec<(Vec<ToolCall>, Vec<ToolResponse>)> = Vec::new();
@@ -280,12 +318,45 @@ impl ChatAgent {
                 "LLM requested tool calls"
             );
 
-            // Execute each tool call via the unified router
-            let mut responses = Vec::new();
-            for tool_call in &response.tool_calls {
-                let tool_response = self.tool_router.execute(tool_call).await;
-                responses.push(tool_response);
+            // Notify CLI about the new round
+            Self::emit_event(on_tool_event, ToolEvent::RoundStart { round: round + 1 });
+
+            // Emit ToolCallStart events for all tool calls upfront
+            let tool_sources: Vec<String> = response.tool_calls.iter().map(|tc| {
+                let source = if self.tool_router.is_builtin(&tc.function_name) {
+                    "built-in".to_string()
+                } else {
+                    "mcp".to_string()
+                };
+                Self::emit_event(on_tool_event, ToolEvent::ToolCallStart {
+                    tool_name: tc.function_name.clone(),
+                    source: source.clone(),
+                });
+                source
+            }).collect();
+
+            // Execute all tool calls in parallel via the unified router
+            let futures: Vec<_> = response.tool_calls.iter()
+                .map(|tc| self.tool_router.execute(tc))
+                .collect();
+            let responses: Vec<ToolResponse> = futures::future::join_all(futures).await;
+
+            // Emit ToolCallComplete events for all results
+            for (tool_call, tool_response) in response.tool_calls.iter().zip(responses.iter()) {
+                let success = tool_response.success;
+                let result_preview = Self::preview_string(&tool_response.content, 80);
+                Self::emit_event(on_tool_event, ToolEvent::ToolCallComplete {
+                    tool_name: tool_call.function_name.clone(),
+                    success,
+                    result_preview,
+                });
             }
+            // Suppress unused variable warning — sources are used in ToolCallStart above
+            let _ = tool_sources;
+
+            Self::emit_event(on_tool_event, ToolEvent::RoundComplete {
+                tool_count: responses.len(),
+            });
 
             tool_history.push((response.tool_calls, responses));
         }
@@ -296,7 +367,11 @@ impl ChatAgent {
 
 #[async_trait]
 impl AgentMode for ChatAgent {
-    async fn chat(&mut self, user_input: &str) -> Result<ChatResponse> {
+    async fn chat(
+        &mut self,
+        user_input: &str,
+        on_tool_event: Option<&ToolEventCallback>,
+    ) -> Result<ChatResponse> {
         let request_id = self.session.next_request_id();
 
         self.session.memory_mut().add_user_message(user_input);
@@ -304,7 +379,9 @@ impl AgentMode for ChatAgent {
         self.log_request(request_id, user_input, &messages);
 
         let response = if self.has_tools() && self.llm.supports_tools() {
-            let (resp, tool_history) = self.chat_with_tools(request_id, &messages).await?;
+            let (resp, tool_history) = self.chat_with_tools(
+                request_id, &messages, on_tool_event,
+            ).await?;
 
             if !tool_history.is_empty() {
                 let summary = Self::summarize_tool_history(&tool_history);

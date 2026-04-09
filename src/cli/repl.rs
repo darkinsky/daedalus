@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -5,7 +6,7 @@ use crossterm::style::{Attribute, Color, Stylize};
 use rustyline::error::ReadlineError;
 use rustyline::{CompletionType, Config, EditMode, Editor};
 
-use crate::agent::AgentMode;
+use crate::agent::{AgentMode, ToolEventCallback};
 use super::commands::{self, Command};
 use super::completer::SlashCommandHelper;
 use super::cost::SessionCost;
@@ -37,24 +38,43 @@ fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &mut Sessio
     Ok(false)
 }
 
+/// Build the tool event callback that renders tool progress to the terminal.
+///
+/// The callback clears the spinner before printing tool events, then
+/// restarts it for the next LLM thinking phase.
+fn build_tool_event_callback(spinner: &Arc<indicatif::ProgressBar>) -> ToolEventCallback {
+    let spinner = Arc::clone(spinner);
+    Arc::new(move |event| {
+        // Pause the spinner so tool output is not interleaved
+        spinner.finish_and_clear();
+        render::tool_event(&event);
+        // Restart spinner for the next LLM round
+        spinner.set_message("Thinking…");
+        spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+    })
+}
+
 /// Send user input to the agent and render the response.
 async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &mut SessionCost) {
     tracing::debug!("User input: {}", input);
 
     // Show spinner while waiting for LLM response
-    let spinner = render::spinner();
+    let spinner = Arc::new(render::spinner());
     let start = Instant::now();
 
-    match agent.chat(input).await {
+    // Build tool event callback for real-time tool progress display
+    let tool_callback = build_tool_event_callback(&spinner);
+
+    match agent.chat(input, Some(&tool_callback)).await {
         Ok(result) => {
             let elapsed = start.elapsed().as_secs_f64();
             spinner.finish_and_clear();
 
             // Show reasoning/thinking process if present
-            if let Some(ref reasoning) = result.reasoning_content {
-                if !reasoning.is_empty() {
-                    render::reasoning_content(reasoning);
-                }
+            if let Some(ref reasoning) = result.reasoning_content
+                && !reasoning.is_empty()
+            {
+                render::reasoning_content(reasoning);
             }
 
             render::response(&result.content);

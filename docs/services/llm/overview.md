@@ -1,7 +1,7 @@
 # LLM — Provider 抽象与双实现
 
-> 最后更新：2026-04-08
-> 来源：存量代码分析 + 代码审查改进
+> 最后更新：2026-04-09
+> 来源：存量代码分析 + 代码审查改进 + ToolInfo 迁移
 
 ## 1. 模块概述
 
@@ -109,7 +109,7 @@ pub fn create_provider(config: LlmConfig) -> Result<Box<dyn LlmApi>>
 | `ChatResponse` | LLM 响应（content, reasoning_content, usage, tool_calls） |
 | `TokenUsage` | Token 统计（全部 Option<u64>） |
 | `ChatOptions` | 生成参数（temperature, max_tokens, top_p, venus） |
-| `ToolInfo` | CLI 显示用工具描述 |
+| `ToolInfo` | 工具描述（**已迁移到 `tools/mod.rs`**，通过 `pub use crate::tools::ToolInfo` 重新导出保持向后兼容） |
 
 **TokenUsage::accumulate()** 智能处理 `None` 值：`None + Some(x) = Some(x)`，`None + None = None`。[置信度：高]
 
@@ -118,5 +118,6 @@ pub fn create_provider(config: LlmConfig) -> Result<Box<dyn LlmApi>>
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-09 | ToolInfo 迁移到 `tools/mod.rs`，通过 re-export 保持向后兼容 | ToolInfo 归属优化 |
 | 2026-04-08 | ToolCall 字段重命名：fn_name→function_name, fn_arguments→arguments | 代码审查改进 |
 | 2026-04-08 | 初始创建 | 存量代码分析 Phase A |

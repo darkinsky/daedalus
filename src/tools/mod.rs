@@ -3,6 +3,24 @@ pub mod fs;
 use anyhow::Result;
 use async_trait::async_trait;
 
+/// A tool description for CLI display, prompt building, and tool routing.
+///
+/// This is the canonical definition of tool metadata, shared across all
+/// modules that need to describe tools (agent, prompt, CLI, MCP).
+///
+/// Previously lived in `llm::types` but was moved here because it describes
+/// tools, not LLM concepts. It is re-exported from `crate::llm::ToolInfo`
+/// for backward compatibility.
+#[derive(Debug, Clone)]
+pub struct ToolInfo {
+    /// The tool name.
+    pub name: String,
+    /// Human-readable description.
+    pub description: String,
+    /// Which source provides this tool (e.g., "built-in", MCP server name).
+    pub server: String,
+}
+
 /// A built-in tool that can be called directly without an external MCP server.
 ///
 /// Built-in tools follow the same OpenAI function-calling JSON format as MCP tools,
@@ -72,10 +90,10 @@ impl BuiltinToolRegistry {
     }
 
     /// Return tool descriptions for CLI display.
-    pub fn tool_descriptions(&self) -> Vec<crate::llm::ToolInfo> {
+    pub fn tool_descriptions(&self) -> Vec<ToolInfo> {
         self.tools
             .iter()
-            .map(|t| crate::llm::ToolInfo {
+            .map(|t| ToolInfo {
                 name: t.name().to_string(),
                 description: t.description().to_string(),
                 server: "built-in".to_string(),

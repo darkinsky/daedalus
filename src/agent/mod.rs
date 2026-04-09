@@ -5,10 +5,53 @@ pub use chat::ChatAgent;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use std::sync::Arc;
 
 use crate::llm::{ChatResponse, ToolInfo};
 use crate::mcp::McpManager;
 use crate::session::Session;
+
+// ── Tool execution events (for CLI progress display) ──
+
+/// Events emitted during tool execution, allowing the CLI layer
+/// to display real-time progress of the tool-calling loop.
+#[derive(Debug, Clone)]
+pub enum ToolEvent {
+    /// A new tool-calling round has started.
+    RoundStart {
+        /// 1-based round number.
+        round: usize,
+    },
+    /// A tool call is about to be executed.
+    ToolCallStart {
+        /// The tool name being called.
+        tool_name: String,
+        /// Which source handles this tool ("built-in" or MCP server name).
+        source: String,
+    },
+    /// A tool call has completed.
+    ToolCallComplete {
+        /// The tool name that was called.
+        tool_name: String,
+        /// Whether the call succeeded.
+        success: bool,
+        /// Brief result summary (truncated).
+        result_preview: String,
+    },
+    /// All tool calls in a round have completed.
+    RoundComplete {
+        /// Number of tool calls executed in this round.
+        tool_count: usize,
+    },
+}
+
+/// Callback type for receiving tool execution events.
+///
+/// The callback is wrapped in `Arc` so it can be shared across async boundaries.
+/// It takes a `ToolEvent` and renders it to the terminal (or ignores it).
+pub type ToolEventCallback = Arc<dyn Fn(ToolEvent) + Send + Sync>;
+
+// ── Agent mode trait ──
 
 /// The agent mode trait — unified interface for different agent modes.
 ///
@@ -20,7 +63,14 @@ use crate::session::Session;
 #[async_trait]
 pub trait AgentMode: Send + Sync {
     /// Send a user message and get the response (with usage metadata).
-    async fn chat(&mut self, user_input: &str) -> Result<ChatResponse>;
+    ///
+    /// An optional `on_tool_event` callback can be provided to receive
+    /// real-time notifications about tool execution progress.
+    async fn chat(
+        &mut self,
+        user_input: &str,
+        on_tool_event: Option<&ToolEventCallback>,
+    ) -> Result<ChatResponse>;
 
     /// Attach an MCP manager to enable tool calling.
     ///

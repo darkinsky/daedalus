@@ -189,14 +189,29 @@ pub struct ToolResponse {
     pub call_id: String,
     /// The tool output content.
     pub content: String,
+    /// Whether the tool call succeeded.
+    ///
+    /// This replaces the fragile `content.starts_with("Error")` heuristic
+    /// with an explicit success/failure signal from the execution layer.
+    pub success: bool,
 }
 
 impl ToolResponse {
-    /// Create a new tool response.
+    /// Create a new successful tool response.
     pub fn new(call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             call_id: call_id.into(),
             content: content.into(),
+            success: true,
+        }
+    }
+
+    /// Create a new failed tool response.
+    pub fn error(call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            call_id: call_id.into(),
+            content: content.into(),
+            success: false,
         }
     }
 }
@@ -257,16 +272,9 @@ pub struct ChatOptions {
     pub venus: VenusExtensions,
 }
 
-/// A tool description exposed to the CLI layer for `/tools` display.
-#[derive(Debug, Clone)]
-pub struct ToolInfo {
-    /// The tool name.
-    pub name: String,
-    /// Human-readable description.
-    pub description: String,
-    /// Which MCP server provides this tool.
-    pub server: String,
-}
+// NOTE: `ToolInfo` has been moved to `crate::tools::ToolInfo` where it
+// semantically belongs (it describes tools, not LLM concepts). It is
+// re-exported from `crate::llm` for backward compatibility.
 
 #[cfg(test)]
 mod tests {
@@ -400,6 +408,15 @@ mod tests {
         let resp = ToolResponse::new("call-123", "result data");
         assert_eq!(resp.call_id, "call-123");
         assert_eq!(resp.content, "result data");
+        assert!(resp.success);
+    }
+
+    #[test]
+    fn test_tool_response_error() {
+        let resp = ToolResponse::error("call-456", "Something went wrong");
+        assert_eq!(resp.call_id, "call-456");
+        assert_eq!(resp.content, "Something went wrong");
+        assert!(!resp.success);
     }
 
     #[test]

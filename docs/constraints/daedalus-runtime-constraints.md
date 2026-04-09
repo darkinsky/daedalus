@@ -1,7 +1,7 @@
 # 运行时约束
 
-> 最后更新：2026-04-08
-> 来源：存量代码分析 + 代码审查改进
+> 最后更新：2026-04-09
+> 来源：存量代码分析 + 代码审查改进 + 并行化迭代
 > 置信度：高
 
 ## 硬编码常量
@@ -44,11 +44,15 @@
 
 配置搜索是**先到先得**的：如果 `DAEDALUS_MCP_CONFIG` 环境变量指向的文件存在，就不再检查 `./mcp.json` 和 `~/.config/daedalus/mcp.json`。
 
-## 工具调用串行约束
+## 工具调用并行执行
 
-> 📍 **代码位置**：`src/agent/chat.rs:320-324`
+> 📍 **代码位置**：`src/agent/chat.rs:320-340`
 
-同一轮中的多个工具调用是**串行执行**的（`for tool_call in &response.tool_calls`），而非并行。这简化了实现，但对于多个独立工具调用可能不是最优的。
+同一轮中的多个工具调用是**并行执行**的（`futures::future::join_all`）。总耗时 = max(各工具耗时)，而非 sum(各工具耗时)。
+
+**技术选型决策**：选择 `futures::future::join_all` 而非 `tokio::task::JoinSet`，因为 `ToolRouter::execute` 需要 `&self` 引用，而 `ToolRouter` 不是 `'static`，无法直接 spawn。`join_all` 不需要 `'static` 约束，更适合此场景。
+
+**事件发射顺序**：所有 `ToolCallStart` 事件先发出，然后并行执行，最后所有 `ToolCallComplete` 事件一起发出。
 
 ## LogGuard 生命周期约束
 
@@ -61,5 +65,6 @@
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-09 | 工具调用从串行改为并行执行；新增 futures 0.3 依赖；补充技术选型决策 | 并行化迭代 |
 | 2026-04-08 | 新增 IGNORED_DIRS 常量、工具摘要截断约束 | 代码审查改进 |
 | 2026-04-08 | 初始创建 | 存量代码分析 Phase A |

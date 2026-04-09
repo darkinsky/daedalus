@@ -8,9 +8,13 @@ mod venus_provider;
 pub use types::{
     ChatMessage, ChatOptions, ChatRole, ChatResponse,
     LlmConfig, ReasoningEffort, VenusExtensions,
-    TokenUsage, ToolCall, ToolInfo, ToolResponse,
+    TokenUsage, ToolCall, ToolResponse,
     format_messages_for_log,
 };
+
+// Re-export ToolInfo from its canonical home in `crate::tools`.
+// This preserves backward compatibility for existing `use crate::llm::ToolInfo`.
+pub use crate::tools::ToolInfo;
 
 use anyhow::Result;
 use async_trait::async_trait;

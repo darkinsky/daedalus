@@ -61,6 +61,11 @@ impl ToolRouter {
         definitions
     }
 
+    /// Check if a tool is a built-in tool (as opposed to an MCP tool).
+    pub fn is_builtin(&self, name: &str) -> bool {
+        self.builtin.has_tool(name)
+    }
+
     /// Return tool descriptions for CLI display and prompt building.
     pub fn tool_descriptions(&self) -> Vec<ToolInfo> {
         let mut descriptions = self.builtin.tool_descriptions();
@@ -103,7 +108,7 @@ impl ToolRouter {
         }
 
         // No handler found
-        ToolResponse::new(
+        ToolResponse::error(
             &tool_call.call_id,
             format!("Error: No handler found for tool '{}'", tool_call.function_name),
         )
@@ -137,7 +142,7 @@ impl ToolRouter {
                     source = source,
                     "Tool call failed"
                 );
-                ToolResponse::new(
+                ToolResponse::error(
                     call_id,
                     format!("Error calling tool '{}': {}", tool_name, e),
                 )
