@@ -4,7 +4,7 @@ use super::client::McpClient;
 use super::config::McpConfig;
 use super::types::ToolDefinition;
 
-use crate::llm::ToolInfo;
+use crate::tools::ToolInfo;
 
 /// The MCP manager — owns all MCP client connections and provides
 /// a unified interface for tool discovery and execution.
@@ -132,7 +132,7 @@ impl McpManager {
             .map(|(server, tool)| ToolInfo {
                 name: tool.name.clone(),
                 description: tool.description.clone().unwrap_or_default(),
-                server: server.to_string(),
+                source: server.to_string(),
             })
             .collect()
     }

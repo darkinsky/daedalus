@@ -1,4 +1,4 @@
-use crate::llm::ToolInfo;
+use crate::tools::ToolInfo;
 
 /// Build the tool guidance section of the system prompt.
 ///
@@ -19,9 +19,9 @@ pub fn build_tool_guidance_section(tools: &[ToolInfo]) -> String {
         .iter()
         .map(|t| {
             format!(
-                "  - **{name}** (server: {server}): {desc}",
+                "  - **{name}** (source: {source}): {desc}",
                 name = t.name,
-                server = t.server,
+                source = t.source,
                 desc = if t.description.is_empty() {
                     "No description available"
                 } else {
@@ -75,7 +75,7 @@ mod tests {
         let tools = vec![ToolInfo {
             name: "web_search".to_string(),
             description: "Search the web for information".to_string(),
-            server: "brave-search".to_string(),
+            source: "brave-search".to_string(),
         }];
         let section = build_tool_guidance_section(&tools);
         assert!(section.contains("<tool_system>"));
@@ -90,12 +90,12 @@ mod tests {
             ToolInfo {
                 name: "search".to_string(),
                 description: "Search".to_string(),
-                server: "server-a".to_string(),
+                source: "server-a".to_string(),
             },
             ToolInfo {
                 name: "read_file".to_string(),
                 description: "Read a file".to_string(),
-                server: "server-b".to_string(),
+                source: "server-b".to_string(),
             },
         ];
         let section = build_tool_guidance_section(&tools);
@@ -108,7 +108,7 @@ mod tests {
         let tools = vec![ToolInfo {
             name: "mystery_tool".to_string(),
             description: String::new(),
-            server: "server".to_string(),
+            source: "server".to_string(),
         }];
         let section = build_tool_guidance_section(&tools);
         assert!(section.contains("No description available"));

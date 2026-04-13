@@ -33,6 +33,7 @@ fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &mut Sessio
         Command::Cost => render::cost(cost),
         Command::Model => render::model_info(agent),
         Command::Tools => render::tools_list(agent),
+        Command::Skills => render::skills_list(agent),
         Command::Unknown(raw) => render::unknown_command(raw),
     }
     Ok(false)

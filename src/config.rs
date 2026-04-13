@@ -1,6 +1,6 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 
-use crate::llm::{LlmConfig, ReasoningEffort, VenusExtensions};
+use crate::llm::LlmConfig;
 
 // ── Shared constants ──
 
@@ -48,26 +48,7 @@ impl AgentConfig {
     /// - `DAEDALUS_THINKING_TOKENS`: Max tokens for thinking (e.g., "2048")
     /// - `DAEDALUS_REASONING_EFFORT`: Reasoning effort level ("low"/"medium"/"high")
     pub fn from_env() -> Result<Self> {
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .context("OPENAI_API_KEY environment variable is required")?;
-
-        let model = std::env::var("DAEDALUS_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
-
-        let api_base = std::env::var("OPENAI_BASE_URL").ok();
-
-        let adapter_kind = std::env::var("DAEDALUS_ADAPTER_KIND").ok();
-
-        let thinking_enabled = std::env::var("DAEDALUS_THINKING_ENABLED")
-            .ok()
-            .map(|v| v.to_lowercase() == "true");
-
-        let thinking_tokens = std::env::var("DAEDALUS_THINKING_TOKENS")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok());
-
-        let reasoning_effort = std::env::var("DAEDALUS_REASONING_EFFORT")
-            .ok()
-            .and_then(|v| v.parse::<ReasoningEffort>().ok());
+        let llm = LlmConfig::from_env()?;
 
         // Detect whether the user explicitly set a custom system prompt
         let (system_prompt, is_custom_prompt) = match std::env::var("DAEDALUS_SYSTEM_PROMPT") {
@@ -77,8 +58,20 @@ impl AgentConfig {
 
         let agent_name = std::env::var("DAEDALUS_AGENT_NAME").ok();
 
-        // Load soul content from SOUL.md file if configured
-        let soul = std::env::var("DAEDALUS_SOUL_FILE").ok().and_then(|path| {
+        let soul = Self::load_soul_file();
+
+        Ok(Self {
+            llm,
+            system_prompt,
+            is_custom_prompt,
+            agent_name,
+            soul,
+        })
+    }
+
+    /// Load soul content from SOUL.md file if configured via `DAEDALUS_SOUL_FILE`.
+    fn load_soul_file() -> Option<String> {
+        std::env::var("DAEDALUS_SOUL_FILE").ok().and_then(|path| {
             match std::fs::read_to_string(&path) {
                 Ok(content) => {
                     let trimmed = content.trim().to_string();
@@ -94,24 +87,6 @@ impl AgentConfig {
                     None
                 }
             }
-        });
-
-        Ok(Self {
-            llm: LlmConfig {
-                api_key,
-                model,
-                api_base,
-                adapter_kind,
-                venus: VenusExtensions {
-                    thinking_enabled,
-                    thinking_tokens,
-                    reasoning_effort,
-                },
-            },
-            system_prompt,
-            is_custom_prompt,
-            agent_name,
-            soul,
         })
     }
 

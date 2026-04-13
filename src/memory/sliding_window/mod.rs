@@ -237,9 +237,17 @@ impl Memory for SlidingWindowMemory {
     }
 
     fn restore_persistent_state(&mut self, state: PersistentState) {
-        if let Ok((ltm, log)) = state.downcast::<(LongTermMemory, Vec<HistoryEntry>)>() {
-            self.long_term_memory = ltm;
-            self.history_log = log;
+        match state.downcast::<(LongTermMemory, Vec<HistoryEntry>)>() {
+            Ok((ltm, log)) => {
+                self.long_term_memory = ltm;
+                self.history_log = log;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Persistent state type mismatch — expected (LongTermMemory, Vec<HistoryEntry>), \
+                     state discarded"
+                );
+            }
         }
     }
 
@@ -380,7 +388,7 @@ mod tests {
     #[test]
     fn test_long_term_memory_injection() {
         let mut memory = SlidingWindowMemory::unlimited("You are helpful.");
-memory.long_term_memory_mut().user_preferences_mut().push("Prefers Rust".to_string());
+        memory.long_term_memory_mut().user_preferences_mut().push("Prefers Rust".to_string());
         memory.add_user_message("Hello");
 
         let messages = memory.build_messages();

@@ -7,9 +7,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use crate::llm::{ChatResponse, ToolInfo};
+use crate::llm::ChatResponse;
+use crate::tools::ToolInfo;
 use crate::mcp::McpManager;
 use crate::session::Session;
+use crate::skill::SkillInfo;
 
 // ── Tool execution events (for CLI progress display) ──
 
@@ -77,12 +79,12 @@ pub trait AgentMode: Send + Sync {
     /// The default implementation does nothing (for modes that don't support tools).
     fn attach_mcp(&mut self, _mcp: McpManager) {}
 
-    /// Return true if this agent has MCP tools available.
+    /// Return true if this agent has any tools available (built-in, skill, or MCP).
     fn has_tools(&self) -> bool {
         false
     }
 
-    /// Return the number of MCP tools available.
+    /// Return the total number of tools available (built-in, skill, and MCP).
     fn tool_count(&self) -> usize {
         0
     }
@@ -106,4 +108,14 @@ pub trait AgentMode: Send + Sync {
 
     /// Return the mode name (e.g., "chat", "agent").
     fn mode_name(&self) -> &str;
+
+    /// Return metadata for all available skills.
+    fn skill_infos(&self) -> Vec<SkillInfo> {
+        vec![]
+    }
+
+    /// Return the number of loaded skills.
+    fn skill_count(&self) -> usize {
+        0
+    }
 }

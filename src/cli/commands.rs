@@ -6,6 +6,7 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/cost", "Show token usage for the current session"),
     ("/model", "Show current model information"),
     ("/tools", "List available MCP tools"),
+    ("/skills", "List available skills"),
     ("/exit", "Exit the application (alias: /quit)"),
 ];
 
@@ -18,6 +19,7 @@ pub enum Command<'a> {
     Cost,
     Model,
     Tools,
+    Skills,
     Unknown(&'a str),
 }
 
@@ -38,6 +40,7 @@ pub fn parse(input: &str) -> Option<Command<'_>> {
         "/cost" => Command::Cost,
         "/model" => Command::Model,
         "/tools" => Command::Tools,
+        "/skills" => Command::Skills,
         _ => Command::Unknown(input),
     })
 }

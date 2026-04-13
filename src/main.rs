@@ -8,6 +8,7 @@ mod mcp;
 mod memory;
 mod prompt;
 mod session;
+mod skill;
 mod tools;
 
 use agent::AgentMode;
@@ -52,6 +53,33 @@ async fn main() -> Result<()> {
     let mut agent = agent::ChatAgent::new(provider, &config);
     if let Some(manager) = mcp_manager {
         agent.attach_mcp(manager);
+    }
+
+    // Load skills from the current working directory's `skills/` folder
+    let skills_dir = std::env::current_dir()
+        .unwrap_or_default()
+        .join("skills");
+    match agent.load_skills(&skills_dir) {
+        Ok(count) if count > 0 => {
+            tracing::info!(
+                skills = count,
+                path = %skills_dir.display(),
+                "Skills loaded successfully"
+            );
+        }
+        Ok(_) => {
+            tracing::debug!(
+                path = %skills_dir.display(),
+                "No skills found in directory"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %skills_dir.display(),
+                error = %e,
+                "Failed to load skills, continuing without skills"
+            );
+        }
     }
 
     // Run the interactive CLI

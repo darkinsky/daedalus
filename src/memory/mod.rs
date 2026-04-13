@@ -106,9 +106,15 @@ pub trait Memory: Send + Sync {
     ///
     /// Called after `take_persistent_state` on the old session's memory.
     /// The implementation should downcast the `PersistentState` to its
-    /// expected type and restore the data. Silently ignores incompatible state.
+    /// expected type and restore the data.
+    ///
+    /// The default implementation logs a warning and discards the state.
+    /// Memory strategies that support migration should override this.
     fn restore_persistent_state(&mut self, _state: PersistentState) {
-        // Default: ignore — strategies that don't support migration do nothing.
+        tracing::warn!(
+            strategy = self.strategy_name(),
+            "Persistent state discarded — memory strategy does not support migration"
+        );
     }
 
     /// Downcast to a concrete type for advanced operations.

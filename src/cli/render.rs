@@ -44,6 +44,9 @@ pub fn banner(agent: &dyn AgentMode) {
     if agent.has_tools() {
         print_dim(&format!("  Tools:    {} available", agent.tool_count()));
     }
+    if agent.skill_count() > 0 {
+        print_dim(&format!("  Skills:   {} available", agent.skill_count()));
+    }
     print_dim(&format!(
         "  Session:  {} ({})",
         agent.session().title,
@@ -230,7 +233,7 @@ pub fn tools_list(agent: &dyn AgentMode) {
         println!(
             "    {}  {}",
             tool.name.with(Color::Cyan),
-            format!("({})", tool.server).with(Color::DarkGrey),
+            format!("({})", tool.source).with(Color::DarkGrey),
         );
         if !tool.description.is_empty() {
             print_dim(&format!("      {}", tool.description));
@@ -239,6 +242,42 @@ pub fn tools_list(agent: &dyn AgentMode) {
 
     println!();
     print_dim("    The LLM will automatically use these tools when needed.");
+    println!();
+}
+
+// ── Skills list ──
+
+/// Print the `/skills` output — list all available skills.
+pub fn skills_list(agent: &dyn AgentMode) {
+    println!();
+    let infos = agent.skill_infos();
+    if infos.is_empty() {
+        print_dim("  No skills available.");
+        print_dim("  Place .md files in the ./skills/ directory to add skills.");
+        println!();
+        return;
+    }
+
+    println!(
+        "{}",
+        format!("  Available skills ({}):", infos.len())
+            .with(Color::White)
+            .attribute(Attribute::Bold)
+    );
+    println!();
+
+    for skill in &infos {
+        println!(
+            "    {}",
+            skill.name.as_str().with(Color::Cyan),
+        );
+        if !skill.description.is_empty() {
+            print_dim(&format!("      {}", skill.description));
+        }
+    }
+
+    println!();
+    print_dim("    The LLM will automatically invoke skills via the use_skill tool when needed.");
     println!();
 }
 
@@ -271,11 +310,11 @@ pub fn tool_event(event: &ToolEvent) {
             } else {
                 ("✗", Color::Red)
             };
-            let label = if *success { "" } else { &format!("{}: ", tool_name) };
+            let error_prefix = if *success { "" } else { &format!("{}: ", tool_name) };
             println!(
                 "    {} {}{}",
                 icon.with(color),
-                label.with(color),
+                error_prefix.with(color),
                 result_preview.as_str().with(Color::DarkGrey),
             );
         }

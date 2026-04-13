@@ -1,15 +1,19 @@
+use std::path::Path;
+
 use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::config::AgentConfig;
 use crate::llm::{
-    ChatMessage, ChatResponse, LlmApi, ToolInfo, ToolResponse, ToolRound,
+    ChatMessage, ChatResponse, LlmApi, ToolResponse, ToolRound,
     TokenUsage, format_messages_for_log,
 };
+use crate::tools::ToolInfo;
 use crate::mcp::McpManager;
 use crate::memory::{MemoryFactory, SlidingWindowFactory};
 use crate::prompt::PromptBuilder;
 use crate::session::Session;
+use crate::skill::SkillInfo;
 
 use super::{AgentMode, ToolEvent, ToolEventCallback};
 use super::tool_router::ToolRouter;
@@ -130,6 +134,18 @@ impl ChatAgent {
     /// (sliding window with dual-layer consolidation).
     pub fn new(llm: Box<dyn LlmApi>, config: &AgentConfig) -> Self {
         Self::with_memory_factory(llm, config, Box::new(SlidingWindowFactory))
+    }
+
+    /// Load skills from a directory and rebuild the system prompt.
+    ///
+    /// Skills are exposed to the LLM as a `use_skill` tool. The LLM
+    /// decides which skill to invoke based on the user's request.
+    pub fn load_skills(&mut self, dir: &Path) -> Result<usize> {
+        let count = self.tool_router.load_skills(dir)?;
+        if count > 0 {
+            self.reset_with_updated_prompt();
+        }
+        Ok(count)
     }
 
     // ── Prompt construction ──
@@ -267,6 +283,52 @@ impl ChatAgent {
         }
     }
 
+    /// Emit `ToolCallStart` events for all tool calls in a round.
+    fn emit_tool_start_events(
+        &self,
+        tool_calls: &[crate::llm::ToolCall],
+        on_tool_event: Option<&ToolEventCallback>,
+    ) {
+        for tc in tool_calls {
+            let source = if self.tool_router.is_builtin(&tc.function_name) {
+                "built-in"
+            } else {
+                "mcp"
+            };
+            Self::emit_event(on_tool_event, ToolEvent::ToolCallStart {
+                tool_name: tc.function_name.clone(),
+                source: source.to_string(),
+            });
+        }
+    }
+
+    /// Execute all tool calls in parallel and emit completion events.
+    async fn execute_tool_round(
+        &self,
+        tool_calls: &[crate::llm::ToolCall],
+        on_tool_event: Option<&ToolEventCallback>,
+    ) -> Vec<ToolResponse> {
+        let futures: Vec<_> = tool_calls.iter()
+            .map(|tc| self.tool_router.execute(tc))
+            .collect();
+        let responses: Vec<ToolResponse> = futures::future::join_all(futures).await;
+
+        for (tool_call, tool_response) in tool_calls.iter().zip(responses.iter()) {
+            let success = tool_response.success;
+            let result_preview = preview_string(&tool_response.content, 80);
+            Self::emit_event(on_tool_event, ToolEvent::ToolCallComplete {
+                tool_name: tool_call.function_name.clone(),
+                success,
+                result_preview,
+            });
+        }
+        Self::emit_event(on_tool_event, ToolEvent::RoundComplete {
+            tool_count: responses.len(),
+        });
+
+        responses
+    }
+
     /// Run the tool-calling loop.
     ///
     /// Iterates: LLM response → tool calls → execute via ToolRouter → feed results back.
@@ -316,38 +378,9 @@ impl ChatAgent {
             // Notify CLI about the new round
             Self::emit_event(on_tool_event, ToolEvent::RoundStart { round: round + 1 });
 
-            // Emit ToolCallStart events for all tool calls upfront
-            for tc in &response.tool_calls {
-                let source = if self.tool_router.is_builtin(&tc.function_name) {
-                    "built-in"
-                } else {
-                    "mcp"
-                };
-                Self::emit_event(on_tool_event, ToolEvent::ToolCallStart {
-                    tool_name: tc.function_name.clone(),
-                    source: source.to_string(),
-                });
-            }
-
-            // Execute all tool calls in parallel via the unified router
-            let futures: Vec<_> = response.tool_calls.iter()
-                .map(|tc| self.tool_router.execute(tc))
-                .collect();
-            let responses: Vec<ToolResponse> = futures::future::join_all(futures).await;
-
-            // Emit ToolCallComplete events for all results
-            for (tool_call, tool_response) in response.tool_calls.iter().zip(responses.iter()) {
-                let success = tool_response.success;
-                let result_preview = preview_string(&tool_response.content, 80);
-                Self::emit_event(on_tool_event, ToolEvent::ToolCallComplete {
-                    tool_name: tool_call.function_name.clone(),
-                    success,
-                    result_preview,
-                });
-            }
-            Self::emit_event(on_tool_event, ToolEvent::RoundComplete {
-                tool_count: responses.len(),
-            });
+            // Emit start events and execute all tool calls in parallel
+            self.emit_tool_start_events(&response.tool_calls, on_tool_event);
+            let responses = self.execute_tool_round(&response.tool_calls, on_tool_event).await;
 
             tool_history.push(ToolRound {
                 calls: response.tool_calls,
@@ -373,7 +406,7 @@ impl AgentMode for ChatAgent {
         self.log_request(request_id, user_input, &messages);
 
         let response = if self.has_tools() && self.llm.supports_tools() {
-            let (resp, tool_history) = self.chat_with_tools(
+            let (final_resp, tool_history) = self.chat_with_tools(
                 request_id, &messages, on_tool_event,
             ).await?;
 
@@ -381,13 +414,13 @@ impl AgentMode for ChatAgent {
                 let summary = Self::summarize_tool_history(&tool_history);
                 self.session.memory_mut().add_tool_context(&summary);
             }
-            self.session.memory_mut().add_assistant_message(&resp.content);
-            resp
+            self.session.memory_mut().add_assistant_message(&final_resp.content);
+            final_resp
         } else {
-            let resp = self.llm.chat(&messages, None).await?;
-            self.log_response(request_id, &resp);
-            self.session.memory_mut().add_assistant_message(&resp.content);
-            resp
+            let llm_resp = self.llm.chat(&messages, None).await?;
+            self.log_response(request_id, &llm_resp);
+            self.session.memory_mut().add_assistant_message(&llm_resp.content);
+            llm_resp
         };
 
         // Check if consolidation should be triggered after this turn.
@@ -456,5 +489,13 @@ impl AgentMode for ChatAgent {
         } else {
             "chat"
         }
+    }
+
+    fn skill_infos(&self) -> Vec<SkillInfo> {
+        self.tool_router.skill_registry().skill_infos()
+    }
+
+    fn skill_count(&self) -> usize {
+        self.tool_router.skill_registry().skill_count()
     }
 }

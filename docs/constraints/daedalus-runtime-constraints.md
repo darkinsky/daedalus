@@ -1,7 +1,7 @@
 # 运行时约束
 
 > 最后更新：2026-04-13
-> 来源：存量代码分析 + 代码审查改进 + 并行化迭代 + 记忆系统重构
+> 来源：存量代码分析 + 代码审查改进 + 并行化迭代 + 记忆系统重构 + Skill 功能实现
 > 置信度：高
 
 ## 硬编码常量
@@ -19,6 +19,8 @@
 | `DEFAULT_SIMILARITY_THRESHOLD` | 0.5 | `src/memory/agentic/store.rs` | A-MEM 链接候选的最低余弦相似度 |
 | `DEFAULT_MAX_LINK_CANDIDATES` | 5 | `src/memory/agentic/store.rs` | A-MEM 每次链接生成检索的最大候选数 |
 | `DEFAULT_RETRIEVAL_LIMIT` | 5 | `src/memory/agentic/store.rs` | A-MEM 上下文检索返回的最大 note 数 |
+| `SKILL_FILENAME` | "SKILL.md" | `src/skill/loader.rs:8` | Skill 子目录中的入口文件名 |
+| `SKILL_TOOL_NAME` | "use_skill" | `src/skill/registry.rs` | LLM 调用 skill 时使用的工具名 |
 
 ## 工具调用摘要截断约束
 
@@ -81,11 +83,27 @@
 
 `LogGuard` 必须在整个应用生命周期内持有。提前 drop 会导致文件日志缓冲区可能未完全 flush。
 
+## Skill 加载约束
+
+> 📍 **代码位置**：`src/skill/loader.rs` + `src/main.rs`
+
+Skill 从当前工作目录的 `skills/` 子目录加载，遵循子目录 + `SKILL.md` 约定：
+
+| 约束 | 说明 |
+|------|------|
+| 加载路径 | `std::env::current_dir()/skills/` — 固定为当前工作目录 |
+| 目录结构 | 每个 skill 是一个子目录，必须包含 `SKILL.md` |
+| 文件格式 | 支持 YAML front-matter（`description:` 字段）或简单 heading |
+| 加载顺序 | 子目录按字母序排序后加载（确定性） |
+| 名称冲突 | 后加载的 skill 覆盖先加载的（warn 日志） |
+| 降级策略 | 目录不存在/不是目录/文件加载失败均跳过，不阻断启动 |
+
 ---
 
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-13 | 新增 SKILL_FILENAME、SKILL_TOOL_NAME 常量；新增 Skill 加载约束章节 | Skill 功能实现 |
 | 2026-04-13 | 新增 A-MEM 运行时常量（相似度阈值、候选数、检索限制）；更新 consolidation 字段命名和代码位置 | A-MEM 实现 + 代码审查 |
 | 2026-04-13 | 新增记忆整合约束（consolidation_threshold、retention_window、整合范围） | 记忆系统重构 |
 | 2026-04-09 | 工具调用从串行改为并行执行；新增 futures 0.3 依赖；补充技术选型决策 | 并行化迭代 |

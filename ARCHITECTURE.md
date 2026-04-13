@@ -27,7 +27,11 @@ graph TD
     ChatAgent --> PromptBuilder[PromptBuilder<br/>提示词组装]
 
     ToolRouter --> BuiltinTools[BuiltinToolRegistry<br/>内置工具]
+    ToolRouter --> SkillTool[SkillTool<br/>LLM 路由技能]
     ToolRouter --> McpManager[McpManager<br/>MCP 工具管理]
+
+    SkillTool --> SkillRegistry[SkillRegistry<br/>技能注册表]
+    SkillRegistry --> SkillLoader[SkillLoader<br/>从 skills/ 加载]
 
     LlmApi --> GenAi[GenAiProvider<br/>genai 库适配]
     LlmApi --> Venus[VenusProvider<br/>HTTP 原始请求]
@@ -66,6 +70,7 @@ graph TD
 | logging | 结构化日志（双通道、轮转） | tracing, tracing-appender | `src/logging.rs` | [core](docs/services/core/overview.md) |
 | agent | Agent 模式抽象 + ChatAgent + ToolRouter | async-trait | `src/agent/` | [agent](docs/services/agent/overview.md) |
 | tools | 内置工具 trait + 文件系统工具 | tokio::fs, chrono | `src/tools/` | [agent](docs/services/agent/overview.md) |
+| skill | Skill 加载 + 注册 + LLM 路由 | — | `src/skill/` | [agent](docs/services/agent/overview.md) |
 | cli | REPL 交互、命令解析、终端渲染 | rustyline, crossterm, termimad | `src/cli/` | [cli](docs/services/cli/overview.md) |
 | llm | LLM Provider 抽象 + 双 Provider 实现 | genai, reqwest | `src/llm/` | [llm](docs/services/llm/overview.md) |
 | mcp | MCP 协议客户端 + 工具管理 | tokio, serde_json | `src/mcp/` | [mcp](docs/services/mcp/overview.md) |
@@ -127,7 +132,8 @@ main()
   5. llm::create_provider()  → 选择 GenAi 或 Venus
   6. ChatAgent::new()        → 创建 Agent + 构建系统提示
   7. agent.attach_mcp()      → 附加 MCP + 重建提示词
-  8. cli::run_interactive()  → 进入 REPL 主循环
+  8. agent.load_skills()     → 从 ./skills/ 加载技能 + 重建提示词
+  9. cli::run_interactive()  → 进入 REPL 主循环
 ```
 
 ## 技术栈概览
@@ -152,3 +158,4 @@ main()
 7. **内置工具始终可用**：文件系统等基础工具通过 `BuiltinToolRegistry` 内置，无需外部 MCP 配置即可使用。工具路由优先级：内置工具 > MCP 工具。
 8. **工具调用并行执行**：同一轮中的多个工具调用通过 `futures::future::join_all` 并行执行，总耗时 = max(各工具耗时)。
 9. **工具执行可观测性**：通过 `ToolEvent` 回调机制，CLI 层实时渲染工具执行进度（开始/完成/成功/失败）。
+10. **Skill 即工具（LLM 路由）**：Skill 不静态注入 system prompt（浪费 token），而是作为 `use_skill` 内置工具暴露给 LLM，由 LLM 根据 skill 描述自主决定何时调用。Skill 通过 `BuiltinTool` trait 适配器模式集成，ToolRouter 无需特殊分支。

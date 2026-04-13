@@ -1,7 +1,7 @@
 # Agent — Agent 模式抽象、ChatAgent 与 ToolRouter
 
 > 最后更新：2026-04-13
-> 来源：存量代码分析 + 代码审查改进 + 工具事件/并行化迭代 + 记忆系统重构
+> 来源：存量代码分析 + 代码审查改进 + 工具事件/并行化迭代 + 记忆系统重构 + Skill 功能实现
 
 ## 1. 模块概述
 
@@ -158,9 +158,85 @@ tool_call → ToolRouter.execute()
 
 ---
 
+## 5. Skill 系统 — LLM 路由的技能加载
+
+> 📍 **代码位置**：`src/skill/`
+
+### 概述
+
+Skill 系统允许用户通过 Markdown 文件定义领域专用指令，由 LLM 在运行时自主决定何时调用。与传统的 prompt 注入方式不同，Skill 不会静态注入到 system prompt 中（避免浪费 token），而是作为 `use_skill` 内置工具暴露给 LLM。
+
+### 目录结构约定
+
+```text
+skills/                      # 当前工作目录下
+├── code-review/
+│   └── SKILL.md             # 入口文件（必须）
+├── sql-expert/
+│   ├── SKILL.md
+│   └── examples.sql         # 可选资源文件
+└── skill-creator/
+    └── SKILL.md
+```
+
+- 每个 skill 是一个**子目录**，目录名即 skill 名称（kebab-case）
+- 子目录中必须包含 `SKILL.md` 作为入口文件
+- `SKILL.md` 支持 YAML front-matter（`description:` 字段）或简单 heading 两种格式
+- 没有 `SKILL.md` 的子目录被静默跳过
+
+### 模块组成
+
+| 文件 | 职责 |
+|------|------|
+| `skill/mod.rs` | 模块入口，定义 `SkillInfo`、`SkillDefinition` 数据结构 |
+| `skill/loader.rs` | 从文件系统扫描子目录并加载 `SKILL.md` |
+| `skill/registry.rs` | 管理所有 skill，生成 `use_skill` 工具定义，提供 `SkillTool` 适配器 |
+
+### LLM 路由机制
+
+```
+启动时: skills/ → SkillLoader → SkillRegistry → SkillTool(BuiltinTool) → BuiltinToolRegistry
+
+运行时: 用户输入 → LLM 看到 use_skill 工具（含所有 skill 名称和描述）
+         → LLM 自主决定调用 use_skill(name="code-review")
+         → ToolRouter → BuiltinToolRegistry → SkillTool.execute()
+         → SkillRegistry.execute_skill() → 返回 SKILL.md 的 instructions
+         → LLM 根据 instructions 完成任务
+```
+
+**关键设计**：`SkillTool` 实现了 `BuiltinTool` trait，作为 `SkillRegistry` 的适配器注册到 `BuiltinToolRegistry` 中。这样 `ToolRouter.execute()` 无需任何特殊分支——skill 调用和普通内置工具调用走完全相同的路径。[置信度：高]
+
+### SkillTool 适配器
+
+> 📍 **代码位置**：`src/skill/registry.rs`
+
+`SkillTool` 通过 `Arc<SkillRegistry>` 共享 registry 引用，实现 `BuiltinTool` trait 的 4 个方法。特别地，它覆写了 `to_openai_json()` 方法，委托给 `SkillRegistry::build_tool_definition()` 生成包含所有 skill 名称和描述的富描述文本，使 LLM 能做出准确的路由决策。
+
+### AgentMode Trait 扩展
+
+`AgentMode` trait 新增了两个默认方法：
+
+```rust
+fn skill_infos(&self) -> Vec<SkillInfo> { vec![] }
+fn skill_count(&self) -> usize { 0 }
+```
+
+`ChatAgent` 覆写这两个方法，委托给 `ToolRouter.skill_registry()`。CLI 层通过这些方法渲染 `/skills` 命令输出和启动 banner 中的 skill 数量。
+
+### 优雅降级
+
+- `skills/` 目录不存在 → 静默跳过（debug 日志）
+- `skills/` 不是目录 → warn 日志并跳过
+- 子目录无 `SKILL.md` → 静默跳过
+- `SKILL.md` 加载失败 → warn 日志并跳过该 skill，继续加载其他 skill
+- 无 skill 加载成功 → 不注册 `use_skill` 工具，不影响正常使用
+
+---
+
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-13 | 新增 Skill 系统章节（LLM 路由、SkillTool 适配器、AgentMode 扩展、优雅降级） | Skill 功能实现 |
 | 2026-04-09 | 工具调用改为并行执行（futures::join_all）；新增 ToolEvent 回调机制；AgentMode::chat() 签名增加 on_tool_event 参数 | 工具事件/并行化迭代 |
 | 2026-04-08 | 新增 ToolRouter、BuiltinTool 架构；更新字段命名和工具调用流程 | 代码审查改进 |
 | 2026-04-08 | 初始创建 | 存量代码分析 Phase A |

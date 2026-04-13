@@ -1,4 +1,4 @@
-use crate::llm::ToolInfo;
+use crate::tools::ToolInfo;
 
 /// Default agent name used when no custom name is configured.
 const DEFAULT_AGENT_NAME: &str = "Daedalus";
@@ -67,7 +67,7 @@ mod tests {
             ToolInfo {
                 name: "web_search".to_string(),
                 description: "Search the web".to_string(),
-                server: "search-server".to_string(),
+                source: "search-server".to_string(),
             },
         ];
         let section = build_role_section(None, &tools);

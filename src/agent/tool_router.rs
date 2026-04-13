@@ -1,8 +1,12 @@
+use std::path::Path;
+use std::sync::Arc;
+
 use anyhow::Result;
 
-use crate::llm::{ToolCall, ToolInfo, ToolResponse};
+use crate::llm::{ToolCall, ToolResponse};
 use crate::mcp::McpManager;
-use crate::tools::BuiltinToolRegistry;
+use crate::skill::SkillRegistry;
+use crate::tools::{BuiltinToolRegistry, ToolInfo};
 
 /// Unified tool router — dispatches tool calls to built-in tools or MCP servers.
 ///
@@ -12,12 +16,14 @@ use crate::tools::BuiltinToolRegistry;
 /// - Routing tool calls to the correct handler
 /// - Generating tool descriptions for CLI display
 ///
-/// Routing priority: built-in tools first, then MCP servers.
+/// Routing priority: built-in tools first (including skills), then MCP servers.
 pub struct ToolRouter {
-    /// Built-in tools (filesystem, etc.) — always available.
+    /// Built-in tools (filesystem, skills, etc.) — always available.
     builtin: BuiltinToolRegistry,
     /// Optional MCP manager for external tool servers.
     mcp: Option<McpManager>,
+    /// Skill registry (shared via Arc so SkillTool can reference it).
+    skills: Arc<SkillRegistry>,
 }
 
 impl ToolRouter {
@@ -26,7 +32,35 @@ impl ToolRouter {
         Self {
             builtin: BuiltinToolRegistry::new(),
             mcp: None,
+            skills: Arc::new(SkillRegistry::new()),
         }
+    }
+
+    /// Load skills from a directory and register them as a built-in tool.
+    ///
+    /// Skills are exposed to the LLM as a single `use_skill` tool.
+    /// The LLM decides which skill to invoke based on the skill
+    /// descriptions embedded in the tool definition.
+    ///
+    /// Internally, this creates a new `SkillRegistry`, wraps it in `Arc`,
+    /// and registers a `SkillTool` adapter into the `BuiltinToolRegistry`.
+    pub fn load_skills(&mut self, dir: &Path) -> Result<usize> {
+        let mut registry = SkillRegistry::new();
+        let count = registry.load_from_dir(dir)?;
+        if count > 0 {
+            let registry = Arc::new(registry);
+            // Register the SkillTool as a regular built-in tool
+            if let Some(skill_tool) = registry.build_skill_tool() {
+                self.builtin.register_tool(skill_tool);
+            }
+            self.skills = registry;
+            tracing::info!(
+                skills = count,
+                path = %dir.display(),
+                "Skills loaded into ToolRouter as built-in tool"
+            );
+        }
+        Ok(count)
     }
 
     /// Attach an MCP manager to enable external tool calling.
@@ -52,7 +86,7 @@ impl ToolRouter {
 
     /// Build tool definitions in OpenAI function-calling JSON format.
     ///
-    /// Combines built-in and MCP tool definitions into a single list.
+    /// Combines built-in (including skill) and MCP tool definitions into a single list.
     pub fn build_tool_definitions(&self) -> Vec<serde_json::Value> {
         let mut definitions = self.builtin.build_tool_definitions();
         if let Some(ref mcp) = self.mcp {
@@ -75,9 +109,14 @@ impl ToolRouter {
         descriptions
     }
 
+    /// Return the skill registry reference (for CLI display).
+    pub fn skill_registry(&self) -> &SkillRegistry {
+        &self.skills
+    }
+
     /// Execute a single tool call, routing to the correct handler.
     ///
-    /// Routing priority: built-in tools first, then MCP servers.
+    /// Routing priority: built-in tools first (including skills), then MCP servers.
     /// Always returns a `ToolResponse` (never fails at the routing level;
     /// errors are captured in the response content).
     pub async fn execute(&self, tool_call: &ToolCall) -> ToolResponse {
@@ -87,7 +126,7 @@ impl ToolRouter {
             "Executing tool call"
         );
 
-        // Try built-in tools first
+        // Try built-in tools first (includes skill tool)
         if self.builtin.has_tool(&tool_call.function_name) {
             return self.execute_and_log(
                 &tool_call.call_id,

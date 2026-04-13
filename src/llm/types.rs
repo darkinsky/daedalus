@@ -79,6 +79,30 @@ impl VenusExtensions {
             reasoning_effort: overrides.reasoning_effort.clone().or(self.reasoning_effort.clone()),
         }
     }
+
+    /// Load Venus extension parameters from environment variables.
+    ///
+    /// Reads: `DAEDALUS_THINKING_ENABLED`, `DAEDALUS_THINKING_TOKENS`,
+    ///        `DAEDALUS_REASONING_EFFORT`.
+    pub fn from_env() -> Self {
+        let thinking_enabled = std::env::var("DAEDALUS_THINKING_ENABLED")
+            .ok()
+            .map(|v| v.to_lowercase() == "true");
+
+        let thinking_tokens = std::env::var("DAEDALUS_THINKING_TOKENS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok());
+
+        let reasoning_effort = std::env::var("DAEDALUS_REASONING_EFFORT")
+            .ok()
+            .and_then(|v| v.parse::<ReasoningEffort>().ok());
+
+        Self {
+            thinking_enabled,
+            thinking_tokens,
+            reasoning_effort,
+        }
+    }
 }
 
 /// Configuration for an LLM provider.
@@ -95,6 +119,31 @@ pub struct LlmConfig {
     pub adapter_kind: Option<String>,
     /// Venus API proxy advanced options (thinking, reasoning_effort).
     pub venus: VenusExtensions,
+}
+
+impl LlmConfig {
+    /// Load LLM configuration from environment variables.
+    ///
+    /// Required: `OPENAI_API_KEY`
+    /// Optional: `DAEDALUS_MODEL`, `OPENAI_BASE_URL`, `DAEDALUS_ADAPTER_KIND`,
+    ///           and Venus extension env vars.
+    pub fn from_env() -> anyhow::Result<Self> {
+        let api_key = std::env::var("OPENAI_API_KEY")
+            .map_err(|_| anyhow::anyhow!("OPENAI_API_KEY environment variable is required"))?;
+
+        let model = std::env::var("DAEDALUS_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
+        let api_base = std::env::var("OPENAI_BASE_URL").ok();
+        let adapter_kind = std::env::var("DAEDALUS_ADAPTER_KIND").ok();
+        let venus = VenusExtensions::from_env();
+
+        Ok(Self {
+            api_key,
+            model,
+            api_base,
+            adapter_kind,
+            venus,
+        })
+    }
 }
 
 /// A single message in a conversation.
@@ -257,14 +306,14 @@ impl TokenUsage {
     /// Each field is summed independently. If both sides are `None`, the
     /// result stays `None`; otherwise the values are added.
     pub fn accumulate(&mut self, other: &TokenUsage) {
-        self.prompt_tokens = add_optional_tokens(self.prompt_tokens, other.prompt_tokens);
-        self.completion_tokens = add_optional_tokens(self.completion_tokens, other.completion_tokens);
-        self.total_tokens = add_optional_tokens(self.total_tokens, other.total_tokens);
+        self.prompt_tokens = sum_optional(self.prompt_tokens, other.prompt_tokens);
+        self.completion_tokens = sum_optional(self.completion_tokens, other.completion_tokens);
+        self.total_tokens = sum_optional(self.total_tokens, other.total_tokens);
     }
 }
 
-/// Add two optional token counts, returning `None` only if both are `None`.
-fn add_optional_tokens(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+/// Sum two optional token counts, returning `None` only if both are `None`.
+fn sum_optional(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     match (a, b) {
         (Some(x), Some(y)) => Some(x + y),
         (Some(x), None) | (None, Some(x)) => Some(x),

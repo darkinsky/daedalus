@@ -1,6 +1,6 @@
 pub mod sections;
 
-use crate::llm::ToolInfo;
+use crate::tools::ToolInfo;
 
 use sections::context::build_context_section;
 use sections::reminders::build_reminders_section;
@@ -167,7 +167,7 @@ mod tests {
             ToolInfo {
                 name: "search".to_string(),
                 description: "Web search".to_string(),
-                server: "brave".to_string(),
+                source: "brave".to_string(),
             },
         ];
         let prompt = PromptBuilder::new()

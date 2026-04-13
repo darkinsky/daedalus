@@ -18,7 +18,7 @@ pub struct ToolInfo {
     /// Human-readable description.
     pub description: String,
     /// Which source provides this tool (e.g., "built-in", MCP server name).
-    pub server: String,
+    pub source: String,
 }
 
 /// A built-in tool that can be called directly without an external MCP server.
@@ -79,6 +79,18 @@ impl BuiltinToolRegistry {
         Self { tools }
     }
 
+    /// Register an additional built-in tool dynamically.
+    ///
+    /// This is used to add tools at runtime (e.g., the `use_skill` tool
+    /// after skills are loaded from disk).
+    pub fn register_tool(&mut self, tool: Box<dyn BuiltinTool>) {
+        tracing::info!(
+            tool = tool.name(),
+            "Registered dynamic built-in tool"
+        );
+        self.tools.push(tool);
+    }
+
     /// Return the total number of built-in tools.
     pub fn tool_count(&self) -> usize {
         self.tools.len()
@@ -96,7 +108,7 @@ impl BuiltinToolRegistry {
             .map(|t| ToolInfo {
                 name: t.name().to_string(),
                 description: t.description().to_string(),
-                server: "built-in".to_string(),
+                source: "built-in".to_string(),
             })
             .collect()
     }

@@ -138,10 +138,6 @@ impl McpClient {
         params: Option<serde_json::Value>,
         timeout: Duration,
     ) -> Result<JsonRpcResponse> {
-        // Check if the child process is still running
-        // (try_wait is not available through &self, so we skip for now
-        //  and rely on the write/read errors to detect dead processes)
-
         let id = self.request_id_counter.fetch_add(1, Ordering::SeqCst);
         let request = JsonRpcRequest::new(id, method, params);
 
