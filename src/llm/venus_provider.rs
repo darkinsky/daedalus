@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use super::{
     ChatMessage, ChatOptions, ChatResponse, LlmApi, LlmConfig,
-    TokenUsage, ToolCall, ToolResponse, VenusExtensions,
+    TokenUsage, ToolCall, ToolRound, VenusExtensions,
 };
 
 /// LLM provider that directly calls the Venus API proxy via HTTP.
@@ -54,7 +54,7 @@ impl VenusProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[Value],
-        tool_history: &[(Vec<ToolCall>, Vec<ToolResponse>)],
+        tool_history: &[ToolRound],
         options: Option<&ChatOptions>,
     ) -> Value {
         // Build messages array
@@ -69,9 +69,9 @@ impl VenusProvider {
             .collect();
 
         // Replay tool history
-        for (calls, responses) in tool_history {
+        for round in tool_history {
             // Assistant message with tool_calls
-            let tool_calls_json: Vec<Value> = calls
+            let tool_calls_json: Vec<Value> = round.calls
                 .iter()
                 .map(|tc| {
                     json!({
@@ -92,7 +92,7 @@ impl VenusProvider {
             }));
 
             // Tool response messages
-            for resp in responses {
+            for resp in &round.responses {
                 msg_array.push(json!({
                     "role": "tool",
                     "tool_call_id": resp.call_id,
@@ -337,7 +337,7 @@ impl LlmApi for VenusProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[Value],
-        tool_history: &[(Vec<ToolCall>, Vec<ToolResponse>)],
+        tool_history: &[ToolRound],
         options: Option<&ChatOptions>,
     ) -> Result<ChatResponse> {
         let body = self.build_request_body(messages, tools, tool_history, options);
@@ -361,7 +361,7 @@ impl LlmApi for VenusProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::ReasoningEffort;
+    use crate::llm::{ReasoningEffort, ToolResponse};
 
     #[test]
     fn test_extract_think_content() {
@@ -550,7 +550,10 @@ mod tests {
             arguments: json!({"city": "Beijing"}),
         }];
         let tool_responses = vec![ToolResponse::new("call_1", "Sunny, 25°C")];
-        let tool_history = vec![(tool_calls, tool_responses)];
+        let tool_history = vec![ToolRound {
+            calls: tool_calls,
+            responses: tool_responses,
+        }];
 
         let body = provider.build_request_body(&messages, &[], &tool_history, None);
         let msgs = body["messages"].as_array().unwrap();

@@ -1,10 +1,16 @@
+mod config;
+mod consolidation;
+mod history;
+mod long_term;
+
+pub use config::SlidingWindowConfig;
+pub use consolidation::ConsolidationResult;
+pub use history::HistoryEntry;
+pub use long_term::LongTermMemory;
+
 use crate::llm::ChatMessage;
 
-use super::Memory;
-use super::config::SlidingWindowConfig;
-use super::consolidation::ConsolidationResult;
-use super::history::HistoryEntry;
-use super::long_term::LongTermMemory;
+use super::{Memory, PersistentState};
 
 /// Sliding window memory with dual-layer consolidation.
 ///
@@ -24,7 +30,7 @@ use super::long_term::LongTermMemory;
 /// a background task). Consolidation:
 /// - Extracts key facts → updates long-term memory
 /// - Generates a summary → appends to history log
-/// - Advances the `last_consolidated` cursor
+/// - Advances the `consolidation_cursor`
 ///
 /// The retention window ensures recent messages are never consolidated,
 /// preserving immediate context.
@@ -38,8 +44,8 @@ pub struct SlidingWindowMemory {
     /// History event log — append-only, searched on demand.
     history_log: Vec<HistoryEntry>,
     /// Index of the first unconsolidated message in `messages`.
-    /// Messages before this index have already been consolidated.
-    last_consolidated: usize,
+    /// All messages before this index have already been consolidated.
+    consolidation_cursor: usize,
     /// Configuration parameters.
     config: SlidingWindowConfig,
 }
@@ -53,7 +59,7 @@ impl SlidingWindowMemory {
             messages: Vec::new(),
             long_term_memory: LongTermMemory::default(),
             history_log: Vec::new(),
-            last_consolidated: 0,
+            consolidation_cursor: 0,
             config,
         }
     }
@@ -121,75 +127,44 @@ impl SlidingWindowMemory {
 
     /// Return the number of unconsolidated messages.
     pub fn unconsolidated_count(&self) -> usize {
-        self.messages.len().saturating_sub(self.last_consolidated)
+        self.messages.len().saturating_sub(self.consolidation_cursor)
     }
 
     /// Get the messages that should be consolidated.
     ///
-    /// Returns messages from `last_consolidated` up to (but not including)
+    /// Returns messages from `consolidation_cursor` up to (but not including)
     /// the retention window. Returns empty if there's nothing to consolidate.
     pub fn messages_to_consolidate(&self) -> &[ChatMessage] {
         let total = self.messages.len();
         let retain_start = total.saturating_sub(self.config.retention_window);
-        if self.last_consolidated >= retain_start {
-            // Nothing to consolidate — all unconsolidated messages are
-            // within the retention window.
+        if self.consolidation_cursor >= retain_start {
             return &[];
         }
-        &self.messages[self.last_consolidated..retain_start]
+        &self.messages[self.consolidation_cursor..retain_start]
     }
 
     /// Get all unconsolidated messages (for full archive, e.g., `/new` command).
     pub fn all_unconsolidated_messages(&self) -> &[ChatMessage] {
-        if self.last_consolidated >= self.messages.len() {
+        if self.consolidation_cursor >= self.messages.len() {
             return &[];
         }
-        &self.messages[self.last_consolidated..]
+        &self.messages[self.consolidation_cursor..]
     }
 
     /// Apply a consolidation result: update long-term memory, append history
     /// entry, and advance the consolidation cursor.
-    ///
-    /// `consolidated_up_to` is the index in `messages` up to which messages
-    /// were consolidated (exclusive). Typically this is
-    /// `messages.len() - retention_window`.
     pub fn apply_consolidation(&mut self, result: ConsolidationResult, consolidated_up_to: usize) {
-        // Update long-term memory (full replacement).
         self.long_term_memory.replace_with(result.memory_update);
-        // Append history entry.
         self.history_log.push(result.history_entry);
-        // Advance cursor.
-        self.last_consolidated = consolidated_up_to;
+        self.consolidation_cursor = consolidated_up_to;
     }
 
     /// Apply a full archive consolidation (e.g., `/new` command).
-    ///
-    /// Consolidates all messages, then clears the conversation history.
     pub fn apply_full_archive(&mut self, result: ConsolidationResult) {
         self.long_term_memory.replace_with(result.memory_update);
         self.history_log.push(result.history_entry);
         self.messages.clear();
-        self.last_consolidated = 0;
-    }
-
-    /// Extract long-term memory and history log for migration to a new session.
-    ///
-    /// Returns `(long_term_memory, history_log)`. After calling this, the
-    /// current memory's long-term memory and history log are left empty.
-    pub fn take_persistent_state(&mut self) -> (LongTermMemory, Vec<HistoryEntry>) {
-        let ltm = std::mem::take(&mut self.long_term_memory);
-        let log = std::mem::take(&mut self.history_log);
-        (ltm, log)
-    }
-
-    /// Restore long-term memory and history log from a previous session.
-    pub fn restore_persistent_state(
-        &mut self,
-        long_term_memory: LongTermMemory,
-        history_log: Vec<HistoryEntry>,
-    ) {
-        self.long_term_memory = long_term_memory;
-        self.history_log = history_log;
+        self.consolidation_cursor = 0;
     }
 
     // ── Internal helpers ──
@@ -240,7 +215,7 @@ impl Memory for SlidingWindowMemory {
 
     fn clear(&mut self) {
         self.messages.clear();
-        self.last_consolidated = 0;
+        self.consolidation_cursor = 0;
     }
 
     fn should_consolidate(&self) -> bool {
@@ -255,12 +230,43 @@ impl Memory for SlidingWindowMemory {
         "sliding_window"
     }
 
+    fn take_persistent_state(&mut self) -> Option<PersistentState> {
+        let ltm = std::mem::take(&mut self.long_term_memory);
+        let log = std::mem::take(&mut self.history_log);
+        Some(PersistentState::new((ltm, log)))
+    }
+
+    fn restore_persistent_state(&mut self, state: PersistentState) {
+        if let Ok((ltm, log)) = state.downcast::<(LongTermMemory, Vec<HistoryEntry>)>() {
+            self.long_term_memory = ltm;
+            self.history_log = log;
+        }
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+}
+
+// ── Factory ──
+
+/// Factory for creating `SlidingWindowMemory` instances.
+///
+/// This is the default memory factory used by `ChatAgent`. It creates
+/// sliding window memories with the default consolidation settings.
+pub struct SlidingWindowFactory;
+
+impl super::MemoryFactory for SlidingWindowFactory {
+    fn create_memory(&self, system_prompt: &str) -> Box<dyn Memory> {
+        Box::new(SlidingWindowMemory::with_defaults(system_prompt))
+    }
+
+    fn strategy_name(&self) -> &str {
+        "sliding_window"
     }
 }
 
@@ -339,7 +345,7 @@ mod tests {
         memory.add_assistant_message("A1");
 
         let messages = memory.build_messages();
-        assert_eq!(messages.len(), 3); // system + 2
+        assert_eq!(messages.len(), 3);
     }
 
     #[test]
@@ -351,9 +357,8 @@ mod tests {
             memory.add_assistant_message(&format!("A{}", i));
         }
 
-        // 10 messages total, window = 4, so only last 4 + system
         let messages = memory.build_messages();
-        assert_eq!(messages.len(), 5); // system + 4
+        assert_eq!(messages.len(), 5);
         assert_eq!(messages[1].content, "Q3");
         assert_eq!(messages[4].content, "A4");
     }
@@ -367,7 +372,7 @@ mod tests {
         }
 
         let messages = memory.build_messages();
-        assert_eq!(messages.len(), 21); // system + 20
+        assert_eq!(messages.len(), 21);
     }
 
     // ── Long-term memory ──
@@ -375,7 +380,7 @@ mod tests {
     #[test]
     fn test_long_term_memory_injection() {
         let mut memory = SlidingWindowMemory::unlimited("You are helpful.");
-        memory.long_term_memory_mut().user_preferences.push("Prefers Rust".to_string());
+memory.long_term_memory_mut().user_preferences_mut().push("Prefers Rust".to_string());
         memory.add_user_message("Hello");
 
         let messages = memory.build_messages();
@@ -395,8 +400,8 @@ mod tests {
     #[test]
     fn test_long_term_memory_markdown() {
         let mut ltm = LongTermMemory::default();
-        ltm.user_preferences.push("Likes concise answers".to_string());
-        ltm.project_context.push("Working on Daedalus".to_string());
+        ltm.user_preferences_mut().push("Likes concise answers".to_string());
+        ltm.project_context_mut().push("Working on Daedalus".to_string());
 
         let md = ltm.to_markdown().unwrap();
         assert!(md.contains("### User Preferences"));
@@ -415,15 +420,15 @@ mod tests {
     #[test]
     fn test_long_term_memory_replace() {
         let mut ltm = LongTermMemory::default();
-        ltm.user_preferences.push("old fact".to_string());
+        ltm.user_preferences_mut().push("old fact".to_string());
 
         let mut new_ltm = LongTermMemory::default();
-        new_ltm.user_preferences.push("new fact".to_string());
-        new_ltm.important_notes.push("note".to_string());
+        new_ltm.user_preferences_mut().push("new fact".to_string());
+        new_ltm.important_notes_mut().push("note".to_string());
 
         ltm.replace_with(new_ltm);
-        assert_eq!(ltm.user_preferences, vec!["new fact"]);
-        assert_eq!(ltm.important_notes, vec!["note"]);
+        assert_eq!(ltm.user_preferences(), &["new fact"]);
+        assert_eq!(ltm.important_notes(), &["note"]);
     }
 
     // ── History log ──
@@ -486,7 +491,6 @@ mod tests {
             vec!["refactoring".to_string(), "architecture".to_string()],
         ));
 
-        // Search by keyword, not in summary
         let results = memory.search_history("refactoring", None);
         assert_eq!(results.len(), 1);
     }
@@ -534,11 +538,11 @@ mod tests {
 
         memory.add_user_message("Q1");
         memory.add_assistant_message("A1");
-        assert!(!memory.should_consolidate()); // 2 < 4
+        assert!(!memory.should_consolidate());
 
         memory.add_user_message("Q2");
         memory.add_assistant_message("A2");
-        assert!(memory.should_consolidate()); // 4 >= 4
+        assert!(memory.should_consolidate());
     }
 
     #[test]
@@ -550,14 +554,11 @@ mod tests {
         };
         let mut memory = SlidingWindowMemory::new("System", config);
 
-        // Add 6 messages
         for i in 0..3 {
             memory.add_user_message(&format!("Q{}", i));
             memory.add_assistant_message(&format!("A{}", i));
         }
 
-        // retention_window = 2, so retain last 2 messages (Q2, A2)
-        // consolidate messages 0..4 (Q0, A0, Q1, A1)
         let to_consolidate = memory.messages_to_consolidate();
         assert_eq!(to_consolidate.len(), 4);
         assert_eq!(to_consolidate[0].content, "Q0");
@@ -576,7 +577,6 @@ mod tests {
         memory.add_user_message("Q1");
         memory.add_assistant_message("A1");
 
-        // 2 messages < retention_window(10), nothing to consolidate
         let to_consolidate = memory.messages_to_consolidate();
         assert!(to_consolidate.is_empty());
     }
@@ -595,9 +595,8 @@ mod tests {
             memory.add_assistant_message(&format!("A{}", i));
         }
 
-        // Consolidate messages 0..4
         let mut new_ltm = LongTermMemory::default();
-        new_ltm.user_preferences.push("Extracted fact".to_string());
+        new_ltm.user_preferences_mut().push("Extracted fact".to_string());
 
         let result = ConsolidationResult {
             history_entry: HistoryEntry::new(
@@ -609,18 +608,12 @@ mod tests {
 
         memory.apply_consolidation(result, 4);
 
-        // Verify cursor advanced
-        assert_eq!(memory.last_consolidated, 4);
-        assert_eq!(memory.unconsolidated_count(), 2); // Q2, A2 remain
-
-        // Verify long-term memory updated
-        assert_eq!(memory.long_term_memory().user_preferences, vec!["Extracted fact"]);
-
-        // Verify history log
+        assert_eq!(memory.consolidation_cursor, 4);
+        assert_eq!(memory.unconsolidated_count(), 2);
+        assert_eq!(memory.long_term_memory().user_preferences(), &["Extracted fact"]);
         assert_eq!(memory.history_log().len(), 1);
         assert!(memory.history_log()[0].summary.contains("Q0-Q2"));
 
-        // Verify system prompt now includes long-term memory
         let messages = memory.build_messages();
         assert!(messages[0].content.contains("Extracted fact"));
     }
@@ -632,7 +625,7 @@ mod tests {
         memory.add_assistant_message("A1");
 
         let mut new_ltm = LongTermMemory::default();
-        new_ltm.important_notes.push("Archived note".to_string());
+        new_ltm.important_notes_mut().push("Archived note".to_string());
 
         let result = ConsolidationResult {
             history_entry: HistoryEntry::new(
@@ -644,12 +637,9 @@ mod tests {
 
         memory.apply_full_archive(result);
 
-        // History cleared
         assert_eq!(memory.turn_count(), 0);
-        assert_eq!(memory.last_consolidated, 0);
-
-        // But long-term memory and history log preserved
-        assert_eq!(memory.long_term_memory().important_notes, vec!["Archived note"]);
+        assert_eq!(memory.consolidation_cursor, 0);
+        assert_eq!(memory.long_term_memory().important_notes(), &["Archived note"]);
         assert_eq!(memory.history_log().len(), 1);
     }
 
@@ -658,25 +648,24 @@ mod tests {
     #[test]
     fn test_take_and_restore_persistent_state() {
         let mut old_memory = SlidingWindowMemory::with_defaults("Old System");
-        old_memory.long_term_memory_mut().user_preferences.push("fact1".to_string());
+        old_memory.long_term_memory_mut().user_preferences_mut().push("fact1".to_string());
         old_memory.append_history_entry(HistoryEntry::new(
             "past event".to_string(),
             vec!["event".to_string()],
         ));
 
-        // Take persistent state from old memory
-        let (ltm, log) = old_memory.take_persistent_state();
+        // Use the Memory trait method (returns Option<PersistentState>)
+        let state = Memory::take_persistent_state(&mut old_memory)
+            .expect("SlidingWindowMemory should produce persistent state");
         assert!(old_memory.long_term_memory().is_empty());
         assert!(old_memory.history_log().is_empty());
 
-        // Restore into new memory
         let mut new_memory = SlidingWindowMemory::with_defaults("New System");
-        new_memory.restore_persistent_state(ltm, log);
+        Memory::restore_persistent_state(&mut new_memory, state);
 
-        assert_eq!(new_memory.long_term_memory().user_preferences, vec!["fact1"]);
+        assert_eq!(new_memory.long_term_memory().user_preferences(), &["fact1"]);
         assert_eq!(new_memory.history_log().len(), 1);
 
-        // New system prompt includes migrated long-term memory
         let messages = new_memory.build_messages();
         assert!(messages[0].content.contains("New System"));
         assert!(messages[0].content.contains("fact1"));
@@ -702,7 +691,7 @@ mod tests {
     #[test]
     fn test_clear_preserves_long_term_memory() {
         let mut memory = SlidingWindowMemory::with_defaults("System");
-        memory.long_term_memory_mut().user_preferences.push("fact".to_string());
+        memory.long_term_memory_mut().user_preferences_mut().push("fact".to_string());
         memory.append_history_entry(HistoryEntry::new(
             "past event".to_string(),
             vec!["event".to_string()],
@@ -711,7 +700,6 @@ mod tests {
         memory.add_user_message("Hello");
         memory.clear();
 
-        // Long-term memory and history log survive clear
         assert!(!memory.long_term_memory().is_empty());
         assert_eq!(memory.history_log().len(), 1);
     }
@@ -727,22 +715,18 @@ mod tests {
         };
         let mut memory = SlidingWindowMemory::new("System", config);
 
-        // Add 8 messages (4 turns)
         for i in 0..4 {
             memory.add_user_message(&format!("Q{}", i));
             memory.add_assistant_message(&format!("A{}", i));
         }
 
-        // Should consolidate (8 >= 6)
         assert!(memory.should_consolidate());
 
-        // Messages to consolidate: 0..6 (retain last 2: Q3, A3)
         let to_consolidate = memory.messages_to_consolidate();
         assert_eq!(to_consolidate.len(), 6);
 
-        // Apply consolidation
         let mut new_ltm = LongTermMemory::default();
-        new_ltm.project_context.push("Context from consolidation".to_string());
+        new_ltm.project_context_mut().push("Context from consolidation".to_string());
 
         let result = ConsolidationResult {
             history_entry: HistoryEntry::new(
@@ -753,13 +737,23 @@ mod tests {
         };
         memory.apply_consolidation(result, 6);
 
-        // Window still works: max_messages=4, total=8, show last 4
         let messages = memory.build_messages();
-        assert_eq!(messages.len(), 5); // system + 4
-        // System prompt now includes long-term memory
+        assert_eq!(messages.len(), 5);
         assert!(messages[0].content.contains("Context from consolidation"));
-        // Last 4 messages in window
         assert_eq!(messages[1].content, "Q2");
         assert_eq!(messages[4].content, "A3");
+    }
+
+    // ── Factory ──
+
+    #[test]
+    fn test_sliding_window_factory() {
+        use crate::memory::MemoryFactory;
+        let factory = SlidingWindowFactory;
+        assert_eq!(factory.strategy_name(), "sliding_window");
+
+        let memory = factory.create_memory("Test prompt");
+        assert_eq!(memory.strategy_name(), "sliding_window");
+        assert_eq!(memory.turn_count(), 0);
     }
 }

@@ -8,18 +8,20 @@
 
 1. **避免语言关键字前缀**：不使用 Rust 关键字作为字段名前缀。例如使用 `function_name` 而非 `fn_name`（`fn` 是 Rust 关键字），使用 `arguments` 而非 `fn_arguments`。
 2. **不过度缩写**：变量名使用完整单词而非缩写。例如 `definitions` 而非 `defs`，`descriptions` 而非 `descs`。
-3. **同一概念统一命名**：同一个概念在不同位置必须使用相同的名称。例如“自定义提示词覆盖”统一为 `prompt_override`，不在不同地方交替使用 `custom_system_prompt` 和 `custom_override`。
+3. **同一概念统一命名**：同一个概念在不同位置必须使用相同的名称。例如"自定义提示词覆盖"统一为 `prompt_override`，不在不同地方交替使用 `custom_system_prompt` 和 `custom_override`。
 4. **方法名反映完整副作用**：如果方法有多个副作用，命名应反映全部行为。例如 `reset_with_updated_prompt()` 而非 `rebuild_prompt()`（因为它还会重置 session）。
 5. **语义精确的方法名**：`has_tools()` 优于 `has_servers()`（有服务器不一定有工具）。方法名应精确表达调用者关心的语义。
 6. **消除同义字段混淆**：当结构体中有语义相近的字段时，命名必须明确区分。例如 `messages`（对话消息列表）vs `history_log`（事件摘要日志），而非都叫 `history`。
 7. **纯函数不作为关联方法**：不依赖 `self` 的纯函数应定义为模块级函数，而非 `impl` 块中的关联方法。放在 `impl` 中会误导读者以为它与实例状态有关。
-
+8. **数量上限字段加 `max_` 前缀**：当字段表示"最大数量"而非"当前数量"时，使用 `max_` 前缀消除歧义。例如 `max_link_candidates` 而非 `link_candidates`（后者可能被理解为"候选链接列表"）。
+9. **游标字段用 `_cursor` 后缀**：当字段表示"当前位置指针"时，使用 `_cursor` 后缀。例如 `consolidation_cursor` 而非 `last_consolidated`（后者的"最后一条已合并"vs"第一条未合并"语义模糊）。
+10. **裸元组替换为命名结构体**：当元组在多个函数签名中传递时，引入命名结构体提升可读性。例如 `ToolRound { calls, responses }` 替代 `(Vec<ToolCall>, Vec<ToolResponse>)`。
 ## 魔法常量提取
 
 1. **硬编码列表提取为常量**：当多个字符串在代码中以列表形式出现时，提取为命名常量。例如 `IGNORED_DIRS: &[&str] = &["node_modules", "target", "__pycache__", ".git"]`。
 2. **截断阈值明确化**：工具调用摘要中的截断长度（参数 200 字符、结果 500 字符）通过独立函数 `truncate_at_char_boundary()` 实现，而非内联硬编码。
-3. **`Option` 替代魔数**：当参数的某个特殊值表示"无限制"或"不适用"时，使用 `Option<T>` 而非魔数约定。例如 `limit: Option<usize>`（`None` = 不限制）优于 `limit: usize`（`0` = 不限制），后者需要读者记住魔数含义。
-
+3. **`Option` 替代魔数**：当参数的某个特殊值表示“无限制”或“不适用”时，使用 `Option<T>` 而非魔数约定。例如 `limit: Option<usize>`（`None` = 不限制）优于 `limit: usize`（`0` = 不限制），后者需要读者记住魔数含义。
+4. **LLM Prompt 模板与业务逻辑分离**：当业务方法内嵌了完整的 LLM prompt 字符串时，应提取为模块级常量（system prompt）和独立的构造函数（user prompt）。这便于调整措辞、支持多语言或 A/B 测试不同 prompt，无需修改核心业务逻辑。
 ## 迭代器与副作用
 
 1. **副作用不用 `map` + `collect`**：当迭代的目的是执行副作用（如发射事件、写日志）而非转换数据时，使用 `for` 循环而非 `map().collect()`。后者是函数式反模式，且常需要 `let _ = result;` 来抑制未使用警告。
@@ -38,7 +40,7 @@
    - SOUL 文件读取失败 → warn + 跳过
    - MCP 配置文件不存在 → 空配置（无 MCP）
    - 日志 filter 解析失败 → 回退默认 filter
-4. **无 panic**：整个代码库没有 `unwrap()` 或 `expect()` 用于可能失败的操作
+4. **无 panic**：整个代码库没有 `unwrap()` 或 `expect()` 用于可能失败的操作。对于逻辑上不可能失败但编译器无法证明的情况（如刚 push 后立即 `last_mut()`），使用 `expect("reason")` 而非裸 `unwrap()`，明确表达安全性假设
 5. **工具错误标记**：MCP 工具报错时加 `[Tool Error]` 前缀让 LLM 区分成功/失败
 
 ## 预留功能标记
@@ -89,6 +91,7 @@
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-13 | 新增：数量上限加 max_ 前缀、游标加 _cursor 后缀、裸元组替换为命名结构体、Prompt 模板分离、expect 替代裸 unwrap 规则 | A-MEM 实现 + 代码审查 |
 | 2026-04-13 | 新增：消除同义字段混淆、纯函数不作为关联方法、Option 替代魔数、副作用不用 map+collect 规则；truncate_for_summary 更名为 truncate_at_char_boundary | 记忆系统重构代码审查 |
 | 2026-04-08 | 新增命名规范、魔法常量提取、注释准确性规则 | 代码审查改进 |
 | 2026-04-08 | 初始创建 | 存量代码分析 Phase A |

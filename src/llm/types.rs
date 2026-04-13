@@ -216,6 +216,19 @@ impl ToolResponse {
     }
 }
 
+/// A single round of tool calls and their corresponding responses.
+///
+/// Replaces the raw `(Vec<ToolCall>, Vec<ToolResponse>)` tuple with a
+/// named struct for better readability at call sites and in function
+/// signatures.
+#[derive(Debug, Clone)]
+pub struct ToolRound {
+    /// Tool calls requested by the LLM in this round.
+    pub calls: Vec<ToolCall>,
+    /// Responses from executing the tool calls, in the same order.
+    pub responses: Vec<ToolResponse>,
+}
+
 /// Response from an LLM chat completion.
 #[derive(Debug, Clone)]
 pub struct ChatResponse {

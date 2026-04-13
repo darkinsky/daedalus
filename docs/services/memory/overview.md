@@ -1,14 +1,16 @@
-# Memory — 双层记忆架构与整合机制
+# Memory — 双层记忆架构 + A-MEM 知识图谱
 
 > 最后更新：2026-04-13
-> 来源：存量代码分析 + 记忆系统重构 + 代码质量审查
+> 来源：存量代码分析 + 记忆系统重构 + 代码质量审查 + A-MEM 实现
 
 ## 1. 模块概述
 
-Memory 模块定义了会话记忆的统一接口（`Memory` trait）和当前唯一的实现 `SlidingWindowMemory`。经过重构，`SlidingWindowMemory` 从简单的滑动窗口升级为 **双层记忆架构**：
+Memory 模块定义了会话记忆的统一接口（`Memory` trait）和两种记忆策略：
 
-- **热数据层（Long-Term Memory）**：结构化的关键事实，自动注入 system prompt，每次 LLM 调用都可见
-- **冷数据层（History Log）**：追加式事件摘要，不自动加载到 LLM 上下文，按需通过关键词搜索
+- **`SlidingWindowMemory`**（已集成）：双层记忆架构，热数据层 + 冷数据层 + 滑动窗口 + 自动整合
+- **`AgenticMemoryStore`**（已实现，待集成）：基于 A-MEM 论文的知识图谱记忆引擎，三阶段生命周期 + 向量检索 + 记忆演化
+
+此外，`src/embedding/` 模块提供了 `Embedding` trait 抽象和 OpenAI 实现，为 A-MEM 的向量检索提供基础设施。
 
 ## 2. Memory Trait
 
@@ -59,12 +61,12 @@ SlidingWindowMemory {
     messages: Vec<ChatMessage>,       // 完整对话消息历史
     long_term: LongTermMemory,        // 热数据：结构化关键事实
     history_log: Vec<HistoryEntry>,   // 冷数据：事件摘要日志
-    last_consolidated: usize,         // 整合游标
+    consolidation_cursor: usize,      // 整合游标
     config: SlidingWindowConfig,      // 窗口与整合配置
 }
 ```
 
-**命名说明**：字段 `messages`（而非 `history`）与 `build_messages()` 和 `windowed_messages()` 语义对齐，避免与 `history_log` 混淆。
+**命名说明**：字段 `messages`（而非 `history`）与 `build_messages()` 和 `windowed_messages()` 语义对齐，避免与 `history_log` 混淆。字段 `consolidation_cursor`（而非 `last_consolidated`）消除了"最后一条已合并"vs"第一条未合并"的歧义——它是一个游标，指向第一条未合并消息的索引。
 
 ### 双层数据流
 
@@ -90,6 +92,109 @@ graph TD
     HL -->|"按需搜索"| SEARCH[search_history]
 ```
 
+## 4. Agentic Memory (A-MEM) — 知识图谱记忆引擎
+
+> 📍 **代码位置**：`src/memory/agentic/`
+> 📄 **论文**：A-MEM (arxiv:2502.12110)
+> ⚠️ **状态**：已实现核心引擎，尚未集成到 ChatAgent 主流程
+
+### 设计动机
+
+SlidingWindowMemory 的双层架构解决了"关键事实不丢失"的问题，但它的知识组织是**扁平的**——长期记忆只是分类列表，缺乏知识之间的关联。A-MEM 引入了**知识图谱**的概念：每条记忆是一个带有丰富元数据的节点（MemoryNote），节点之间通过语义相似性建立双向链接，形成可演化的知识网络。
+
+### 三阶段生命周期
+
+A-MEM 的核心是论文中定义的三阶段记忆生命周期：
+
+```mermaid
+graph LR
+    INPUT[原始内容] --> P1[Phase 1: Note Construction]
+    P1 -->|"LLM 提取元数据"| NOTE[MemoryNote]
+    P1 -->|"Embedding 生成向量"| NOTE
+    NOTE --> P2[Phase 2: Link Generation]
+    P2 -->|"余弦相似度 + LLM 验证"| LINKS[双向链接]
+    LINKS --> P3[Phase 3: Memory Evolution]
+    P3 -->|"LLM 更新关联节点元数据"| EVOLVED[演化后的知识图谱]
+```
+
+1. **Note Construction**：原始内容 → LLM 提取 keywords/tags/context → Embedding 模型生成向量 → 创建 `MemoryNote`
+2. **Link Generation**：余弦相似度检索候选节点 → LLM 验证语义关联 → 建立双向链接
+3. **Memory Evolution**：新链接建立后 → LLM 重新分析关联节点的元数据 → 更新 keywords/tags/context 以反映高阶知识模式
+
+### 模块结构
+
+```
+src/memory/agentic/
+├── mod.rs          # 模块入口，re-export MemoryNote + AgenticMemoryStore
+├── note.rs         # MemoryNote — 原子知识单元（Zettelkasten 风格）
+└── store.rs        # AgenticMemoryStore — 三阶段引擎 + 检索
+src/embedding/
+├── mod.rs          # Embedding trait + cosine_similarity()
+└── openai.rs       # OpenAI text-embedding-3-small 实现
+```
+
+### MemoryNote 结构
+
+每个 note 是一个自包含的知识单元：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | `Uuid` | 唯一标识 |
+| `content` | `String` | 原始内容 |
+| `keywords` | `Vec<String>` | LLM 提取的关键词 |
+| `tags` | `Vec<String>` | LLM 提取的分类标签 |
+| `context` | `String` | LLM 生成的语义描述 |
+| `embedding` | `Vec<f32>` | 向量表示（用于相似度检索） |
+| `linked_notes` | `HashSet<Uuid>` | 双向链接（知识图谱边） |
+| `created_at` / `updated_at` | `DateTime<Local>` | 时间戳 |
+
+### AgenticMemoryStore 配置常量
+
+| 常量 | 默认值 | 说明 |
+|------|--------|------|
+| `DEFAULT_SIMILARITY_THRESHOLD` | 0.5 | 链接候选的最低余弦相似度 |
+| `DEFAULT_MAX_LINK_CANDIDATES` | 5 | 每次链接生成检索的最大候选数 |
+| `DEFAULT_RETRIEVAL_LIMIT` | 5 | 上下文检索返回的最大 note 数 |
+
+### Embedding Trait
+
+> 📍 **代码位置**：`src/embedding/mod.rs`
+
+```rust
+#[async_trait]
+pub trait Embedding: Send + Sync {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>>;
+    async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>>;
+    fn dimensions(&self) -> usize;
+    fn model_name(&self) -> &str;
+}
+```
+
+`embed_batch` 有默认实现（顺序调用 `embed`），支持批量 API 的 Provider 可覆盖以提升性能。`cosine_similarity()` 作为模块级函数提供，用于向量相似度计算。
+
+### Prompt 模板分离
+
+A-MEM 的三个 LLM 交互阶段各有独立的 prompt 模板，从业务逻辑中提取为模块级常量和构造函数：
+
+| 常量/函数 | 用途 |
+|-----------|------|
+| `METADATA_SYSTEM_PROMPT` | 元数据提取的 system prompt |
+| `LINK_VALIDATION_SYSTEM_PROMPT` | 链接验证的 system prompt |
+| `EVOLUTION_SYSTEM_PROMPT` | 记忆演化的 system prompt |
+| `metadata_extraction_prompt()` | 构造元数据提取的 user prompt |
+| `link_validation_prompt()` | 构造链接验证的 user prompt |
+| `evolution_prompt()` | 构造记忆演化的 user prompt |
+
+**设计决策**：将 prompt 模板与业务逻辑分离，便于调整措辞、支持多语言或 A/B 测试不同 prompt，无需修改核心引擎代码。
+
+### 待完成工作
+
+- [ ] 将 `AgenticMemoryStore` 集成到 `ChatAgent` 主流程（作为可选的第三种记忆策略）
+- [ ] 实现持久化存储（当前为纯内存 HashMap）
+- [ ] 考虑将 LLM 编排逻辑从 `AgenticMemoryStore` 中拆分（存储 vs 编排职责分离）
+
+[置信度：高]
+
 ### build_messages() 逻辑
 
 1. 通过 `effective_system_prompt()` 将 `LongTermMemory` 动态注入到 `base_system_prompt` 末尾
@@ -106,12 +211,12 @@ graph TD
 **触发条件**：`unconsolidated_count() >= config.consolidation_threshold`
 
 **整合流程**：
-1. `messages_to_consolidate()` 返回需要整合的消息切片（从 `last_consolidated` 到 `messages.len() - retention_window`）
+1. `messages_to_consolidate()` 返回需要整合的消息切片（从 `consolidation_cursor` 到 `messages.len() - retention_window`）
 2. 外部（Agent 层）调用 LLM 生成 `ConsolidationResult`
 3. `apply_consolidation()` 将结果应用：
    - `history_entry` 追加到 `history_log`（冷数据）
    - `memory_update` 替换 `long_term`（热数据）
-   - 更新 `last_consolidated` 游标
+   - 推进 `consolidation_cursor` 游标
 
 **ConsolidationResult DTO**：
 ```rust

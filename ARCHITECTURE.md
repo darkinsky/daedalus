@@ -37,6 +37,10 @@ graph TD
     SlidingWindow --> LTM[LongTermMemory<br/>热数据层]
     SlidingWindow --> HistoryLog[HistoryLog<br/>冷数据层]
 
+    Memory --> AgenticMem[AgenticMemoryStore<br/>A-MEM 知识图谱]
+    AgenticMem --> EmbeddingTrait{{"dyn Embedding<br/>(向量嵌入)"}}
+    EmbeddingTrait --> OpenAiEmbed[OpenAiEmbedding]
+
     McpManager --> McpClient1[McpClient #1<br/>stdio JSON-RPC]
     McpManager --> McpClient2[McpClient #N<br/>stdio JSON-RPC]
 
@@ -65,7 +69,8 @@ graph TD
 | cli | REPL 交互、命令解析、终端渲染 | rustyline, crossterm, termimad | `src/cli/` | [cli](docs/services/cli/overview.md) |
 | llm | LLM Provider 抽象 + 双 Provider 实现 | genai, reqwest | `src/llm/` | [llm](docs/services/llm/overview.md) |
 | mcp | MCP 协议客户端 + 工具管理 | tokio, serde_json | `src/mcp/` | [mcp](docs/services/mcp/overview.md) |
-| memory | 会话记忆抽象 + 双层记忆引擎 | — | `src/memory/` | [memory](docs/services/memory/overview.md) |
+| memory | 会话记忆抽象 + 双层记忆引擎 + A-MEM 知识图谱 | — | `src/memory/` | [memory](docs/services/memory/overview.md) |
+| embedding | 文本向量嵌入抽象 + OpenAI 实现 | reqwest | `src/embedding/` | [memory](docs/services/memory/overview.md) |
 | prompt | 系统提示词动态组装 | — | `src/prompt/` | [prompt](docs/services/prompt/overview.md) |
 | session | 会话状态管理 | chrono, uuid | `src/session.rs` | [core](docs/services/core/overview.md) |
 
@@ -103,7 +108,7 @@ graph TD
           → 发送所有 ToolCallComplete 事件
           → 发送 RoundComplete 事件
           → 收集 ToolResponse
-          → tool_history.push((calls, responses))
+          → tool_history.push(ToolRound { calls, responses })
           → 继续循环
         → 如果无 tool_calls: 返回最终文本响应
     → memory.add_tool_context(summary)

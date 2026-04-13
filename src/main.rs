@@ -1,6 +1,7 @@
 mod agent;
 mod cli;
 mod config;
+mod embedding;
 mod llm;
 pub mod logging;
 mod mcp;

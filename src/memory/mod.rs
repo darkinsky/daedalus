@@ -1,21 +1,45 @@
-mod config;
-mod consolidation;
-mod history;
-mod long_term;
-mod sliding_window;
+pub mod agentic;
+pub mod sliding_window;
 
 #[allow(unused_imports)]
-pub use {
-    config::SlidingWindowConfig,
-    consolidation::ConsolidationResult,
-    history::HistoryEntry,
-    long_term::LongTermMemory,
+pub use sliding_window::{
+    ConsolidationResult,
+    HistoryEntry,
+    LongTermMemory,
+    SlidingWindowConfig,
+    SlidingWindowFactory,
+    SlidingWindowMemory,
 };
-pub use sliding_window::SlidingWindowMemory;
+#[allow(unused_imports)]
+pub use agentic::{AgenticMemoryStore, MemoryNote};
 
 use std::any::Any;
 
 use crate::llm::ChatMessage;
+
+/// Opaque container for persistent memory state during session migration.
+///
+/// Each memory strategy can define its own persistent state type.
+/// The `Box<dyn Any>` allows type-safe transfer between sessions
+/// without coupling the agent layer to any specific memory implementation.
+pub struct PersistentState(pub(crate) Box<dyn Any + Send>);
+
+impl PersistentState {
+    /// Wrap a value into a persistent state container.
+    pub(crate) fn new<T: Any + Send + 'static>(value: T) -> Self {
+        Self(Box::new(value))
+    }
+
+    /// Attempt to downcast the inner value to a concrete type.
+    ///
+    /// Returns `Ok(T)` on success, or `Err(Self)` if the type doesn't match.
+    pub(crate) fn downcast<T: 'static>(self) -> Result<T, Self> {
+        match self.0.downcast::<T>() {
+            Ok(boxed) => Ok(*boxed),
+            Err(inner) => Err(Self(inner)),
+        }
+    }
+}
 
 /// The Memory trait — unified interface for conversation memory strategies.
 ///
@@ -69,6 +93,24 @@ pub trait Memory: Send + Sync {
     /// Return the memory strategy name (e.g., "sliding_window").
     fn strategy_name(&self) -> &str;
 
+    /// Export persistent state for migration to a new session.
+    ///
+    /// Memory strategies that maintain cross-session state (e.g., long-term
+    /// memory, history logs) should override this to export that state.
+    /// Returns `None` if the strategy has no persistent state to migrate.
+    fn take_persistent_state(&mut self) -> Option<PersistentState> {
+        None
+    }
+
+    /// Import persistent state from a previous session.
+    ///
+    /// Called after `take_persistent_state` on the old session's memory.
+    /// The implementation should downcast the `PersistentState` to its
+    /// expected type and restore the data. Silently ignores incompatible state.
+    fn restore_persistent_state(&mut self, _state: PersistentState) {
+        // Default: ignore — strategies that don't support migration do nothing.
+    }
+
     /// Downcast to a concrete type for advanced operations.
     ///
     /// This enables the agent layer to access strategy-specific features
@@ -77,5 +119,31 @@ pub trait Memory: Send + Sync {
     fn as_any(&self) -> &dyn Any;
 
     /// Downcast to a mutable concrete type for advanced operations.
+    #[allow(dead_code)]
     fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+/// Factory trait for creating `Memory` instances.
+///
+/// The factory pattern decouples `ChatAgent` from specific memory
+/// implementations. Each memory strategy provides its own factory
+/// that knows how to create and configure memory instances.
+///
+/// ## Usage
+///
+/// ```ignore
+/// // Use the default sliding window factory
+/// let factory = SlidingWindowFactory;
+/// let memory = factory.create_memory("You are a helpful assistant.");
+///
+/// // Or create a custom factory
+/// let agent = ChatAgent::with_memory_factory(llm, config, Box::new(factory));
+/// ```
+pub trait MemoryFactory: Send + Sync {
+    /// Create a new memory instance with the given system prompt.
+    fn create_memory(&self, system_prompt: &str) -> Box<dyn Memory>;
+
+    /// Return the strategy name this factory produces (for logging/diagnostics).
+    #[allow(dead_code)]
+    fn strategy_name(&self) -> &str;
 }

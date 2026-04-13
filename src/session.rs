@@ -76,6 +76,7 @@ impl Session {
     /// Downcast the memory to a concrete type (mutable).
     ///
     /// Returns `None` if the underlying memory is not of type `T`.
+    #[allow(dead_code)]
     pub fn memory_as_mut<T: Memory + 'static>(&mut self) -> Option<&mut T> {
         self.memory.as_any_mut().downcast_mut::<T>()
     }

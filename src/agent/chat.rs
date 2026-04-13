@@ -3,22 +3,16 @@ use async_trait::async_trait;
 
 use crate::config::AgentConfig;
 use crate::llm::{
-    ChatMessage, ChatResponse, LlmApi, ToolCall, ToolInfo, ToolResponse,
+    ChatMessage, ChatResponse, LlmApi, ToolInfo, ToolResponse, ToolRound,
     TokenUsage, format_messages_for_log,
 };
 use crate::mcp::McpManager;
-use crate::memory::{Memory, SlidingWindowMemory};
+use crate::memory::{MemoryFactory, SlidingWindowFactory};
 use crate::prompt::PromptBuilder;
 use crate::session::Session;
 
 use super::{AgentMode, ToolEvent, ToolEventCallback};
 use super::tool_router::ToolRouter;
-
-/// A factory function type for creating memory instances.
-///
-/// This allows `ChatAgent` to create new memory instances (e.g., when starting
-/// a new session) without being coupled to a specific memory implementation.
-pub type MemoryFactory = Box<dyn Fn(&str) -> Box<dyn Memory> + Send + Sync>;
 
 /// Maximum number of tool-calling rounds per user message.
 ///
@@ -72,7 +66,7 @@ pub struct ChatAgent {
     /// System prompt (kept for creating new sessions).
     system_prompt: String,
     /// Factory for creating memory instances (decoupled from concrete type).
-    memory_factory: MemoryFactory,
+    memory_factory: Box<dyn MemoryFactory>,
     /// Unified tool router — handles both built-in and MCP tools.
     tool_router: ToolRouter,
     /// Custom system prompt override (from DAEDALUS_SYSTEM_PROMPT env var).
@@ -88,12 +82,12 @@ impl ChatAgent {
     /// Create a new chat agent with the given LLM provider, configuration,
     /// and memory factory.
     ///
-    /// The `memory_factory` takes a system prompt and returns a boxed `Memory`.
+    /// The `memory_factory` creates memory instances for new sessions.
     /// This decouples `ChatAgent` from any specific memory implementation.
     pub fn with_memory_factory(
         llm: Box<dyn LlmApi>,
         config: &AgentConfig,
-        memory_factory: MemoryFactory,
+        memory_factory: Box<dyn MemoryFactory>,
     ) -> Self {
         let prompt_override = if config.is_custom_prompt {
             Some(config.system_prompt.clone())
@@ -108,7 +102,7 @@ impl ChatAgent {
             &[],
         );
 
-        let memory = memory_factory(&system_prompt);
+        let memory = memory_factory.create_memory(&system_prompt);
         let session = Session::new(memory);
 
         tracing::info!(
@@ -135,10 +129,7 @@ impl ChatAgent {
     /// Create a new chat agent with the default memory strategy
     /// (sliding window with dual-layer consolidation).
     pub fn new(llm: Box<dyn LlmApi>, config: &AgentConfig) -> Self {
-        let factory: MemoryFactory = Box::new(|prompt: &str| {
-            Box::new(SlidingWindowMemory::with_defaults(prompt))
-        });
-        Self::with_memory_factory(llm, config, factory)
+        Self::with_memory_factory(llm, config, Box::new(SlidingWindowFactory))
     }
 
     // ── Prompt construction ──
@@ -188,22 +179,18 @@ impl ChatAgent {
     /// Create a new session, migrating persistent state (long-term memory
     /// and history log) from the current session into the new one.
     ///
-    /// This is the single place that handles the
-    /// `take_persistent_state → memory_factory → restore_persistent_state`
-    /// lifecycle, used by both `reset_with_updated_prompt` and `new_session`.
+    /// Uses the `Memory` trait's `take_persistent_state` / `restore_persistent_state`
+    /// methods, so this works with any memory strategy that supports migration
+    /// — no hardcoded downcasting to a specific implementation.
     fn create_session_with_migration(&mut self) -> Session {
-        // Extract persistent state from the old session (if supported).
-        let persistent_state = self.session
-            .memory_as_mut::<SlidingWindowMemory>()
-            .map(|swm| swm.take_persistent_state());
+        // Extract persistent state from the old session via the trait method.
+        let persistent_state = self.session.memory_mut().take_persistent_state();
 
-        let mut memory = (self.memory_factory)(&self.system_prompt);
+        let mut memory = self.memory_factory.create_memory(&self.system_prompt);
 
         // Restore persistent state into the new memory if available.
-        if let Some((ltm, log)) = persistent_state {
-            if let Some(swm) = memory.as_any_mut().downcast_mut::<SlidingWindowMemory>() {
-                swm.restore_persistent_state(ltm, log);
-            }
+        if let Some(state) = persistent_state {
+            memory.restore_persistent_state(state);
         }
 
         Session::new(memory)
@@ -254,15 +241,15 @@ impl ChatAgent {
     /// This ensures the LLM can see tool usage history in subsequent turns.
     /// Arguments and results are truncated to avoid wasting tokens on
     /// excessively large tool payloads.
-    fn summarize_tool_history(history: &[(Vec<ToolCall>, Vec<ToolResponse>)]) -> String {
+    fn summarize_tool_history(history: &[ToolRound]) -> String {
         let mut parts = Vec::new();
-        for (round_idx, (calls, responses)) in history.iter().enumerate() {
-            for (i, call) in calls.iter().enumerate() {
-                let result = responses.get(i)
+        for (round_idx, round) in history.iter().enumerate() {
+            for (i, call) in round.calls.iter().enumerate() {
+                let result = round.responses.get(i)
                     .map(|r| r.content.as_str())
                     .unwrap_or("(no result)");
                 parts.push(format!(
-                    "[Tool call round {}: {}({}) → {}]",
+                    "[Tool call round {}: {}({}) -> {}]",
                     round_idx + 1,
                     call.function_name,
                     truncate_at_char_boundary(&call.arguments.to_string(), 200),
@@ -290,9 +277,9 @@ impl ChatAgent {
         request_id: u64,
         messages: &[ChatMessage],
         on_tool_event: Option<&ToolEventCallback>,
-    ) -> Result<(ChatResponse, Vec<(Vec<ToolCall>, Vec<ToolResponse>)>)> {
+    ) -> Result<(ChatResponse, Vec<ToolRound>)> {
         let tools = self.tool_router.build_tool_definitions();
-        let mut tool_history: Vec<(Vec<ToolCall>, Vec<ToolResponse>)> = Vec::new();
+        let mut tool_history: Vec<ToolRound> = Vec::new();
         let mut total_usage = TokenUsage::default();
         let mut last_reasoning_content: Option<String> = None;
 
@@ -362,7 +349,10 @@ impl ChatAgent {
                 tool_count: responses.len(),
             });
 
-            tool_history.push((response.tool_calls, responses));
+            tool_history.push(ToolRound {
+                calls: response.tool_calls,
+                responses,
+            });
         }
 
         anyhow::bail!("Exceeded maximum tool-calling rounds ({})", MAX_TOOL_ROUNDS)

@@ -14,8 +14,11 @@
 | `DEFAULT_AGENT_NAME` | "Daedalus" | `src/prompt/sections/role.rs:4` | 默认 Agent 名称 |
 | `DEFAULT_SYSTEM_PROMPT` | "You are Daedalus..." | `src/config.rs:11-13` | 默认系统提示词（自定义检测的基准值） |
 | `IGNORED_DIRS` | `["node_modules", "target", "__pycache__", ".git"]` | `src/tools/fs.rs` | 文件搜索时跳过的噪声目录 |
-| `consolidation_threshold` (default) | 100 | `src/memory/config.rs` | 触发记忆整合的未整合消息数阈值 |
-| `retention_window` (default) | 50 | `src/memory/config.rs` | 整合时保留的最近消息数（不被整合） |
+| `consolidation_threshold` (default) | 100 | `src/memory/sliding_window/config.rs` | 触发记忆整合的未整合消息数阈值 |
+| `retention_window` (default) | 50 | `src/memory/sliding_window/config.rs` | 整合时保留的最近消息数（不被整合） |
+| `DEFAULT_SIMILARITY_THRESHOLD` | 0.5 | `src/memory/agentic/store.rs` | A-MEM 链接候选的最低余弦相似度 |
+| `DEFAULT_MAX_LINK_CANDIDATES` | 5 | `src/memory/agentic/store.rs` | A-MEM 每次链接生成检索的最大候选数 |
+| `DEFAULT_RETRIEVAL_LIMIT` | 5 | `src/memory/agentic/store.rs` | A-MEM 上下文检索返回的最大 note 数 |
 
 ## 工具调用摘要截断约束
 
@@ -40,7 +43,7 @@
 | `retention_window` | 50 | 整合时保留最近 50 条消息不被整合 |
 | `max_messages` | `None`（无限） | 发送给 LLM 的消息窗口大小 |
 
-**整合范围**：`messages[last_consolidated .. messages.len() - retention_window]`。整合后 `last_consolidated` 游标推进到 `messages.len() - retention_window`。
+**整合范围**：`messages[consolidation_cursor .. messages.len() - retention_window]`。整合后 `consolidation_cursor` 游标推进到 `messages.len() - retention_window`。
 
 **注意**：当前整合接口已就绪（`should_consolidate()`、`messages_to_consolidate()`、`apply_consolidation()`），但尚未接入实际的 LLM 整合调用。Agent 层的整合触发逻辑已预留（`chat()` 方法中检查 `should_consolidate()`）。
 
@@ -83,6 +86,7 @@
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-13 | 新增 A-MEM 运行时常量（相似度阈值、候选数、检索限制）；更新 consolidation 字段命名和代码位置 | A-MEM 实现 + 代码审查 |
 | 2026-04-13 | 新增记忆整合约束（consolidation_threshold、retention_window、整合范围） | 记忆系统重构 |
 | 2026-04-09 | 工具调用从串行改为并行执行；新增 futures 0.3 依赖；补充技术选型决策 | 并行化迭代 |
 | 2026-04-08 | 新增 IGNORED_DIRS 常量、工具摘要截断约束 | 代码审查改进 |

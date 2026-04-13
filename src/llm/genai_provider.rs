@@ -16,7 +16,7 @@ use genai::chat::ReasoningEffort as GenAiReasoningEffort;
 
 use super::{
     ChatMessage, ChatOptions, ChatResponse, ChatRole, LlmApi, LlmConfig,
-    ReasoningEffort, TokenUsage, ToolCall, ToolResponse,
+    ReasoningEffort, TokenUsage, ToolCall, ToolResponse, ToolRound,
 };
 
 /// LLM provider implementation backed by the `genai` crate.
@@ -215,7 +215,7 @@ impl LlmApi for GenAiProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[serde_json::Value],
-        tool_history: &[(Vec<ToolCall>, Vec<ToolResponse>)],
+        tool_history: &[ToolRound],
         options: Option<&ChatOptions>,
     ) -> Result<ChatResponse> {
         // Build the initial request from conversation messages
@@ -234,11 +234,11 @@ impl LlmApi for GenAiProvider {
 
         // Replay tool history: for each prior round, append the assistant's
         // tool calls and the corresponding tool responses.
-        for (calls, responses) in tool_history {
-            let genai_calls: Vec<GenAiToolCall> = calls.iter().map(Self::to_genai_tool_call).collect();
+        for round in tool_history {
+            let genai_calls: Vec<GenAiToolCall> = round.calls.iter().map(Self::to_genai_tool_call).collect();
             chat_req = chat_req.append_message(GenAiChatMessage::from(genai_calls));
 
-            for resp in responses {
+            for resp in &round.responses {
                 let genai_resp = Self::to_genai_tool_response(resp);
                 chat_req = chat_req.append_message(GenAiChatMessage::from(genai_resp));
             }

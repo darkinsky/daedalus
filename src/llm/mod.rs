@@ -8,7 +8,7 @@ mod venus_provider;
 pub use types::{
     ChatMessage, ChatOptions, ChatRole, ChatResponse,
     LlmConfig, ReasoningEffort, VenusExtensions,
-    TokenUsage, ToolCall, ToolResponse,
+    TokenUsage, ToolCall, ToolResponse, ToolRound,
     format_messages_for_log,
 };
 
@@ -52,7 +52,7 @@ pub trait LlmApi: Send + Sync {
         &self,
         messages: &[ChatMessage],
         tools: &[serde_json::Value],
-        tool_history: &[(Vec<ToolCall>, Vec<ToolResponse>)],
+        tool_history: &[ToolRound],
         options: Option<&ChatOptions>,
     ) -> Result<ChatResponse>;
 
