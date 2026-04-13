@@ -1,7 +1,7 @@
 # 运行时约束
 
-> 最后更新：2026-04-09
-> 来源：存量代码分析 + 代码审查改进 + 并行化迭代
+> 最后更新：2026-04-13
+> 来源：存量代码分析 + 代码审查改进 + 并行化迭代 + 记忆系统重构
 > 置信度：高
 
 ## 硬编码常量
@@ -14,6 +14,8 @@
 | `DEFAULT_AGENT_NAME` | "Daedalus" | `src/prompt/sections/role.rs:4` | 默认 Agent 名称 |
 | `DEFAULT_SYSTEM_PROMPT` | "You are Daedalus..." | `src/config.rs:11-13` | 默认系统提示词（自定义检测的基准值） |
 | `IGNORED_DIRS` | `["node_modules", "target", "__pycache__", ".git"]` | `src/tools/fs.rs` | 文件搜索时跳过的噪声目录 |
+| `consolidation_threshold` (default) | 100 | `src/memory/config.rs` | 触发记忆整合的未整合消息数阈值 |
+| `retention_window` (default) | 50 | `src/memory/config.rs` | 整合时保留的最近消息数（不被整合） |
 
 ## 工具调用摘要截断约束
 
@@ -25,6 +27,22 @@
 |------|---------|------|
 | 工具参数 | 200 字符 | 参数通常较短，200 字符足够保留关键信息 |
 | 工具结果 | 500 字符 | 结果可能很长（如文件内容），500 字符保留摘要 |
+
+## 记忆整合约束
+
+> 📍 **代码位置**：`src/memory/sliding_window.rs` + `src/memory/config.rs`
+
+`SlidingWindowMemory` 的整合机制受以下参数控制：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `consolidation_threshold` | 100 | 未整合消息数达到此值时触发整合 |
+| `retention_window` | 50 | 整合时保留最近 50 条消息不被整合 |
+| `max_messages` | `None`（无限） | 发送给 LLM 的消息窗口大小 |
+
+**整合范围**：`messages[last_consolidated .. messages.len() - retention_window]`。整合后 `last_consolidated` 游标推进到 `messages.len() - retention_window`。
+
+**注意**：当前整合接口已就绪（`should_consolidate()`、`messages_to_consolidate()`、`apply_consolidation()`），但尚未接入实际的 LLM 整合调用。Agent 层的整合触发逻辑已预留（`chat()` 方法中检查 `should_consolidate()`）。
 
 ## 环境变量依赖
 
@@ -65,6 +83,7 @@
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-13 | 新增记忆整合约束（consolidation_threshold、retention_window、整合范围） | 记忆系统重构 |
 | 2026-04-09 | 工具调用从串行改为并行执行；新增 futures 0.3 依赖；补充技术选型决策 | 并行化迭代 |
 | 2026-04-08 | 新增 IGNORED_DIRS 常量、工具摘要截断约束 | 代码审查改进 |
 | 2026-04-08 | 初始创建 | 存量代码分析 Phase A |

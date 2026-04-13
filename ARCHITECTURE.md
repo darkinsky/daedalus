@@ -33,7 +33,9 @@ graph TD
     LlmApi --> Venus[VenusProvider<br/>HTTP 原始请求]
 
     Session --> Memory{{"dyn Memory<br/>(trait object)"}}
-    Memory --> SlidingWindow[SlidingWindowMemory<br/>滑动窗口]
+    Memory --> SlidingWindow[SlidingWindowMemory<br/>双层记忆引擎]
+    SlidingWindow --> LTM[LongTermMemory<br/>热数据层]
+    SlidingWindow --> HistoryLog[HistoryLog<br/>冷数据层]
 
     McpManager --> McpClient1[McpClient #1<br/>stdio JSON-RPC]
     McpManager --> McpClient2[McpClient #N<br/>stdio JSON-RPC]
@@ -63,7 +65,7 @@ graph TD
 | cli | REPL 交互、命令解析、终端渲染 | rustyline, crossterm, termimad | `src/cli/` | [cli](docs/services/cli/overview.md) |
 | llm | LLM Provider 抽象 + 双 Provider 实现 | genai, reqwest | `src/llm/` | [llm](docs/services/llm/overview.md) |
 | mcp | MCP 协议客户端 + 工具管理 | tokio, serde_json | `src/mcp/` | [mcp](docs/services/mcp/overview.md) |
-| memory | 会话记忆抽象 + 滑动窗口实现 | — | `src/memory/` | [memory](docs/services/memory/overview.md) |
+| memory | 会话记忆抽象 + 双层记忆引擎 | — | `src/memory/` | [memory](docs/services/memory/overview.md) |
 | prompt | 系统提示词动态组装 | — | `src/prompt/` | [prompt](docs/services/prompt/overview.md) |
 | session | 会话状态管理 | chrono, uuid | `src/session.rs` | [core](docs/services/core/overview.md) |
 
@@ -136,7 +138,7 @@ main()
 
 ## 设计原则
 
-1. **Trait 抽象优先**：核心接口（`AgentMode`、`LlmApi`、`Memory`）均定义为 trait，实现通过 trait object（`Box<dyn T>`）注入，支持运行时多态和未来扩展。
+1. **Trait 抽象优先**：核心接口（`AgentMode`、`LlmApi`、`Memory`）均定义为 trait，实现通过 trait object（`Box<dyn T>`）注入，支持运行时多态和未来扩展。Memory trait 通过 `as_any` downcast 支持策略特定功能访问。
 2. **依赖注入**：`ChatAgent` 通过构造函数接收 LLM provider 和 MemoryFactory，不硬编码任何具体实现。
 3. **单一职责**：每个模块/文件有明确的职责边界（如 `render.rs` 只管输出，`commands.rs` 只管解析）。
 4. **优雅降级**：MCP 连接失败跳过该服务器、SOUL 文件读取失败仅 warn、日志 filter 解析失败回退默认值。

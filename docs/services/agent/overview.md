@@ -1,7 +1,7 @@
 # Agent — Agent 模式抽象、ChatAgent 与 ToolRouter
 
-> 最后更新：2026-04-09
-> 来源：存量代码分析 + 代码审查改进 + 工具事件/并行化迭代
+> 最后更新：2026-04-13
+> 来源：存量代码分析 + 代码审查改进 + 工具事件/并行化迭代 + 记忆系统重构
 
 ## 1. 模块概述
 
@@ -46,7 +46,7 @@ pub trait AgentMode: Send + Sync {
 | `llm` | `Box<dyn LlmApi>` | LLM 提供商（trait object） |
 | `session` | `Session` | 当前会话（含记忆） |
 | `system_prompt` | `String` | 当前系统提示词 |
-| `memory_factory` | `MemoryFactory` | 记忆工厂函数 |
+| `memory_factory` | `MemoryFactory` | 记忆工厂函数（运行时创建双层记忆实例） |
 | `tool_router` | `ToolRouter` | 统一工具路由器（内置 + MCP） |
 | `prompt_override` | `Option<String>` | 自定义覆盖提示词 |
 | `agent_name` / `soul` | `Option<String>` | 个性化配置 |
@@ -110,6 +110,10 @@ type MemoryFactory = Box<dyn Fn(&str) -> Box<dyn Memory> + Send + Sync>;
 ### 工具上下文存储
 
 工具调用摘要通过 `memory.add_tool_context()` 存储，而非注入假的 user 消息。这避免了扭曲 `turn_count` 和对话历史。[置信度：高]
+
+### 会话迁移
+
+`create_session_with_migration()` 是唯一的会话重建方法，负责 `take_persistent_state → memory_factory → restore_persistent_state` 的完整生命周期。`reset_with_updated_prompt()` 和 `new_session()` 都委托给它，避免了迁移逻辑重复。[置信度：高]
 
 ### 提示词重建
 

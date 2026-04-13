@@ -7,7 +7,7 @@ use crate::llm::{
     TokenUsage, format_messages_for_log,
 };
 use crate::mcp::McpManager;
-use crate::memory::Memory;
+use crate::memory::{Memory, SlidingWindowMemory};
 use crate::prompt::PromptBuilder;
 use crate::session::Session;
 
@@ -25,25 +25,29 @@ pub type MemoryFactory = Box<dyn Fn(&str) -> Box<dyn Memory> + Send + Sync>;
 /// This prevents infinite loops if the LLM keeps requesting tool calls.
 const MAX_TOOL_ROUNDS: usize = 10;
 
-/// Truncate a string for inclusion in tool history summaries.
+/// Truncate a string at a UTF-8 character boundary.
 ///
-/// Prevents excessively large tool arguments or results from bloating
-/// the conversation memory and wasting tokens.
-///
-/// Uses `char_indices` to ensure truncation never splits a multi-byte
-/// UTF-8 character, which would cause a panic.
-fn truncate_for_summary(s: &str, max_len: usize) -> &str {
+/// Returns a sub-slice of at most `max_len` bytes, guaranteed to end
+/// on a valid character boundary (never splits a multi-byte character).
+fn truncate_at_char_boundary(s: &str, max_len: usize) -> &str {
     if s.len() <= max_len {
-        s
+        return s;
+    }
+    // Find the last char boundary at or before max_len.
+    match s.char_indices().take_while(|(i, _)| *i <= max_len).last() {
+        Some((i, _)) => &s[..i],
+        None => &s[..0],
+    }
+}
+
+/// Truncate a string for display preview, taking only the first line
+/// and appending "…" if truncated.
+fn preview_string(s: &str, max_len: usize) -> String {
+    let first_line = s.lines().next().unwrap_or(s);
+    if first_line.len() <= max_len {
+        first_line.to_string()
     } else {
-        // Find the last char boundary at or before max_len
-        let end = s[..=max_len.min(s.len() - 1)]
-            .char_indices()
-            .rev()
-            .find(|(i, _)| *i <= max_len)
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        &s[..end]
+        format!("{}…", truncate_at_char_boundary(first_line, max_len))
     }
 }
 
@@ -128,11 +132,11 @@ impl ChatAgent {
         }
     }
 
-    /// Create a new chat agent with the default memory strategy (unlimited sliding window).
+    /// Create a new chat agent with the default memory strategy
+    /// (sliding window with dual-layer consolidation).
     pub fn new(llm: Box<dyn LlmApi>, config: &AgentConfig) -> Self {
-        use crate::memory::SlidingWindowMemory;
         let factory: MemoryFactory = Box::new(|prompt: &str| {
-            Box::new(SlidingWindowMemory::unlimited(prompt))
+            Box::new(SlidingWindowMemory::with_defaults(prompt))
         });
         Self::with_memory_factory(llm, config, factory)
     }
@@ -159,7 +163,8 @@ impl ChatAgent {
         builder.build_with_override(prompt_override)
     }
 
-    /// Rebuild the system prompt and reset the session.
+    /// Rebuild the system prompt and reset the session, preserving
+    /// long-term memory and history log across the reset.
     ///
     /// Called when the tool set changes (e.g., after MCP attachment) so the
     /// LLM sees updated tool guidance in the system prompt.
@@ -172,13 +177,36 @@ impl ChatAgent {
             &tools,
         );
 
-        let memory = (self.memory_factory)(&self.system_prompt);
-        self.session = Session::new(memory);
+        self.session = self.create_session_with_migration();
 
         tracing::info!(
             prompt_len = self.system_prompt.len(),
             "System prompt rebuilt with updated tool definitions"
         );
+    }
+
+    /// Create a new session, migrating persistent state (long-term memory
+    /// and history log) from the current session into the new one.
+    ///
+    /// This is the single place that handles the
+    /// `take_persistent_state → memory_factory → restore_persistent_state`
+    /// lifecycle, used by both `reset_with_updated_prompt` and `new_session`.
+    fn create_session_with_migration(&mut self) -> Session {
+        // Extract persistent state from the old session (if supported).
+        let persistent_state = self.session
+            .memory_as_mut::<SlidingWindowMemory>()
+            .map(|swm| swm.take_persistent_state());
+
+        let mut memory = (self.memory_factory)(&self.system_prompt);
+
+        // Restore persistent state into the new memory if available.
+        if let Some((ltm, log)) = persistent_state {
+            if let Some(swm) = memory.as_any_mut().downcast_mut::<SlidingWindowMemory>() {
+                swm.restore_persistent_state(ltm, log);
+            }
+        }
+
+        Session::new(memory)
     }
 
     // ── Logging helpers ──
@@ -237,8 +265,8 @@ impl ChatAgent {
                     "[Tool call round {}: {}({}) → {}]",
                     round_idx + 1,
                     call.function_name,
-                    truncate_for_summary(&call.arguments.to_string(), 200),
-                    truncate_for_summary(result, 500),
+                    truncate_at_char_boundary(&call.arguments.to_string(), 200),
+                    truncate_at_char_boundary(result, 500),
                 ));
             }
         }
@@ -249,26 +277,6 @@ impl ChatAgent {
     fn emit_event(callback: Option<&ToolEventCallback>, event: ToolEvent) {
         if let Some(cb) = callback {
             cb(event);
-        }
-    }
-
-    /// Truncate a string for display preview, appending "…" if truncated.
-    ///
-    /// Uses `char_indices` to ensure truncation never splits a multi-byte
-    /// UTF-8 character, which would cause a panic.
-    fn preview_string(s: &str, max_len: usize) -> String {
-        let first_line = s.lines().next().unwrap_or(s);
-        if first_line.len() <= max_len {
-            first_line.to_string()
-        } else {
-            // Find the last char boundary at or before max_len
-            let end = first_line[..=max_len.min(first_line.len() - 1)]
-                .char_indices()
-                .rev()
-                .find(|(i, _)| *i <= max_len)
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-            format!("{}…", &first_line[..end])
         }
     }
 
@@ -322,18 +330,17 @@ impl ChatAgent {
             Self::emit_event(on_tool_event, ToolEvent::RoundStart { round: round + 1 });
 
             // Emit ToolCallStart events for all tool calls upfront
-            let tool_sources: Vec<String> = response.tool_calls.iter().map(|tc| {
+            for tc in &response.tool_calls {
                 let source = if self.tool_router.is_builtin(&tc.function_name) {
-                    "built-in".to_string()
+                    "built-in"
                 } else {
-                    "mcp".to_string()
+                    "mcp"
                 };
                 Self::emit_event(on_tool_event, ToolEvent::ToolCallStart {
                     tool_name: tc.function_name.clone(),
-                    source: source.clone(),
+                    source: source.to_string(),
                 });
-                source
-            }).collect();
+            }
 
             // Execute all tool calls in parallel via the unified router
             let futures: Vec<_> = response.tool_calls.iter()
@@ -344,16 +351,13 @@ impl ChatAgent {
             // Emit ToolCallComplete events for all results
             for (tool_call, tool_response) in response.tool_calls.iter().zip(responses.iter()) {
                 let success = tool_response.success;
-                let result_preview = Self::preview_string(&tool_response.content, 80);
+                let result_preview = preview_string(&tool_response.content, 80);
                 Self::emit_event(on_tool_event, ToolEvent::ToolCallComplete {
                     tool_name: tool_call.function_name.clone(),
                     success,
                     result_preview,
                 });
             }
-            // Suppress unused variable warning — sources are used in ToolCallStart above
-            let _ = tool_sources;
-
             Self::emit_event(on_tool_event, ToolEvent::RoundComplete {
                 tool_count: responses.len(),
             });
@@ -396,6 +400,17 @@ impl AgentMode for ChatAgent {
             resp
         };
 
+        // Check if consolidation should be triggered after this turn.
+        if self.session.memory().should_consolidate() {
+            tracing::info!(
+                session_id = %self.session.id,
+                "Consolidation threshold reached — consolidation should be triggered"
+            );
+            // TODO: Trigger background consolidation via LLM.
+            // For now, we log the event. The actual consolidation LLM call
+            // will be implemented as a separate async task in a future iteration.
+        }
+
         Ok(response)
     }
 
@@ -424,8 +439,13 @@ impl AgentMode for ChatAgent {
             self.soul.as_deref(),
             &tools,
         );
-        let memory = (self.memory_factory)(&self.system_prompt);
-        self.session = Session::new(memory);
+
+        self.session = self.create_session_with_migration();
+
+        tracing::info!(
+            session_id = %self.session.id,
+            "New session created with migrated persistent memory"
+        );
     }
 
     fn session(&self) -> &Session {
