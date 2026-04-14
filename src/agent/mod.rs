@@ -89,8 +89,8 @@ pub trait AgentMode: Send + Sync {
         0
     }
 
-    /// Return descriptions of all available tools (for CLI display).
-    fn tool_descriptions(&self) -> Vec<ToolInfo> {
+    /// Return metadata for all available tools (for CLI display and prompt building).
+    fn tool_infos(&self) -> Vec<ToolInfo> {
         vec![]
     }
 
@@ -117,5 +117,13 @@ pub trait AgentMode: Send + Sync {
     /// Return the number of loaded skills.
     fn skill_count(&self) -> usize {
         0
+    }
+
+    /// Persist all memory state to the workspace and perform cleanup.
+    ///
+    /// Called when the REPL exits (normally or via Ctrl-D).
+    /// The default implementation does nothing.
+    async fn shutdown(&mut self) -> Result<()> {
+        Ok(())
     }
 }

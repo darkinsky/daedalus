@@ -1,10 +1,12 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use uuid::Uuid;
 
 use crate::embedding::{cosine_similarity, Embedding};
 use crate::llm::LlmApi;
+use crate::memory::persistence::MemoryPersistence;
 
 use super::note::MemoryNote;
 use super::prompts::{
@@ -561,6 +563,47 @@ impl AgenticMemoryStore {
 impl Default for AgenticMemoryStore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl MemoryPersistence for AgenticMemoryStore {
+    fn save(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
+        }
+        let notes: Vec<&MemoryNote> = self.notes.values().collect();
+        let json = serde_json::to_string_pretty(&notes)
+            .context("Failed to serialize AgenticMemoryStore")?;
+        std::fs::write(path, &json)
+            .with_context(|| format!("Failed to write AgenticMemoryStore to: {}", path.display()))?;
+        tracing::debug!(
+            path = %path.display(),
+            notes = notes.len(),
+            "AgenticMemoryStore saved"
+        );
+        Ok(())
+    }
+
+    fn load(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            tracing::debug!(path = %path.display(), "No AgenticMemoryStore file found, using default");
+            return Ok(Self::new());
+        }
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read AgenticMemoryStore from: {}", path.display()))?;
+        let notes: Vec<MemoryNote> = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse AgenticMemoryStore from: {}", path.display()))?;
+        let mut store = Self::new();
+        for note in notes {
+            store.notes.insert(note.id, note);
+        }
+        tracing::info!(
+            path = %path.display(),
+            notes = store.notes.len(),
+            "AgenticMemoryStore loaded from disk"
+        );
+        Ok(store)
     }
 }
 

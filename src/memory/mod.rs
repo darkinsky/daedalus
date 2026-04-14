@@ -1,6 +1,9 @@
 pub mod agentic;
+pub mod persistence;
 pub mod sliding_window;
 
+#[allow(unused_imports)]
+pub use persistence::MemoryPersistence;
 #[allow(unused_imports)]
 pub use sliding_window::{
     ConsolidationResult,
@@ -115,6 +118,18 @@ pub trait Memory: Send + Sync {
             strategy = self.strategy_name(),
             "Persistent state discarded — memory strategy does not support migration"
         );
+    }
+
+    /// Persist memory state to disk.
+    ///
+    /// Called during shutdown to save any persistent state (long-term memory,
+    /// history logs, etc.) to the workspace. Memory strategies without
+    /// persistence support should use the default no-op implementation.
+    ///
+    /// # Arguments
+    /// * `workspace` - The workspace providing canonical file paths.
+    fn persist(&self, _workspace: &crate::workspace::Workspace) -> anyhow::Result<()> {
+        Ok(())
     }
 
     /// Downcast to a concrete type for advanced operations.

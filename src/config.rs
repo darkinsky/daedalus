@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 use crate::llm::LlmConfig;
+use crate::workspace::Workspace;
 
 // ── Shared constants ──
 
@@ -47,7 +48,23 @@ impl AgentConfig {
     /// - `DAEDALUS_THINKING_ENABLED`: Enable thinking mode ("true"/"false")
     /// - `DAEDALUS_THINKING_TOKENS`: Max tokens for thinking (e.g., "2048")
     /// - `DAEDALUS_REASONING_EFFORT`: Reasoning effort level ("low"/"medium"/"high")
+    #[allow(dead_code)]
     pub fn from_env() -> Result<Self> {
+        Self::build(Self::load_soul_file())
+    }
+
+    /// Load configuration from environment variables with workspace support.
+    ///
+    /// Same as `from_env()` but uses the workspace for SOUL file fallback.
+    pub fn from_env_with_workspace(workspace: &Workspace) -> Result<Self> {
+        Self::build(Self::load_soul_file_with_workspace(workspace))
+    }
+
+    /// Shared configuration builder — loads all env vars and assembles the config.
+    ///
+    /// The `soul` parameter is the only part that differs between
+    /// `from_env()` and `from_env_with_workspace()`.
+    fn build(soul: Option<String>) -> Result<Self> {
         let llm = LlmConfig::from_env()?;
 
         // Detect whether the user explicitly set a custom system prompt
@@ -57,8 +74,6 @@ impl AgentConfig {
         };
 
         let agent_name = std::env::var("DAEDALUS_AGENT_NAME").ok();
-
-        let soul = Self::load_soul_file();
 
         Ok(Self {
             llm,
@@ -71,23 +86,50 @@ impl AgentConfig {
 
     /// Load soul content from SOUL.md file if configured via `DAEDALUS_SOUL_FILE`.
     fn load_soul_file() -> Option<String> {
-        std::env::var("DAEDALUS_SOUL_FILE").ok().and_then(|path| {
-            match std::fs::read_to_string(&path) {
-                Ok(content) => {
-                    let trimmed = content.trim().to_string();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        tracing::info!(path = %path, "Loaded SOUL personality file");
-                        Some(trimmed)
-                    }
+        let path = std::env::var("DAEDALUS_SOUL_FILE").ok()?;
+        Self::read_trimmed_file(&path)
+            .map(|content| {
+                tracing::info!(path = %path, "Loaded SOUL personality file");
+                content
+            })
+            .or_else(|| {
+                // Only warn if the file was explicitly configured but unreadable.
+                // read_trimmed_file returns None for both missing and empty files.
+                if std::path::Path::new(&path).exists() {
+                    tracing::warn!(path = %path, "SOUL file is empty, skipping");
+                } else {
+                    tracing::warn!(path = %path, "Failed to load SOUL file, skipping");
                 }
-                Err(e) => {
-                    tracing::warn!(path = %path, error = %e, "Failed to load SOUL file, skipping");
-                    None
-                }
-            }
-        })
+                None
+            })
+    }
+
+    /// Load soul content with workspace fallback.
+    ///
+    /// Priority: `DAEDALUS_SOUL_FILE` env var > workspace `config/soul.md`
+    fn load_soul_file_with_workspace(workspace: &Workspace) -> Option<String> {
+        // 1. Try env var first (backward compatible)
+        if let Some(soul) = Self::load_soul_file() {
+            return Some(soul);
+        }
+
+        // 2. Try workspace soul file
+        if workspace.has_soul_file() {
+            let path = workspace.soul_file_path();
+            let content = Self::read_trimmed_file(&path.to_string_lossy())?;
+            tracing::info!(path = %path.display(), "Loaded SOUL file from workspace");
+            return Some(content);
+        }
+
+        None
+    }
+
+    /// Read a file and return its trimmed content, or `None` if the file
+    /// doesn't exist, can't be read, or is empty after trimming.
+    fn read_trimmed_file(path: &str) -> Option<String> {
+        let content = std::fs::read_to_string(path).ok()?;
+        let trimmed = content.trim().to_string();
+        if trimmed.is_empty() { None } else { Some(trimmed) }
     }
 
     /// Convenience accessor for the model name.

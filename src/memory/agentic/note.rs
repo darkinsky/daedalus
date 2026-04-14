@@ -1,4 +1,5 @@
 use chrono::{DateTime, Local};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use uuid::Uuid;
 
@@ -27,7 +28,7 @@ use uuid::Uuid;
 /// 3. **Evolution**: When new related notes are added, existing notes'
 ///    context, keywords, and tags may be updated to reflect higher-order
 ///    knowledge patterns.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct MemoryNote {
     /// Unique identifier for this note.

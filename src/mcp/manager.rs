@@ -31,6 +31,8 @@ impl McpManager {
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
 
+            // Clone into owned values because JoinSet::spawn requires 'static futures.
+            // Inside the async block we convert back to borrowed slices for McpClient::new.
             join_set.spawn(async move {
                 let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
                 let env_refs: Vec<(&str, &str)> = env.iter()
@@ -125,8 +127,8 @@ impl McpManager {
             .collect()
     }
 
-    /// Return tool descriptions for CLI display.
-    pub fn tool_descriptions(&self) -> Vec<ToolInfo> {
+    /// Return tool metadata for CLI display.
+    pub fn tool_infos(&self) -> Vec<ToolInfo> {
         self.all_tools()
             .iter()
             .map(|(server, tool)| ToolInfo {
@@ -179,8 +181,8 @@ impl McpManager {
 
     /// Shut down all MCP servers gracefully.
     ///
-    /// Reserved for future use during application shutdown.
-    #[allow(dead_code)]
+    /// Called during application shutdown to terminate child processes
+    /// and prevent orphaned MCP server processes.
     pub async fn shutdown(&mut self) {
         for client in &mut self.clients {
             if let Err(e) = client.shutdown().await {

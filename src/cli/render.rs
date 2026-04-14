@@ -229,7 +229,7 @@ pub fn tools_list(agent: &dyn AgentMode) {
     );
     println!();
 
-    for tool in agent.tool_descriptions() {
+    for tool in agent.tool_infos() {
         println!(
             "    {}  {}",
             tool.name.with(Color::Cyan),

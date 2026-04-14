@@ -10,27 +10,36 @@ mod prompt;
 mod session;
 mod skill;
 mod tools;
+mod workspace;
 
 use agent::AgentMode;
 use anyhow::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging — hold the guard to keep file writer alive
-    let log_config = logging::LogConfig::from_env();
+    // Resolve workspace (zero-config: auto-creates ~/.daedalus/)
+    let workspace = workspace::Workspace::resolve()?;
+
+    // Initialize logging — use workspace logs dir as default
+    let log_config = logging::LogConfig::from_env_with_workspace(&workspace);
     let _log_guard = logging::init(&log_config)?;
 
     tracing::info!("Daedalus Agent starting...");
+    tracing::info!(
+        workspace = %workspace.root().display(),
+        kind = %workspace.kind(),
+        "Workspace resolved"
+    );
 
-    // Load configuration
-    let config = config::AgentConfig::from_env()?;
+    // Load configuration (SOUL file from workspace fallback)
+    let config = config::AgentConfig::from_env_with_workspace(&workspace)?;
     tracing::info!("Using model: {}", config.model());
     if let Some(base_url) = config.api_base() {
         tracing::info!("Using API base URL: {}", base_url);
     }
 
-    // Load MCP configuration and connect to servers
-    let mcp_config = mcp::McpConfig::load()?;
+    // Load MCP configuration (workspace-aware search chain)
+    let mcp_config = mcp::McpConfig::load_with_workspace(&workspace)?;
     let mcp_manager = if !mcp_config.servers.is_empty() {
         tracing::info!(
             servers = mcp_config.servers.len(),
@@ -46,44 +55,55 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Create the LLM provider (GenAI supports both plain chat and tool calling)
+    // Create the LLM provider
     let provider = llm::create_provider(config.llm.clone())?;
 
-    // Build the chat agent and optionally attach MCP
-    let mut agent = agent::ChatAgent::new(provider, &config);
+    // Build the chat agent with workspace-aware memory persistence
+    let mut agent = agent::ChatAgent::new_with_workspace(provider, &config, workspace.clone());
     if let Some(manager) = mcp_manager {
         agent.attach_mcp(manager);
     }
 
-    // Load skills from the current working directory's `skills/` folder
-    let skills_dir = std::env::current_dir()
+    // Load skills from workspace skills directory
+    let ws_skills_dir = workspace.skills_dir();
+    load_skills(&mut agent, &ws_skills_dir);
+
+    // Also load skills from cwd/skills/ if different from workspace
+    let cwd_skills_dir = std::env::current_dir()
         .unwrap_or_default()
         .join("skills");
-    match agent.load_skills(&skills_dir) {
+    if cwd_skills_dir != ws_skills_dir {
+        load_skills(&mut agent, &cwd_skills_dir);
+    }
+
+    // Run the interactive CLI (shutdown is called inside on exit)
+    cli::run_interactive(&mut agent).await?;
+
+    Ok(())
+}
+
+/// Load skills from a directory, logging the result.
+fn load_skills(agent: &mut agent::ChatAgent, dir: &std::path::Path) {
+    match agent.load_skills(dir) {
         Ok(count) if count > 0 => {
             tracing::info!(
                 skills = count,
-                path = %skills_dir.display(),
+                path = %dir.display(),
                 "Skills loaded successfully"
             );
         }
         Ok(_) => {
             tracing::debug!(
-                path = %skills_dir.display(),
+                path = %dir.display(),
                 "No skills found in directory"
             );
         }
         Err(e) => {
             tracing::warn!(
-                path = %skills_dir.display(),
+                path = %dir.display(),
                 error = %e,
                 "Failed to load skills, continuing without skills"
             );
         }
     }
-
-    // Run the interactive CLI
-    cli::run_interactive(&mut agent).await?;
-
-    Ok(())
 }

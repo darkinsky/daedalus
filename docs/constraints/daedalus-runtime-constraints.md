@@ -83,6 +83,32 @@
 
 `LogGuard` 必须在整个应用生命周期内持有。提前 drop 会导致文件日志缓冲区可能未完全 flush。
 
+## Workspace 解析约束
+
+> 📍 **代码位置**：`src/workspace.rs`
+
+`Workspace::resolve()` 在 `logging::init()` 之前执行（因为日志目录依赖 workspace），因此 resolve 内部**不能使用 `tracing` 宏**。workspace 信息在 `main()` 中 logging 初始化后通过 `tracing::info!` 重新记录。
+
+## 记忆持久化原子写入约束
+
+> 📍 **代码位置**：`src/memory/persistence.rs`
+
+所有记忆持久化操作使用 `atomic_write()` 工具函数，实现 write-to-temp-then-rename 模式：
+1. 写入数据到 `<path>.tmp`
+2. 原子重命名 `<path>.tmp` → `<path>`
+
+这确保进程崩溃时目标文件不会处于部分写入状态。影响的文件：`long_term.json`、`history.jsonl`。
+
+## 优雅关闭约束
+
+> 📍 **代码位置**：`src/agent/chat.rs` + `src/agent/tool_router.rs`
+
+`agent.shutdown()` 是异步方法（`async fn`），依次执行：
+1. 通过 `Memory::persist()` 持久化记忆状态到 workspace
+2. 通过 `ToolRouter::shutdown()` → `McpManager::shutdown()` 关闭所有 MCP 子进程
+
+如果持久化失败，会记录错误但仍然继续关闭 MCP。
+
 ## Skill 加载约束
 
 > 📍 **代码位置**：`src/skill/loader.rs` + `src/main.rs`
@@ -103,6 +129,7 @@ Skill 从当前工作目录的 `skills/` 子目录加载，遵循子目录 + `SK
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-14 | 新增 Workspace 解析约束（pre-logging）、记忆持久化原子写入约束、优雅关闭约束 | Workspace 系统实现 + 架构审查优化 |
 | 2026-04-13 | 新增 SKILL_FILENAME、SKILL_TOOL_NAME 常量；新增 Skill 加载约束章节 | Skill 功能实现 |
 | 2026-04-13 | 新增 A-MEM 运行时常量（相似度阈值、候选数、检索限制）；更新 consolidation 字段命名和代码位置 | A-MEM 实现 + 代码审查 |
 | 2026-04-13 | 新增记忆整合约束（consolidation_threshold、retention_window、整合范围） | 记忆系统重构 |

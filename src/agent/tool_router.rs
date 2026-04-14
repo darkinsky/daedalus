@@ -100,13 +100,13 @@ impl ToolRouter {
         self.builtin.has_tool(name)
     }
 
-    /// Return tool descriptions for CLI display and prompt building.
-    pub fn tool_descriptions(&self) -> Vec<ToolInfo> {
-        let mut descriptions = self.builtin.tool_descriptions();
+    /// Return tool metadata for CLI display and prompt building.
+    pub fn tool_infos(&self) -> Vec<ToolInfo> {
+        let mut infos = self.builtin.tool_infos();
         if let Some(ref mcp) = self.mcp {
-            descriptions.extend(mcp.tool_descriptions());
+            infos.extend(mcp.tool_infos());
         }
-        descriptions
+        infos
     }
 
     /// Return the skill registry reference (for CLI display).
@@ -186,6 +186,17 @@ impl ToolRouter {
                     format!("Error calling tool '{}': {}", tool_name, e),
                 )
             }
+        }
+    }
+
+    /// Shut down all external tool servers (MCP) gracefully.
+    ///
+    /// Called during application shutdown to prevent orphaned child processes.
+    pub async fn shutdown(&mut self) {
+        if let Some(ref mut mcp) = self.mcp {
+            tracing::info!("Shutting down MCP servers...");
+            mcp.shutdown().await;
+            tracing::info!("MCP servers shut down");
         }
     }
 }

@@ -159,5 +159,10 @@ pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
         }
     }
 
+    // Persist memory and perform cleanup before exiting
+    if let Err(e) = agent.shutdown().await {
+        tracing::error!(error = %e, "Failed to shutdown agent cleanly");
+    }
+
     Ok(())
 }

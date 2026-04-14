@@ -7,10 +7,6 @@ use async_trait::async_trait;
 ///
 /// This is the canonical definition of tool metadata, shared across all
 /// modules that need to describe tools (agent, prompt, CLI, MCP).
-///
-/// Previously lived in `llm::types` but was moved here because it describes
-/// tools, not LLM concepts. It is re-exported from `crate::llm::ToolInfo`
-/// for backward compatibility.
 #[derive(Debug, Clone)]
 pub struct ToolInfo {
     /// The tool name.
@@ -101,8 +97,8 @@ impl BuiltinToolRegistry {
         self.tools.iter().map(|t| t.to_openai_json()).collect()
     }
 
-    /// Return tool descriptions for CLI display.
-    pub fn tool_descriptions(&self) -> Vec<ToolInfo> {
+    /// Return tool metadata for CLI display.
+    pub fn tool_infos(&self) -> Vec<ToolInfo> {
         self.tools
             .iter()
             .map(|t| ToolInfo {

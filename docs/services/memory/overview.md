@@ -1,7 +1,7 @@
 # Memory — 双层记忆架构 + A-MEM 知识图谱
 
-> 最后更新：2026-04-13
-> 来源：存量代码分析 + 记忆系统重构 + 代码质量审查 + A-MEM 实现
+> 最后更新：2026-04-14
+> 来源：存量代码分析 + 记忆系统重构 + 代码质量审查 + A-MEM 实现 + Workspace 持久化优化
 
 ## 1. 模块概述
 
@@ -26,6 +26,9 @@ pub trait Memory: Send + Sync {
     fn should_consolidate(&self) -> bool { false }
     fn turn_count(&self) -> usize;
     fn strategy_name(&self) -> &str;
+    fn take_persistent_state(&mut self) -> Option<PersistentState> { None }
+    fn restore_persistent_state(&mut self, _state: PersistentState) { /* warn + discard */ }
+    fn persist(&self, _workspace: &Workspace) -> Result<()> { Ok(()) }
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
@@ -34,8 +37,9 @@ pub trait Memory: Send + Sync {
 **设计要点**：
 - `add_tool_context()` 有默认实现（委托给 `add_assistant_message`），区分工具上下文和普通助手消息
 - `should_consolidate()` 有默认实现（返回 `false`），不支持整合的策略无需重写
-- `as_any()` / `as_any_mut()` 提供 downcast 能力，使 Agent 层可以访问策略特定功能（如整合、历史搜索），而不污染基础 trait 接口
-- `clear()` 标记为 `#[allow(dead_code)]`，预留给未来的显式记忆重置命令
+- `persist()` 有默认 no-op 实现，在 shutdown 时调用，无需 downcast 到具体类型即可持久化记忆状态
+- `take_persistent_state()` / `restore_persistent_state()` 支持跨 session 迁移
+- `as_any()` / `as_any_mut()` 提供 downcast 能力，使 Agent 层可以访问策略特定功能
 
 **`as_any` downcast 设计决策**：
 
@@ -241,7 +245,26 @@ pub struct ConsolidationResult {
 **设计要点**：
 - `take_persistent_state()` / `restore_persistent_state()` 是对称的 API 对
 - `ChatAgent::create_session_with_migration()` 是唯一执行此流程的方法，`reset_with_updated_prompt()` 和 `new_session()` 都委托给它
-- 迁移通过 `as_any_mut().downcast_mut::<SlidingWindowMemory>()` 实现，如果 Memory 实现不支持持久化则静默跳过
+- 迁移通过 `Memory` trait 的 `take_persistent_state()` / `restore_persistent_state()` 方法实现，不再依赖 downcast
+
+[置信度：高]
+
+### 磁盘持久化
+
+> 📍 **代码位置**：`src/memory/persistence.rs` + `src/memory/sliding_window/mod.rs`
+
+记忆状态通过 `MemoryPersistence` trait 持久化到 workspace：
+
+| 数据 | 格式 | 路径 |
+|------|------|------|
+| LongTermMemory | JSON | `memory/long_term.json` |
+| HistoryLog | JSONL | `memory/history.jsonl` |
+
+**原子写入**：所有写入操作使用 `atomic_write()` 工具函数（write-to-temp-then-rename 模式），防止进程崩溃导致数据损坏。
+
+**加载时机**：`SlidingWindowFactory::with_workspace()` 在创建 Memory 实例时自动加载。
+
+**保存时机**：`Memory::persist()` 在 `agent.shutdown()` 时调用，无需 downcast 到具体类型。
 
 [置信度：高]
 
@@ -300,5 +323,6 @@ pub fn search_history(&self, query: &str, limit: Option<usize>) -> Vec<&HistoryE
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-14 | 更新 Memory trait 签名（新增 persist/take/restore 方法）；新增磁盘持久化章节（原子写入、加载/保存时机）；更新持久化迁移描述 | Workspace 系统实现 + 架构审查优化 |
 | 2026-04-13 | 重写：反映双层记忆架构重构（热/冷数据层、整合机制、持久化迁移、as_any downcast、代码质量改进） | 记忆系统重构 + 代码质量审查 |
 | 2026-04-08 | 初始创建 | 存量代码分析 Phase A |

@@ -1,3 +1,10 @@
+use std::path::Path;
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+use crate::memory::persistence::MemoryPersistence;
+
 /// Persistent long-term memory — key facts extracted across conversations.
 ///
 /// This is the "hot" layer that gets automatically injected into the system
@@ -7,7 +14,7 @@
 /// Sections are stored in insertion order and rendered as Markdown headings.
 /// Default sections are created on construction, but new sections can be
 /// added dynamically (e.g., "code_patterns", "error_history").
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LongTermMemory {
     /// Ordered list of (section_name, items) pairs.
     /// Preserves insertion order for deterministic Markdown rendering.
@@ -146,9 +153,42 @@ impl LongTermMemory {
         self.sections.iter().all(|(_, items)| items.is_empty())
     }
 
+    /// Return the number of non-empty sections.
+    pub fn section_count(&self) -> usize {
+        self.sections.iter().filter(|(_, items)| !items.is_empty()).count()
+    }
+
     /// Replace the entire long-term memory content (used during consolidation).
     #[allow(dead_code)]
     pub fn replace_with(&mut self, other: LongTermMemory) {
         *self = other;
+    }
+}
+
+impl MemoryPersistence for LongTermMemory {
+    fn save(&self, path: &Path) -> Result<()> {
+        let json = serde_json::to_string_pretty(self)
+            .context("Failed to serialize LongTermMemory")?;
+        crate::memory::persistence::atomic_write(path, json.as_bytes())
+            .with_context(|| format!("Failed to write LongTermMemory to: {}", path.display()))?;
+        tracing::debug!(path = %path.display(), "LongTermMemory saved (atomic)");
+        Ok(())
+    }
+
+    fn load(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            tracing::debug!(path = %path.display(), "No LongTermMemory file found, using default");
+            return Ok(Self::default());
+        }
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read LongTermMemory from: {}", path.display()))?;
+        let ltm: Self = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse LongTermMemory from: {}", path.display()))?;
+        tracing::info!(
+            path = %path.display(),
+            sections = ltm.sections.len(),
+            "LongTermMemory loaded from disk"
+        );
+        Ok(ltm)
     }
 }

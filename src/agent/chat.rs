@@ -14,6 +14,7 @@ use crate::memory::{MemoryFactory, SlidingWindowFactory};
 use crate::prompt::PromptBuilder;
 use crate::session::Session;
 use crate::skill::SkillInfo;
+use crate::workspace::Workspace;
 
 use super::{AgentMode, ToolEvent, ToolEventCallback};
 use super::tool_router::ToolRouter;
@@ -80,6 +81,8 @@ pub struct ChatAgent {
     agent_name: Option<String>,
     /// Soul/personality content loaded from SOUL.md.
     soul: Option<String>,
+    /// Workspace for file I/O (memory persistence, etc.).
+    workspace: Option<Workspace>,
 }
 
 impl ChatAgent {
@@ -127,13 +130,34 @@ impl ChatAgent {
             prompt_override,
             agent_name: config.agent_name.clone(),
             soul: config.soul.clone(),
+            workspace: None,
         }
     }
 
     /// Create a new chat agent with the default memory strategy
     /// (sliding window with dual-layer consolidation).
+    #[allow(dead_code)]
     pub fn new(llm: Box<dyn LlmApi>, config: &AgentConfig) -> Self {
-        Self::with_memory_factory(llm, config, Box::new(SlidingWindowFactory))
+        Self::with_memory_factory(llm, config, Box::new(SlidingWindowFactory::new()))
+    }
+
+    /// Create a new chat agent with workspace support.
+    ///
+    /// The workspace is used for:
+    /// - Loading persisted memory (LongTermMemory, HistoryLog) at startup
+    /// - Saving memory state on shutdown
+    pub fn new_with_workspace(
+        llm: Box<dyn LlmApi>,
+        config: &AgentConfig,
+        workspace: Workspace,
+    ) -> Self {
+        let factory = SlidingWindowFactory::with_workspace(
+            workspace.long_term_memory_path(),
+            workspace.history_log_path(),
+        );
+        let mut agent = Self::with_memory_factory(llm, config, Box::new(factory));
+        agent.workspace = Some(workspace);
+        agent
     }
 
     /// Load skills from a directory and rebuild the system prompt.
@@ -176,7 +200,7 @@ impl ChatAgent {
     /// Called when the tool set changes (e.g., after MCP attachment) so the
     /// LLM sees updated tool guidance in the system prompt.
     fn reset_with_updated_prompt(&mut self) {
-        let tools = self.tool_router.tool_descriptions();
+        let tools = self.tool_router.tool_infos();
         self.system_prompt = Self::build_prompt(
             self.prompt_override.as_deref(),
             self.agent_name.as_deref(),
@@ -450,12 +474,12 @@ impl AgentMode for ChatAgent {
         self.tool_router.tool_count()
     }
 
-    fn tool_descriptions(&self) -> Vec<ToolInfo> {
-        self.tool_router.tool_descriptions()
+    fn tool_infos(&self) -> Vec<ToolInfo> {
+        self.tool_router.tool_infos()
     }
 
     fn new_session(&mut self) {
-        let tools = self.tool_router.tool_descriptions();
+        let tools = self.tool_router.tool_infos();
         self.system_prompt = Self::build_prompt(
             self.prompt_override.as_deref(),
             self.agent_name.as_deref(),
@@ -497,5 +521,35 @@ impl AgentMode for ChatAgent {
 
     fn skill_count(&self) -> usize {
         self.tool_router.skill_registry().skill_count()
+    }
+
+    async fn shutdown(&mut self) -> Result<()> {
+        // 1. Persist memory state via the Memory trait (no downcast needed)
+        if let Some(ref workspace) = self.workspace {
+            tracing::info!("Persisting memory to workspace...");
+
+            if let Err(e) = self.session.memory().persist(workspace) {
+                tracing::error!(error = %e, "Failed to persist memory to workspace");
+                return Err(e);
+            }
+
+            // Save last session ID
+            if let Err(e) = std::fs::write(
+                workspace.last_session_id_path(),
+                &self.session.id,
+            ) {
+                tracing::warn!(error = %e, "Failed to save last session ID");
+            }
+
+            tracing::info!(
+                session_id = %self.session.id,
+                "Memory persisted to workspace successfully"
+            );
+        }
+
+        // 2. Shut down MCP servers to prevent orphaned child processes
+        self.tool_router.shutdown().await;
+
+        Ok(())
     }
 }

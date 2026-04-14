@@ -223,6 +223,23 @@ impl LogConfig {
         config
     }
 
+    /// Load log configuration from environment variables with workspace support.
+    ///
+    /// Same as `from_env()` but uses the workspace logs directory as the
+    /// default `log_dir` when `DAEDALUS_LOG_DIR` is not set.
+    pub fn from_env_with_workspace(workspace: &crate::workspace::Workspace) -> Self {
+        let mut config = Self::from_env();
+
+        // If no explicit log dir is set, use workspace logs directory
+        if config.log_dir.is_none() {
+            config.log_dir = Some(
+                workspace.logs_dir().to_string_lossy().into_owned()
+            );
+        }
+
+        config
+    }
+
     /// Build the `EnvFilter` from the configured filter string.
     fn build_filter(&self) -> EnvFilter {
         EnvFilter::try_new(&self.filter).unwrap_or_else(|e| {

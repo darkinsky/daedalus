@@ -16,6 +16,8 @@
 8. **数量上限字段加 `max_` 前缀**：当字段表示"最大数量"而非"当前数量"时，使用 `max_` 前缀消除歧义。例如 `max_link_candidates` 而非 `link_candidates`（后者可能被理解为"候选链接列表"）。
 9. **游标字段用 `_cursor` 后缀**：当字段表示"当前位置指针"时，使用 `_cursor` 后缀。例如 `consolidation_cursor` 而非 `last_consolidated`（后者的"最后一条已合并"vs"第一条未合并"语义模糊）。
 10. **裸元组替换为命名结构体**：当元组在多个函数签名中传递时，引入命名结构体提升可读性。例如 `ToolRound { calls, responses }` 替代 `(Vec<ToolCall>, Vec<ToolResponse>)`。
+11. **元数据方法命名一致性**：返回元数据列表的方法统一使用 `*_infos()` 模式（与返回类型 `*Info` 对齐）。例如 `tool_infos() -> Vec<ToolInfo>` 和 `skill_infos() -> Vec<SkillInfo>`，而非混用 `*_descriptions()` 和 `*_infos()`。
+12. **`*_count()` 方法使用单数前缀**：所有返回数量的方法统一使用单数前缀：`tool_count()`、`turn_count()`、`skill_count()`、`section_count()`。不使用复数形式如 `sections_count()`。
 ## 魔法常量提取
 
 1. **硬编码列表提取为常量**：当多个字符串在代码中以列表形式出现时，提取为命名常量。例如 `IGNORED_DIRS: &[&str] = &["node_modules", "target", "__pycache__", ".git"]`。
@@ -91,6 +93,7 @@
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-14 | 新增：元数据方法 `*_infos()` 命名一致性、`*_count()` 单数前缀规则 | 代码可读性审查优化 |
 | 2026-04-13 | 新增：数量上限加 max_ 前缀、游标加 _cursor 后缀、裸元组替换为命名结构体、Prompt 模板分离、expect 替代裸 unwrap 规则 | A-MEM 实现 + 代码审查 |
 | 2026-04-13 | 新增：消除同义字段混淆、纯函数不作为关联方法、Option 替代魔数、副作用不用 map+collect 规则；truncate_for_summary 更名为 truncate_at_char_boundary | 记忆系统重构代码审查 |
 | 2026-04-08 | 新增命名规范、魔法常量提取、注释准确性规则 | 代码审查改进 |

@@ -8,7 +8,10 @@ pub use consolidation::ConsolidationResult;
 pub use history::HistoryEntry;
 pub use long_term::LongTermMemory;
 
+use std::path::PathBuf;
+
 use crate::llm::ChatMessage;
+use crate::memory::persistence::MemoryPersistence;
 
 use super::{Memory, PersistentState};
 
@@ -167,6 +170,44 @@ impl SlidingWindowMemory {
         self.consolidation_cursor = 0;
     }
 
+    // ── Workspace persistence ──
+
+    /// Save all persistent memory state to the workspace.
+    ///
+    /// Saves:
+    /// - LongTermMemory → `memory/long_term.json`
+    /// - HistoryLog → `memory/history.jsonl`
+    pub fn save_to_workspace(
+        &self,
+        ltm_path: &std::path::Path,
+        history_path: &std::path::Path,
+    ) -> anyhow::Result<()> {
+        self.long_term_memory.save(ltm_path)?;
+        HistoryEntry::save_all(&self.history_log, history_path)?;
+        tracing::info!("SlidingWindowMemory persisted to workspace");
+        Ok(())
+    }
+
+    /// Load persistent memory state from the workspace.
+    ///
+    /// Loads:
+    /// - LongTermMemory from `memory/long_term.json`
+    /// - HistoryLog from `memory/history.jsonl`
+    pub fn load_from_workspace(
+        &mut self,
+        ltm_path: &std::path::Path,
+        history_path: &std::path::Path,
+    ) -> anyhow::Result<()> {
+        self.long_term_memory = LongTermMemory::load(ltm_path)?;
+        self.history_log = HistoryEntry::load_all(history_path)?;
+        tracing::info!(
+            ltm_sections = self.long_term_memory.section_count(),
+            history_entries = self.history_log.len(),
+            "SlidingWindowMemory loaded from workspace"
+        );
+        Ok(())
+    }
+
     // ── Internal helpers ──
 
     /// Build the effective system prompt by injecting long-term memory.
@@ -251,6 +292,13 @@ impl Memory for SlidingWindowMemory {
         }
     }
 
+    fn persist(&self, workspace: &crate::workspace::Workspace) -> anyhow::Result<()> {
+        self.save_to_workspace(
+            &workspace.long_term_memory_path(),
+            &workspace.history_log_path(),
+        )
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -266,11 +314,56 @@ impl Memory for SlidingWindowMemory {
 ///
 /// This is the default memory factory used by `ChatAgent`. It creates
 /// sliding window memories with the default consolidation settings.
-pub struct SlidingWindowFactory;
+///
+/// When workspace paths are configured, the factory will automatically
+/// load persisted LongTermMemory and HistoryLog from disk.
+pub struct SlidingWindowFactory {
+    /// Path to the LongTermMemory persistence file (from workspace).
+    ltm_path: Option<PathBuf>,
+    /// Path to the HistoryLog persistence file (from workspace).
+    history_path: Option<PathBuf>,
+}
+
+impl SlidingWindowFactory {
+    /// Create a factory without workspace persistence (in-memory only).
+    #[allow(dead_code)]
+    pub fn new() -> Self {
+        Self {
+            ltm_path: None,
+            history_path: None,
+        }
+    }
+
+    /// Create a factory with workspace persistence paths.
+    ///
+    /// When set, newly created memories will automatically load
+    /// persisted state from these paths.
+    pub fn with_workspace(
+        ltm_path: PathBuf,
+        history_path: PathBuf,
+    ) -> Self {
+        Self {
+            ltm_path: Some(ltm_path),
+            history_path: Some(history_path),
+        }
+    }
+}
 
 impl super::MemoryFactory for SlidingWindowFactory {
     fn create_memory(&self, system_prompt: &str) -> Box<dyn Memory> {
-        Box::new(SlidingWindowMemory::with_defaults(system_prompt))
+        let mut memory = SlidingWindowMemory::with_defaults(system_prompt);
+
+        // Load persisted state from workspace if paths are configured
+        if let (Some(ltm_path), Some(history_path)) = (&self.ltm_path, &self.history_path) {
+            if let Err(e) = memory.load_from_workspace(ltm_path, history_path) {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to load persisted memory from workspace, starting fresh"
+                );
+            }
+        }
+
+        Box::new(memory)
     }
 
     fn strategy_name(&self) -> &str {
@@ -757,7 +850,7 @@ mod tests {
     #[test]
     fn test_sliding_window_factory() {
         use crate::memory::MemoryFactory;
-        let factory = SlidingWindowFactory;
+        let factory = SlidingWindowFactory::new();
         assert_eq!(factory.strategy_name(), "sliding_window");
 
         let memory = factory.create_memory("Test prompt");
