@@ -1,7 +1,7 @@
 # 编码惯例与隐含规则
 
-> 最后更新：2026-04-13
-> 来源：存量代码分析 + 代码审查改进 + 记忆系统重构代码审查
+> 最后更新：2026-04-14
+> 来源：存量代码分析 + 代码审查改进 + 记忆系统重构代码审查 + 架构审查优化
 > 置信度：高
 
 ## 命名规范
@@ -18,6 +18,8 @@
 10. **裸元组替换为命名结构体**：当元组在多个函数签名中传递时，引入命名结构体提升可读性。例如 `ToolRound { calls, responses }` 替代 `(Vec<ToolCall>, Vec<ToolResponse>)`。
 11. **元数据方法命名一致性**：返回元数据列表的方法统一使用 `*_infos()` 模式（与返回类型 `*Info` 对齐）。例如 `tool_infos() -> Vec<ToolInfo>` 和 `skill_infos() -> Vec<SkillInfo>`，而非混用 `*_descriptions()` 和 `*_infos()`。
 12. **`*_count()` 方法使用单数前缀**：所有返回数量的方法统一使用单数前缀：`tool_count()`、`turn_count()`、`skill_count()`、`section_count()`。不使用复数形式如 `sections_count()`。
+13. **可失败的搜索方法用 `try_*()` 前缀**：当方法尝试从某个源加载数据，成功返回 `Some`、未找到返回 `None` 时，使用 `try_*()` 前缀。例如 `try_common_paths() -> Result<Option<Self>>`、`try_legacy_home_path() -> Result<Option<Self>>`。这与 `load()` / `from_*()` 的“必须成功”语义区分开。
+14. **无外部消费者时不标记 `#[deprecated]`**：`#[deprecated]` 属性仅在有外部 crate 依赖时才有意义。对于纯内部的 re-export（如 `crate::llm::ToolInfo`），使用注释说明“新代码应使用 `crate::tools::ToolInfo`”即可，无需 `#[deprecated]` 产生编译警告噪音。
 ## 魔法常量提取
 
 1. **硬编码列表提取为常量**：当多个字符串在代码中以列表形式出现时，提取为命名常量。例如 `IGNORED_DIRS: &[&str] = &["node_modules", "target", "__pycache__", ".git"]`。
@@ -93,6 +95,7 @@
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-14 | 新增：`try_*()` 可失败搜索方法前缀规则、无外部消费者时不标记 deprecated 规则 | 架构审查优化 |
 | 2026-04-14 | 新增：元数据方法 `*_infos()` 命名一致性、`*_count()` 单数前缀规则 | 代码可读性审查优化 |
 | 2026-04-13 | 新增：数量上限加 max_ 前缀、游标加 _cursor 后缀、裸元组替换为命名结构体、Prompt 模板分离、expect 替代裸 unwrap 规则 | A-MEM 实现 + 代码审查 |
 | 2026-04-13 | 新增：消除同义字段混淆、纯函数不作为关联方法、Option 替代魔数、副作用不用 map+collect 规则；truncate_for_summary 更名为 truncate_at_char_boundary | 记忆系统重构代码审查 |

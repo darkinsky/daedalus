@@ -568,19 +568,15 @@ impl Default for AgenticMemoryStore {
 
 impl MemoryPersistence for AgenticMemoryStore {
     fn save(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
-        }
         let notes: Vec<&MemoryNote> = self.notes.values().collect();
         let json = serde_json::to_string_pretty(&notes)
             .context("Failed to serialize AgenticMemoryStore")?;
-        std::fs::write(path, &json)
+        crate::memory::persistence::atomic_write(path, json.as_bytes())
             .with_context(|| format!("Failed to write AgenticMemoryStore to: {}", path.display()))?;
         tracing::debug!(
             path = %path.display(),
             notes = notes.len(),
-            "AgenticMemoryStore saved"
+            "AgenticMemoryStore saved (atomic)"
         );
         Ok(())
     }

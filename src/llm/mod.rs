@@ -13,10 +13,8 @@ pub use types::{
 };
 
 // Re-export ToolInfo from its canonical home in `crate::tools`.
-// This preserves backward compatibility for existing `use crate::llm::ToolInfo`.
 // New code should use `crate::tools::ToolInfo` directly.
-#[allow(unused_imports, deprecated)]
-#[deprecated(since = "0.2.0", note = "Use `crate::tools::ToolInfo` directly instead of `crate::llm::ToolInfo`")]
+#[allow(unused_imports)]
 pub use crate::tools::ToolInfo;
 
 use anyhow::Result;

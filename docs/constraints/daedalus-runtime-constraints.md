@@ -1,7 +1,7 @@
 # 运行时约束
 
-> 最后更新：2026-04-13
-> 来源：存量代码分析 + 代码审查改进 + 并行化迭代 + 记忆系统重构 + Skill 功能实现
+> 最后更新：2026-04-14
+> 来源：存量代码分析 + 代码审查改进 + 并行化迭代 + 记忆系统重构 + Skill 功能实现 + Workspace 系统实现 + 架构审查优化
 > 置信度：高
 
 ## 硬编码常量
@@ -63,9 +63,9 @@
 
 ## MCP 配置搜索约束
 
-> 📍 **代码位置**：`src/mcp/config.rs:55-82`
+> 📍 **代码位置**：`src/mcp/config.rs`
 
-配置搜索是**先到先得**的：如果 `DAEDALUS_MCP_CONFIG` 环境变量指向的文件存在，就不再检查 `./mcp.json` 和 `~/.config/daedalus/mcp.json`。
+配置搜索是**先到先得**的，通过 `try_common_paths()` 和 `try_legacy_home_path()` 两个私有方法实现搜索链复用。`load_with_workspace()` 在公共搜索步骤和 legacy 回退之间插入 workspace 特有的搜索步骤。
 
 ## 工具调用并行执行
 
@@ -97,7 +97,7 @@
 1. 写入数据到 `<path>.tmp`
 2. 原子重命名 `<path>.tmp` → `<path>`
 
-这确保进程崩溃时目标文件不会处于部分写入状态。影响的文件：`long_term.json`、`history.jsonl`。
+这确保进程崩溃时目标文件不会处于部分写入状态。影响的文件：`long_term.json`、`history.jsonl`、`notes.json`（A-MEM）。
 
 ## 优雅关闭约束
 
@@ -129,6 +129,7 @@ Skill 从当前工作目录的 `skills/` 子目录加载，遵循子目录 + `SK
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-14 | 更新原子写入影响文件列表（新增 notes.json）；更新 MCP 配置搜索约束（try_common_paths 重构） | 架构审查优化 |
 | 2026-04-14 | 新增 Workspace 解析约束（pre-logging）、记忆持久化原子写入约束、优雅关闭约束 | Workspace 系统实现 + 架构审查优化 |
 | 2026-04-13 | 新增 SKILL_FILENAME、SKILL_TOOL_NAME 常量；新增 Skill 加载约束章节 | Skill 功能实现 |
 | 2026-04-13 | 新增 A-MEM 运行时常量（相似度阈值、候选数、检索限制）；更新 consolidation 字段命名和代码位置 | A-MEM 实现 + 代码审查 |

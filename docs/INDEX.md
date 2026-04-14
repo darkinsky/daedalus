@@ -11,7 +11,7 @@
 | [agent/overview.md](services/agent/overview.md) | Agent 模式抽象 + ChatAgent + ToolRouter + 内置工具 + ToolEvent 回调 + 并行工具执行 + Skill 系统（LLM 路由） | 2026-04-13 |
 | [cli/overview.md](services/cli/overview.md) | REPL 交互界面、命令、渲染、工具事件渲染 | 2026-04-09 |
 | [llm/overview.md](services/llm/overview.md) | LLM Provider 抽象 + 双 Provider 实现（ToolInfo 已迁移至 tools） | 2026-04-09 |
-| [mcp/overview.md](services/mcp/overview.md) | MCP 协议客户端 + 工具管理 | 2026-04-08 |
+| [mcp/overview.md](services/mcp/overview.md) | MCP 协议客户端 + 工具管理 + Workspace 配置搜索链 + try_common_paths 重构 | 2026-04-14 |
 | [memory/overview.md](services/memory/overview.md) | 双层记忆架构 + A-MEM 知识图谱引擎 + Embedding trait + 整合机制 + 持久化迁移 + 原子写入 + Memory::persist() | 2026-04-14 |
 | [prompt/overview.md](services/prompt/overview.md) | 系统提示词动态组装 | 2026-04-08 |
 
@@ -19,7 +19,7 @@
 
 | 文档 | 简述 | 最后更新 |
 |------|------|---------|
-| [daedalus-trait-based-architecture.md](design/daedalus-trait-based-architecture.md) | Trait 抽象 + 依赖注入 + ToolRouter/BuiltinTool + ToolInfo迁移 + ToolEvent回调 + 并行化 + Memory双层架构 + 持久化迁移 + 动态注入 + ToolRound + PersistentState封装 + Skill LLM路由 + SkillTool适配器 + Memory::persist() + 原子写入 + 优雅关闭 | 2026-04-14 |
+| [daedalus-trait-based-architecture.md](design/daedalus-trait-based-architecture.md) | Trait 抽象 + 依赖注入 + ToolRouter/BuiltinTool + ToolInfo迁移 + ToolEvent回调 + 并行化 + Memory双层架构 + 持久化迁移 + 动态注入 + ToolRound + PersistentState封装 + Skill LLM路由 + SkillTool适配器 + Memory::persist() + 原子写入 + 优雅关闭 + MCP配置重构 + ToolInfo清理 | 2026-04-14 |
 
 ## 技术约束
 
@@ -31,4 +31,4 @@
 
 | 文档 | 简述 | 最后更新 |
 |------|------|---------|
-| [daedalus-coding-conventions.md](rules/daedalus-coding-conventions.md) | 编码惯例、命名规范（含 *_infos() 和 *_count() 一致性规则）、迭代器与副作用规则、Prompt模板分离 | 2026-04-14 |
+| [daedalus-coding-conventions.md](rules/daedalus-coding-conventions.md) | 编码惯例、命名规范（含 *_infos()、*_count()、try_*() 一致性规则）、迭代器与副作用规则、Prompt模板分离、deprecated使用规则 | 2026-04-14 |
