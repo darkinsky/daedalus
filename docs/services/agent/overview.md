@@ -1,15 +1,35 @@
 # Agent — Agent 模式抽象、ChatAgent 与 ToolRouter
 
-> 最后更新：2026-04-13
-> 来源：存量代码分析 + 代码审查改进 + 工具事件/并行化迭代 + 记忆系统重构 + Skill 功能实现
+> 最后更新：2026-04-14
+> 来源：存量代码分析 + 代码审查改进 + 工具事件/并行化迭代 + 记忆系统重构 + Skill 功能实现 + 模块化重构
 
 ## 1. 模块概述
 
-Agent 模块定义了统一的 Agent 模式接口（`AgentMode` trait）和当前唯一的实现 `ChatAgent`。`ChatAgent` 负责多轮对话编排，包括消息管理、LLM 调用和工具调用循环。工具调用通过 `ToolRouter` 统一路由，支持内置工具和 MCP 外部工具。
+Agent 模块定义了统一的 Agent 模式接口（`AgentMode` trait）和当前唯一的实现 `ChatAgent`。`ChatAgent` 负责多轮对话编排，包括消息管理、LLM 调用和工具调用循环。工具调用通过 `ToolRouter` 统一路由，支持内置工具和 MCP 外部工具。会话管理（`Session`）也归属于本模块。
 
 ## 2. AgentMode Trait
 
 > 📍 **代码位置**：`src/agent/mod.rs`
+
+### Session 管理
+
+> 📍 **代码位置**：`src/agent/session.rs`（从 `src/session.rs` 迁移）
+
+Session 是 agent 的内部概念，只被 agent 模块使用，因此在模块化重构中从 `src/` 外层移入 `agent/` 目录。通过 `agent/mod.rs` 中的 `pub(crate) use session::Session` 对 crate 内部可见。
+
+```
+Session {
+    id: String,           // UUID v4
+    title: String,        // "Session YYYY-MM-DD HH:MM:SS"
+    request_count: u64,   // 自增请求计数器
+    created_at: String,   // 预留给未来持久化
+    memory: Box<dyn Memory>,  // 策略模式：trait object 持有记忆策略
+}
+```
+
+**设计模式**：策略模式。Session 通过 `Box<dyn Memory>` 持有记忆策略，对外提供 `memory()` / `memory_mut()` 访问器而非代理方法，最大化灵活性。[置信度：高]
+
+### AgentMode Trait 定义
 
 ```rust
 #[async_trait]
@@ -236,6 +256,7 @@ fn skill_count(&self) -> usize { 0 }
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-14 | Session 从 `src/session.rs` 迁移至 `src/agent/session.rs`；新增 Session 管理章节 | 模块化重构 |
 | 2026-04-13 | 新增 Skill 系统章节（LLM 路由、SkillTool 适配器、AgentMode 扩展、优雅降级） | Skill 功能实现 |
 | 2026-04-09 | 工具调用改为并行执行（futures::join_all）；新增 ToolEvent 回调机制；AgentMode::chat() 签名增加 on_tool_event 参数 | 工具事件/并行化迭代 |
 | 2026-04-08 | 新增 ToolRouter、BuiltinTool 架构；更新字段命名和工具调用流程 | 代码审查改进 |

@@ -7,7 +7,8 @@
 /// Reasoning effort level for models that support it.
 ///
 /// Maps to OpenAI's `reasoning_effort` and Venus proxy's `thinking_level`/`reasoning_effort`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ReasoningEffort {
     Low,
     Medium,
@@ -41,7 +42,8 @@ impl std::str::FromStr for ReasoningEffort {
 /// Shared between `LlmConfig` (instance-level defaults) and `ChatOptions`
 /// (per-request overrides). This eliminates field duplication and provides
 /// a single merge operation for the "request overrides config" pattern.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default)]
 pub struct VenusExtensions {
     /// Enable thinking/reasoning mode for supported models.
     /// Maps to Venus `thinking_enabled` (Claude, Gemini, VenusLLMServing).
@@ -80,33 +82,11 @@ impl VenusExtensions {
         }
     }
 
-    /// Load Venus extension parameters from environment variables.
-    ///
-    /// Reads: `DAEDALUS_THINKING_ENABLED`, `DAEDALUS_THINKING_TOKENS`,
-    ///        `DAEDALUS_REASONING_EFFORT`.
-    pub fn from_env() -> Self {
-        let thinking_enabled = std::env::var("DAEDALUS_THINKING_ENABLED")
-            .ok()
-            .map(|v| v.to_lowercase() == "true");
-
-        let thinking_tokens = std::env::var("DAEDALUS_THINKING_TOKENS")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok());
-
-        let reasoning_effort = std::env::var("DAEDALUS_REASONING_EFFORT")
-            .ok()
-            .and_then(|v| v.parse::<ReasoningEffort>().ok());
-
-        Self {
-            thinking_enabled,
-            thinking_tokens,
-            reasoning_effort,
-        }
-    }
 }
 
 /// Configuration for an LLM provider.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
 pub struct LlmConfig {
     /// API key for authentication.
     pub api_key: String,
@@ -118,31 +98,19 @@ pub struct LlmConfig {
     /// Defaults to "openai" if not specified.
     pub adapter_kind: Option<String>,
     /// Venus API proxy advanced options (thinking, reasoning_effort).
+    #[serde(default)]
     pub venus: VenusExtensions,
 }
 
-impl LlmConfig {
-    /// Load LLM configuration from environment variables.
-    ///
-    /// Required: `OPENAI_API_KEY`
-    /// Optional: `DAEDALUS_MODEL`, `OPENAI_BASE_URL`, `DAEDALUS_ADAPTER_KIND`,
-    ///           and Venus extension env vars.
-    pub fn from_env() -> anyhow::Result<Self> {
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .map_err(|_| anyhow::anyhow!("OPENAI_API_KEY environment variable is required"))?;
-
-        let model = std::env::var("DAEDALUS_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
-        let api_base = std::env::var("OPENAI_BASE_URL").ok();
-        let adapter_kind = std::env::var("DAEDALUS_ADAPTER_KIND").ok();
-        let venus = VenusExtensions::from_env();
-
-        Ok(Self {
-            api_key,
-            model,
-            api_base,
-            adapter_kind,
-            venus,
-        })
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            model: "gpt-4o".to_string(),
+            api_base: None,
+            adapter_kind: None,
+            venus: VenusExtensions::default(),
+        }
     }
 }
 

@@ -12,9 +12,10 @@ use crate::tools::ToolInfo;
 use crate::mcp::McpManager;
 use crate::memory::{MemoryFactory, SlidingWindowFactory};
 use crate::prompt::PromptBuilder;
-use crate::session::Session;
 use crate::skill::SkillInfo;
 use crate::workspace::Workspace;
+
+use super::Session;
 
 use super::{AgentMode, ToolEvent, ToolEventCallback};
 use super::tool_router::ToolRouter;

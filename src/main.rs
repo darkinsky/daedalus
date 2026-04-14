@@ -3,11 +3,9 @@ mod cli;
 mod config;
 mod embedding;
 mod llm;
-pub mod logging;
 mod mcp;
 mod memory;
 mod prompt;
-mod session;
 mod skill;
 mod tools;
 mod workspace;
@@ -20,9 +18,9 @@ async fn main() -> Result<()> {
     // Resolve workspace (zero-config: auto-creates ~/.daedalus/)
     let workspace = workspace::Workspace::resolve()?;
 
-    // Initialize logging — use workspace logs dir as default
-    let log_config = logging::LogConfig::from_env_with_workspace(&workspace);
-    let _log_guard = logging::init(&log_config)?;
+    // Initialize logging — use workspace config file
+    let log_config = config::LogConfig::from_workspace(&workspace);
+    let _log_guard = config::init_logging(&log_config)?;
 
     tracing::info!("Daedalus Agent starting...");
     tracing::info!(
@@ -31,8 +29,8 @@ async fn main() -> Result<()> {
         "Workspace resolved"
     );
 
-    // Load configuration (SOUL file from workspace fallback)
-    let config = config::AgentConfig::from_env_with_workspace(&workspace)?;
+    // Load configuration from workspace YAML config file
+    let config = config::AgentConfig::from_workspace(&workspace)?;
     tracing::info!("Using model: {}", config.model());
     if let Some(base_url) = config.api_base() {
         tracing::info!("Using API base URL: {}", base_url);

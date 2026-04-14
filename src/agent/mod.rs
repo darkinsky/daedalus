@@ -1,7 +1,9 @@
 mod chat;
+mod session;
 pub(crate) mod tool_router;
 
 pub use chat::ChatAgent;
+pub(crate) use session::Session;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -10,7 +12,6 @@ use std::sync::Arc;
 use crate::llm::ChatResponse;
 use crate::tools::ToolInfo;
 use crate::mcp::McpManager;
-use crate::session::Session;
 use crate::skill::SkillInfo;
 
 // ── Tool execution events (for CLI progress display) ──

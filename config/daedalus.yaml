@@ -1,0 +1,68 @@
+# Daedalus Configuration File
+# Place this file at: <workspace>/config/daedalus.yaml
+#
+# Workspace locations (in priority order):
+#   1. DAEDALUS_WORKSPACE env var (custom)
+#   2. .daedalus/ in project root or ancestors (project-level)
+#   3. ~/.daedalus/ (global)
+
+# ── LLM Provider Configuration ──
+llm:
+  # API key for authentication (required)
+  api_key: "sk-..."
+
+  # Model identifier (default: "gpt-4o")
+  model: "gpt-4o"
+
+  # Custom API base URL (optional, for proxies, Azure, etc.)
+  # api_base: "https://your-proxy.example.com/v1"
+
+  # LLM adapter kind (optional): "openai", "anthropic", "gemini", "groq", "cohere"
+  # adapter_kind: "openai"
+
+  # Venus API proxy advanced options (optional)
+  # venus:
+  #   thinking_enabled: true
+  #   thinking_tokens: 4096
+  #   reasoning_effort: "high"   # "low", "medium", "high"
+
+# ── Agent Configuration ──
+agent:
+  # Custom agent name (default: "Daedalus")
+  # name: "Daedalus"
+
+  # Custom system prompt (overrides the dynamic PromptBuilder when set)
+  # system_prompt: "You are a helpful assistant."
+
+  # Path to SOUL.md personality file (optional)
+  # Falls back to <workspace>/config/soul.md if not set
+  # soul_file: "./SOUL.md"
+
+# ── Logging Configuration ──
+logging:
+  # Log level filter directive (default: "daedalus=debug")
+  filter: "daedalus=debug"
+
+  # Output format: "pretty", "compact", "json", "full" (default: "pretty")
+  format: pretty
+
+  # Display options for log output
+  display:
+    with_file: false
+    with_line_number: false
+    with_target: true
+    with_thread_names: false
+    with_thread_ids: false
+    with_ansi: true
+
+  # Directory for rolling log files (default: <workspace>/logs/)
+  # log_dir: "./logs"
+
+  # Log file name prefix (default: "daedalus")
+  log_file_prefix: "daedalus"
+
+  # Rotation policy: "minutely", "hourly", "daily", "never" (default: "daily")
+  rotation: daily
+
+  # File log format (default: "json")
+  # file_format: json

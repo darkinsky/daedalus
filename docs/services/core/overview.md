@@ -1,11 +1,13 @@
-# Core — 核心入口、Workspace、配置、会话、日志
+# Core — 核心入口、Workspace、配置、日志
 
 > 最后更新：2026-04-14
-> 来源：存量代码分析 + Workspace 系统实现 + 架构审查优化
+> 来源：存量代码分析 + Workspace 系统实现 + 架构审查优化 + YAML 配置迁移 + 模块化重构
 
 ## 1. 模块概述
 
-Core 包含 Daedalus 的入口点和基础设施组件：启动编排（`main.rs`）、环境变量配置（`config.rs`）、会话管理（`session.rs`）和结构化日志（`logging.rs`）。
+Core 包含 Daedalus 的入口点和基础设施组件：启动编排（`main.rs`）、YAML 配置加载（`config/agent_config.rs`）、结构化日志（`config/logging.rs`）和 Workspace 路径管理（`workspace.rs`）。
+
+> **注意**：`session.rs` 已在模块化重构中移入 `agent/` 模块，详见 [agent/overview.md](../agent/overview.md)。
 
 ## 2. workspace.rs — 统一路径管理
 
@@ -57,11 +59,11 @@ Workspace::resolve()
 
 > 📍 **代码位置**：`src/main.rs`
 
-启动流程严格按序执行 11 个阶段：
+启动流程严格按序执行 10 个阶段：
 
 1. **Workspace 解析**：`Workspace::resolve()` 三级优先级解析
-2. **日志初始化**：`LogConfig::from_env_with_workspace()` → `logging::init()` → 持有 `_log_guard`
-3. **配置加载**：`AgentConfig::from_env_with_workspace()` 从环境变量读取（SOUL 文件支持 workspace 回退）
+2. **日志初始化**：`config::LogConfig::from_workspace()` → `config::init_logging()` → 持有 `_log_guard`
+3. **配置加载**：`config::AgentConfig::from_workspace()` 从 YAML 文件读取（SOUL 文件支持 workspace 回退）
 4. **MCP 初始化**（可选）：`McpConfig::load_with_workspace()` → `McpManager::from_config()` 并行连接
 5. **LLM Provider 创建**：`llm::create_provider()` 根据配置选择 GenAI 或 Venus
 6. **Agent 创建**：`ChatAgent::new_with_workspace()` 创建 Agent + 从 workspace 加载持久化记忆
@@ -72,66 +74,86 @@ Workspace::resolve()
 
 **设计决策**：
 - MCP 初始化是 `Option<McpManager>`，缺少配置文件时自动跳过，不阻断启动
-- 所有 `*_with_workspace()` 方法都有不带 workspace 的对应版本（向后兼容）
+- 配置文件不存在时使用默认值，不阻断启动
 
 [置信度：高]
 
-## 4. config.rs — Agent 配置
+## 4. config 模块 — Agent 配置 + 日志配置
 
-> 📍 **代码位置**：`src/config.rs`
+> 📍 **代码位置**：`src/config.rs`（模块入口）→ `src/config/agent_config.rs` + `src/config/logging.rs`
+
+### 模块结构
+
+```
+src/config.rs              # 模块入口（5 行，re-export）
+src/config/
+├── agent_config.rs        # AgentConfig + YAML 解析
+└── logging.rs             # LogConfig + tracing 初始化
+```
+
+`config.rs` 作为模块入口，使用 Rust 2024 edition 的文件+目录模块模式，re-export 公共类型：
+- `AgentConfig`、`DEFAULT_SYSTEM_PROMPT`（来自 `agent_config.rs`）
+- `LogConfig`、`LogGuard`、`init_logging`（来自 `logging.rs`）
 
 ### 关键类型
 
 - `const DEFAULT_SYSTEM_PROMPT` — 默认系统提示词的单一真实来源
-- `struct AgentConfig` — 顶层配置聚合
+- `struct DaedalusConfigFile` — 顶层 YAML 文件结构（内部类型）
+- `struct AgentConfig` — Agent 配置聚合
+- `struct LogConfig` — 日志配置
 
-### 环境变量映射
+### YAML 配置文件
 
-| 环境变量 | 必选 | 默认值 | 用途 |
-|---|---|---|---|
-| `OPENAI_API_KEY` | ✅ | — | API 密钥 |
-| `DAEDALUS_MODEL` | | `gpt-4o` | 模型名 |
-| `OPENAI_BASE_URL` | | — | 自定义 API 端点 |
-| `DAEDALUS_ADAPTER_KIND` | | `openai` | 适配器类型 |
-| `DAEDALUS_SYSTEM_PROMPT` | | — | 自定义提示词（覆盖 PromptBuilder） |
-| `DAEDALUS_AGENT_NAME` | | `Daedalus` | Agent 名称 |
-| `DAEDALUS_SOUL_FILE` | | — | SOUL.md 文件路径 |
-| `DAEDALUS_THINKING_ENABLED` | | — | 启用思考模式 |
-| `DAEDALUS_THINKING_TOKENS` | | — | 思考最大 token |
-| `DAEDALUS_REASONING_EFFORT` | | — | 推理努力级别（low/medium/high） |
+配置文件路径：`<workspace>/config/daedalus.yaml`
+
+```yaml
+llm:
+  api_key: "sk-..."
+  model: "gpt-4o"
+  api_base: "https://your-proxy/v1"
+  adapter_kind: "openai"
+  venus:
+    thinking_enabled: true
+    thinking_tokens: 4096
+    reasoning_effort: "high"
+
+agent:
+  name: "Daedalus"
+  system_prompt: ""
+  soul_file: "./SOUL.md"
+
+logging:
+  filter: "daedalus=debug"
+  format: pretty
+  rotation: daily
+```
+
+所有字段都有合理的默认值，配置文件不存在时使用默认配置正常启动。`LlmConfig`、`VenusExtensions`、`ReasoningEffort` 等类型均实现了 `serde::Deserialize` 以支持 YAML 反序列化。
 
 ### 双轨提示词机制
 
 `is_custom_prompt` 标志实现了两种提示词模式：
-- **自定义模式**：`DAEDALUS_SYSTEM_PROMPT` 设置后直接使用，跳过 PromptBuilder
+- **自定义模式**：YAML 中 `agent.system_prompt` 设置后直接使用，跳过 PromptBuilder
 - **动态模式**：未设置时通过 PromptBuilder 动态组装（含 name + soul + tools）
 
 ### Soul 人格系统
 
-Soul 文件加载优先级：`DAEDALUS_SOUL_FILE` 环境变量 > workspace `config/soul.md`。文件读取失败仅 warn 不 panic（优雅降级）。
+Soul 文件加载优先级：YAML 中 `agent.soul_file` 字段 > workspace `config/soul.md`。文件读取失败仅 warn 不 panic（优雅降级）。
 
-**内部实现**：`read_trimmed_file()` 辅助函数统一处理文件读取 + trim + 空检查，消除了 `load_soul_file` 和 `load_soul_file_with_workspace` 之间的代码重复。`build()` 私有方法提取了 `from_env()` 和 `from_env_with_workspace()` 的共享逻辑。[置信度：高]
+**内部实现**：`read_trimmed_file()` 辅助函数统一处理文件读取 + trim + 空检查。`build_from_file()` 私有方法封装了从 YAML 解析结果构建 `AgentConfig` 的共享逻辑。[置信度：高]
 
 ## 5. session.rs — 会话管理
-> 📍 **代码位置**：`src/session.rs`
 
-### Session 结构
+> 📍 **代码位置**：`src/agent/session.rs`（已从 `src/session.rs` 迁移至 agent 模块）
+>
+> Session 只被 agent 模块使用，是 agent 的内部概念，因此在模块化重构中移入 `agent/` 目录。
+> 详见 [agent/overview.md](../agent/overview.md)。
 
-```
-Session {
-    id: String,           // UUID v4
-    title: String,        // "Session YYYY-MM-DD HH:MM:SS"
-    request_count: u64,   // 自增请求计数器
-    created_at: String,   // 预留给未来持久化
-    memory: Box<dyn Memory>,  // 策略模式：trait object 持有记忆策略
-}
-```
+[置信度：高]
 
-**设计模式**：策略模式。Session 通过 `Box<dyn Memory>` 持有记忆策略，对外提供 `memory()` / `memory_mut()` 访问器而非代理方法，最大化灵活性。[置信度：高]
+## 6. logging — 结构化日志
 
-## 6. logging.rs — 结构化日志
-
-> 📍 **代码位置**：`src/logging.rs`
+> 📍 **代码位置**：`src/config/logging.rs`（已从 `src/logging.rs` 迁移至 config 模块）
 
 ### 特性
 
@@ -140,7 +162,7 @@ Session {
 - **4 种轮转策略**：Minutely、Hourly、Daily（默认）、Never
 - **时区检测**：优先本地时区，回退 UTC
 - **非阻塞写入**：`tracing_appender::non_blocking` 避免 IO 阻塞
-- **13 个环境变量**高度可配置
+- **YAML 配置**：通过 `config/daedalus.yaml` 的 `logging` 段配置
 
 ### LogGuard 生命周期约束
 
@@ -169,5 +191,6 @@ Session {
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-14 | 配置从环境变量迁移到 YAML 文件；config+logging 合并为 config/ 模块；session.rs 移入 agent/ 模块；更新所有代码位置和引用路径 | YAML 配置迁移 + 模块化重构 |
 | 2026-04-14 | 新增 Workspace 章节（三级优先级、目录结构、pre-logging 约束）；更新启动流程为 11 阶段；更新 config.rs 章节（workspace 回退、build() 重构、read_trimmed_file 辅助函数） | Workspace 系统实现 + 架构审查优化 |
 | 2026-04-08 | 初始创建 | 存量代码分析 Phase A |

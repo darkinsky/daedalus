@@ -9,7 +9,8 @@ use tracing_subscriber::{
 };
 
 /// Log output format.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum LogFormat {
     /// Human-readable, colored output (default)
     #[default]
@@ -24,6 +25,7 @@ pub enum LogFormat {
 
 impl LogFormat {
     /// Parse a log format string (case-insensitive), falling back to default.
+    #[allow(dead_code)]
     pub fn parse_or_default(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "json" => Self::Json,
@@ -35,7 +37,8 @@ impl LogFormat {
 }
 
 /// Log file rotation policy.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum LogRotation {
     /// Rotate log files every minute (useful for testing)
     Minutely,
@@ -50,6 +53,7 @@ pub enum LogRotation {
 
 impl LogRotation {
     /// Parse a rotation string (case-insensitive), falling back to default.
+    #[allow(dead_code)]
     pub fn parse_or_default(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "minutely" | "minute" => Self::Minutely,
@@ -75,7 +79,8 @@ impl LogRotation {
 ///
 /// Controls which metadata fields are included in log output.
 /// Used by both `LogConfig` (for stderr) and file logging (full metadata).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
 pub struct LayerDisplayOpts {
     /// Whether to include source file location in log output.
     pub with_file: bool,
@@ -136,8 +141,16 @@ macro_rules! apply_display_opts {
     };
 }
 
+/// Wrapper for extracting the `logging` section from the top-level YAML config.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default)]
+struct LogConfigWrapper {
+    logging: LogConfig,
+}
+
 /// Logging configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
 pub struct LogConfig {
     /// Log level filter directive (e.g., "daedalus=debug,rig=info")
     pub filter: String,
@@ -170,65 +183,26 @@ impl Default for LogConfig {
 }
 
 impl LogConfig {
-    /// Load log configuration from environment variables.
+    /// Load log configuration from the workspace YAML config file.
     ///
-    /// Supported env vars:
-    /// - `RUST_LOG`: Standard log filter directive (overrides default filter)
-    /// - `DAEDALUS_LOG_FORMAT`: Output format ("pretty", "compact", "json", "full")
-    /// - `DAEDALUS_LOG_FILE`: Whether to show source file ("true"/"false")
-    /// - `DAEDALUS_LOG_LINE`: Whether to show line numbers ("true"/"false")
-    /// - `DAEDALUS_LOG_TARGET`: Whether to show target module ("true"/"false", default: true)
-    /// - `DAEDALUS_LOG_THREAD_NAMES`: Whether to show thread names ("true"/"false")
-    /// - `DAEDALUS_LOG_ANSI`: Whether to use ANSI colors ("true"/"false", default: true)
-    /// - `DAEDALUS_LOG_DIR`: Directory for rolling log files (enables file logging)
-    /// - `DAEDALUS_LOG_FILE_PREFIX`: Log file name prefix (default: "daedalus")
-    /// - `DAEDALUS_LOG_ROTATION`: Rotation policy ("minutely", "hourly", "daily", "never")
-    /// - `DAEDALUS_LOG_FILE_FORMAT`: File log format ("pretty", "compact", "json", "full"; default: "json")
-    pub fn from_env() -> Self {
-        let mut config = Self::default();
-
-        if let Ok(filter) = std::env::var("RUST_LOG") {
-            config.filter = filter;
-        }
-
-        if let Ok(format) = std::env::var("DAEDALUS_LOG_FORMAT") {
-            config.format = LogFormat::parse_or_default(&format);
-        }
-
-        config.display.with_file = env_bool("DAEDALUS_LOG_FILE", config.display.with_file);
-        config.display.with_line_number = env_bool("DAEDALUS_LOG_LINE", config.display.with_line_number);
-        config.display.with_target = env_bool("DAEDALUS_LOG_TARGET", config.display.with_target);
-        config.display.with_thread_names = env_bool("DAEDALUS_LOG_THREAD_NAMES", config.display.with_thread_names);
-        config.display.with_thread_ids = env_bool("DAEDALUS_LOG_THREAD_IDS", config.display.with_thread_ids);
-        config.display.with_ansi = env_bool("DAEDALUS_LOG_ANSI", config.display.with_ansi);
-
-        if let Ok(dir) = std::env::var("DAEDALUS_LOG_DIR")
-            && !dir.is_empty() {
-                config.log_dir = Some(dir);
+    /// Reads the `logging` section from `config/daedalus.yaml`. If the config
+    /// file doesn't exist or has no logging section, returns defaults.
+    /// Uses the workspace logs directory as the default `log_dir`.
+    pub fn from_workspace(workspace: &crate::workspace::Workspace) -> Self {
+        let mut config = if workspace.has_config_file() {
+            let path = workspace.config_file_path();
+            match std::fs::read_to_string(&path) {
+                Ok(content) => {
+                    // Parse the top-level YAML and extract the logging section
+                    let top: LogConfigWrapper = serde_yaml::from_str(&content)
+                        .unwrap_or_default();
+                    top.logging
+                }
+                Err(_) => Self::default(),
             }
-
-        if let Ok(prefix) = std::env::var("DAEDALUS_LOG_FILE_PREFIX")
-            && !prefix.is_empty() {
-                config.log_file_prefix = prefix;
-            }
-
-        if let Ok(rotation) = std::env::var("DAEDALUS_LOG_ROTATION") {
-            config.rotation = LogRotation::parse_or_default(&rotation);
-        }
-
-        if let Ok(file_format) = std::env::var("DAEDALUS_LOG_FILE_FORMAT") {
-            config.file_format = Some(LogFormat::parse_or_default(&file_format));
-        }
-
-        config
-    }
-
-    /// Load log configuration from environment variables with workspace support.
-    ///
-    /// Same as `from_env()` but uses the workspace logs directory as the
-    /// default `log_dir` when `DAEDALUS_LOG_DIR` is not set.
-    pub fn from_env_with_workspace(workspace: &crate::workspace::Workspace) -> Self {
-        let mut config = Self::from_env();
+        } else {
+            Self::default()
+        };
 
         // If no explicit log dir is set, use workspace logs directory
         if config.log_dir.is_none() {
@@ -267,13 +241,10 @@ pub struct LogGuard {
 ///
 /// # Example
 /// ```no_run
-/// use daedalus::logging::{LogConfig, init};
+/// use daedalus::config::{LogConfig, init_logging};
 ///
 /// // Use default configuration (stderr only)
-/// let _guard = init(&LogConfig::default()).unwrap();
-///
-/// // Enable file logging via env vars:
-/// //   DAEDALUS_LOG_DIR=./logs DAEDALUS_LOG_ROTATION=daily cargo run
+/// let _guard = init_logging(&LogConfig::default()).unwrap();
 /// ```
 pub fn init(config: &LogConfig) -> Result<LogGuard> {
     let filter = config.build_filter();
@@ -370,14 +341,4 @@ where
             apply_display_opts!(fmt::layer().pretty(), timer, writer, opts),
         ),
     }
-}
-
-/// Read a boolean value from an environment variable.
-///
-/// Returns `default` if the variable is not set. Recognizes "true" (case-insensitive)
-/// and "1" as truthy values; everything else is treated as `false`.
-fn env_bool(name: &str, default: bool) -> bool {
-    std::env::var(name)
-        .map(|val| val.eq_ignore_ascii_case("true") || val == "1")
-        .unwrap_or(default)
 }

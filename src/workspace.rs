@@ -38,6 +38,7 @@ impl std::fmt::Display for WorkspaceKind {
 /// ```text
 /// <workspace_root>/
 /// ├── config/
+/// │   ├── daedalus.yaml     # Main configuration file
 /// │   ├── mcp.json          # MCP server configuration
 /// │   └── soul.md           # SOUL personality file
 /// ├── memory/
@@ -150,6 +151,11 @@ impl Workspace {
 
     // ── Config paths ──
 
+    /// Path to the main YAML configuration file.
+    pub fn config_file_path(&self) -> PathBuf {
+        self.root.join("config/daedalus.yaml")
+    }
+
     /// Path to the MCP server configuration file.
     pub fn mcp_config_path(&self) -> PathBuf {
         self.root.join("config/mcp.json")
@@ -204,6 +210,11 @@ impl Workspace {
     }
 
     // ── Convenience checks ──
+
+    /// Check if the main configuration file exists in this workspace.
+    pub fn has_config_file(&self) -> bool {
+        self.config_file_path().exists()
+    }
 
     /// Check if a MCP config file exists in this workspace.
     pub fn has_mcp_config(&self) -> bool {
@@ -270,6 +281,7 @@ mod tests {
             kind: WorkspaceKind::Global,
         };
 
+        assert_eq!(ws.config_file_path(), PathBuf::from("/tmp/test_ws/config/daedalus.yaml"));
         assert_eq!(ws.mcp_config_path(), PathBuf::from("/tmp/test_ws/config/mcp.json"));
         assert_eq!(ws.soul_file_path(), PathBuf::from("/tmp/test_ws/config/soul.md"));
         assert_eq!(ws.long_term_memory_path(), PathBuf::from("/tmp/test_ws/memory/long_term.json"));
