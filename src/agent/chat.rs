@@ -24,7 +24,7 @@ use super::tool_router::ToolRouter;
 /// Maximum number of tool-calling rounds per user message.
 ///
 /// This prevents infinite loops if the LLM keeps requesting tool calls.
-const MAX_TOOL_ROUNDS: usize = 10;
+const DEFAULT_MAX_TOOL_ROUNDS: usize = 10;
 
 /// Truncate a string at a UTF-8 character boundary.
 ///
@@ -38,17 +38,6 @@ fn truncate_at_char_boundary(s: &str, max_len: usize) -> &str {
     match s.char_indices().take_while(|(i, _)| *i <= max_len).last() {
         Some((i, _)) => &s[..i],
         None => &s[..0],
-    }
-}
-
-/// Truncate a string for display preview, taking only the first line
-/// and appending "…" if truncated.
-fn preview_string(s: &str, max_len: usize) -> String {
-    let first_line = s.lines().next().unwrap_or(s);
-    if first_line.len() <= max_len {
-        first_line.to_string()
-    } else {
-        format!("{}…", truncate_at_char_boundary(first_line, max_len))
     }
 }
 
@@ -85,6 +74,8 @@ pub struct ChatAgent {
     soul: Option<String>,
     /// Workspace for file I/O (memory persistence, etc.).
     workspace: Option<Workspace>,
+    /// Maximum tool-calling rounds per user message (overridable via CLI).
+    max_tool_rounds: usize,
 }
 
 impl ChatAgent {
@@ -133,6 +124,7 @@ impl ChatAgent {
             agent_name: config.agent_name.clone(),
             soul: config.soul.clone(),
             workspace: None,
+            max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
         }
     }
 
@@ -193,6 +185,29 @@ impl ChatAgent {
             self.reset_with_updated_prompt();
         }
         Ok(count)
+    }
+
+    /// Set a tool filter for --allowed-tools / --disallowed-tools.
+    ///
+    /// When set, only tools matching the filter are exposed to the LLM
+    /// and allowed to execute. The system prompt is rebuilt to reflect
+    /// the filtered tool set.
+    pub fn set_tool_filter(&mut self, filter: Option<super::tool_router::ToolFilter>) {
+        self.tool_router.set_tool_filter(filter);
+        self.reset_with_updated_prompt();
+    }
+
+    /// Set the maximum number of tool-calling rounds per user message.
+    ///
+    /// Used by the `--max-turns` CLI flag. A value of 0 means use the
+    /// internal default.
+    pub fn set_max_tool_rounds(&mut self, max_rounds: usize) {
+        self.max_tool_rounds = if max_rounds == 0 {
+            DEFAULT_MAX_TOOL_ROUNDS
+        } else {
+            max_rounds
+        };
+        tracing::info!(max_tool_rounds = self.max_tool_rounds, "Max tool rounds updated");
     }
 
     // ── Prompt construction ──
@@ -362,11 +377,10 @@ impl ChatAgent {
 
         for (tool_call, tool_response) in tool_calls.iter().zip(responses.iter()) {
             let success = tool_response.success;
-            let result_preview = preview_string(&tool_response.content, 80);
             Self::emit_event(on_tool_event, ToolEvent::ToolCallComplete {
                 tool_name: tool_call.function_name.clone(),
                 success,
-                result_preview,
+                result_content: tool_response.content.clone(),
             });
         }
         Self::emit_event(on_tool_event, ToolEvent::RoundComplete {
@@ -392,7 +406,7 @@ impl ChatAgent {
         let mut total_usage = TokenUsage::default();
         let mut last_reasoning_content: Option<String> = None;
 
-        for round in 0..MAX_TOOL_ROUNDS {
+        for round in 0..self.max_tool_rounds {
             let response = self.llm.chat_with_tools(
                 messages, &tools, &tool_history, None,
             ).await?;
@@ -435,7 +449,7 @@ impl ChatAgent {
             });
         }
 
-        anyhow::bail!("Exceeded maximum tool-calling rounds ({})", MAX_TOOL_ROUNDS)
+        anyhow::bail!("Exceeded maximum tool-calling rounds ({})", self.max_tool_rounds)
     }
 }
 

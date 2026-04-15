@@ -8,14 +8,6 @@ use super::{IsolationMode, SubagentDefinition, SubagentResult, TeamTask};
 
 /// Truncate a string to at most `max_chars` characters, appending "…" if truncated.
 ///
-/// Uses `char_indices` for UTF-8 safe truncation.
-fn truncate_preview(s: &str, max_chars: usize) -> String {
-    match s.char_indices().nth(max_chars) {
-        Some((byte_pos, _)) => format!("{}…", &s[..byte_pos]),
-        None => s.to_string(),
-    }
-}
-
 /// Maximum tool-calling rounds for subagents (default, can be overridden per-agent).
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 10;
 
@@ -344,11 +336,10 @@ impl SubagentRunner {
 
         // Emit tool call completion events
         for (tc, resp) in tool_calls.iter().zip(responses.iter()) {
-            let preview = truncate_preview(&resp.content, 80);
             Self::emit_event(on_tool_event, ToolEvent::ToolCallComplete {
                 tool_name: tc.function_name.clone(),
                 success: resp.success,
-                result_preview: preview,
+                result_content: resp.content.clone(),
             });
         }
         Self::emit_event(on_tool_event, ToolEvent::RoundComplete {

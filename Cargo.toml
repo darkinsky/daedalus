@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0.102"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
 futures = "0.3"
 genai = "0.5.3"

@@ -186,7 +186,22 @@ pub struct LogGuard {
 /// Returns a `LogGuard` that **must** be held until the application exits.
 /// Dropping the guard flushes any buffered log entries to the file.
 pub fn init(config: &LogConfig) -> Result<LogGuard> {
-    let filter = config.build_filter();
+    init_with_filter(config, config.build_filter())
+}
+
+/// Initialize logging with verbose output (debug level) to stderr.
+///
+/// Used when the `--verbose` CLI flag is set. Overrides the configured
+/// filter to include debug-level messages from the daedalus crate.
+pub fn init_verbose(config: &LogConfig) -> Result<LogGuard> {
+    let filter = EnvFilter::try_new("daedalus=debug").unwrap_or_else(|_| {
+        EnvFilter::new("daedalus=debug")
+    });
+    init_with_filter(config, filter)
+}
+
+/// Internal: initialize the subscriber with a specific filter.
+fn init_with_filter(config: &LogConfig, filter: EnvFilter) -> Result<LogGuard> {
     let timer = local_timer();
 
     if let Some(ref log_dir) = config.log_dir {

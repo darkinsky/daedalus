@@ -51,6 +51,11 @@ impl RawConfig {
     pub fn into_agent_config(self, workspace: &Workspace) -> AgentConfig {
         AgentConfig::build(self.llm, self.agent, Some(workspace))
     }
+
+    /// Override the model identifier (used by CLI `--model` flag).
+    pub fn set_model(&mut self, model: String) {
+        self.llm.model = model;
+    }
 }
 
 /// Load all configuration from the workspace YAML config file.

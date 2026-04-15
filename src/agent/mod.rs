@@ -4,6 +4,7 @@ pub(crate) mod tool_router;
 
 pub use chat::ChatAgent;
 pub(crate) use session::Session;
+pub use tool_router::ToolFilter;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -39,8 +40,8 @@ pub enum ToolEvent {
         tool_name: String,
         /// Whether the call succeeded.
         success: bool,
-        /// Brief result summary (truncated).
-        result_preview: String,
+        /// Full result content (used for both CLI display and stream-json consumers).
+        result_content: String,
     },
     /// All tool calls in a round have completed.
     RoundComplete {

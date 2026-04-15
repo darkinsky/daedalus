@@ -8,6 +8,13 @@ use super::cost::SessionCost;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Maximum number of lines to display for tool output before truncating.
+const TOOL_OUTPUT_MAX_LINES: usize = 10;
+/// Number of lines to show from the beginning when truncating.
+const TOOL_OUTPUT_HEAD_LINES: usize = 5;
+/// Number of lines to show from the end when truncating.
+const TOOL_OUTPUT_TAIL_LINES: usize = 3;
+
 // ── Primitive helpers ──
 
 /// Print a dim/muted line to stdout (for secondary information).
@@ -323,6 +330,56 @@ pub fn agents_list(agent: &dyn AgentMode) {
     println!();
 }
 
+// ── Tool output rendering ──
+
+/// Render tool output lines with smart truncation (head + tail).
+///
+/// Mimics Claude Code's approach: if the output exceeds `TOOL_OUTPUT_MAX_LINES`,
+/// show the first `TOOL_OUTPUT_HEAD_LINES` lines, a "... (N lines hidden) ..."
+/// indicator, and the last `TOOL_OUTPUT_TAIL_LINES` lines.
+fn render_tool_output(lines: &[&str]) {
+    let line_count = lines.len();
+
+    if line_count == 0 {
+        return;
+    }
+
+    if line_count <= TOOL_OUTPUT_MAX_LINES {
+        // Short output: show all lines
+        for line in lines {
+            println!(
+                "    {}  {}",
+                "│".with(Color::DarkGrey),
+                line.with(Color::DarkGrey),
+            );
+        }
+    } else {
+        // Long output: head + hidden indicator + tail
+        for line in &lines[..TOOL_OUTPUT_HEAD_LINES] {
+            println!(
+                "    {}  {}",
+                "│".with(Color::DarkGrey),
+                line.with(Color::DarkGrey),
+            );
+        }
+        let hidden = line_count - TOOL_OUTPUT_HEAD_LINES - TOOL_OUTPUT_TAIL_LINES;
+        println!(
+            "    {}  {}",
+            "│".with(Color::DarkGrey),
+            format!("... ({} lines hidden) ...", hidden)
+                .with(Color::DarkGrey)
+                .attribute(Attribute::Italic),
+        );
+        for line in &lines[line_count - TOOL_OUTPUT_TAIL_LINES..] {
+            println!(
+                "    {}  {}",
+                "│".with(Color::DarkGrey),
+                line.with(Color::DarkGrey),
+            );
+        }
+    }
+}
+
 // ── Tool execution events ──
 
 /// Render a tool execution event to the terminal.
@@ -346,19 +403,33 @@ pub fn tool_event(event: &ToolEvent) {
                 format!("({})", source).with(Color::DarkGrey),
             );
         }
-        ToolEvent::ToolCallComplete { tool_name, success, result_preview } => {
+        ToolEvent::ToolCallComplete { tool_name, success, result_content } => {
             let (icon, color) = if *success {
                 ("✓", Color::Green)
             } else {
                 ("✗", Color::Red)
             };
-            let error_prefix = if *success { "" } else { &format!("{}: ", tool_name) };
-            println!(
-                "    {} {}{}",
-                icon.with(color),
-                error_prefix.with(color),
-                result_preview.as_str().with(Color::DarkGrey),
-            );
+            if *success {
+                let lines: Vec<&str> = result_content.lines().collect();
+                let line_count = lines.len();
+                // Header: ✓ tool_name (N lines)
+                println!(
+                    "    {} {}",
+                    icon.with(color),
+                    format!("{} ({} lines)", tool_name, line_count).with(Color::DarkGrey),
+                );
+                // Render output with smart truncation
+                render_tool_output(&lines);
+            } else {
+                // Error: show inline preview
+                let first_line = result_content.lines().next().unwrap_or("");
+                println!(
+                    "    {} {}{}",
+                    icon.with(color),
+                    format!("{}: ", tool_name).with(color),
+                    first_line.with(Color::DarkGrey),
+                );
+            }
         }
         ToolEvent::RoundComplete { tool_count } => {
             println!(

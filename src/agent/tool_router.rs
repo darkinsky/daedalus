@@ -10,6 +10,47 @@ use crate::subagent::{SubagentRegistry, SubagentRunner};
 use crate::subagent::tool::SharedEventCallback;
 use crate::tools::{BuiltinToolRegistry, ToolInfo};
 
+/// Tool filter for --allowed-tools / --disallowed-tools CLI flags.
+///
+/// When active, only tools matching the filter are exposed to the LLM
+/// and allowed to execute.
+#[derive(Debug, Clone)]
+pub struct ToolFilter {
+    /// If set, only these tools are allowed (allowlist mode).
+    allowed: Option<Vec<String>>,
+    /// If set, these tools are blocked (denylist mode).
+    disallowed: Option<Vec<String>>,
+}
+
+impl ToolFilter {
+    /// Create a new tool filter from optional allow/deny lists.
+    ///
+    /// Returns `None` if both lists are empty (no filtering).
+    pub fn new(
+        allowed: Option<Vec<String>>,
+        disallowed: Option<Vec<String>>,
+    ) -> Option<Self> {
+        if allowed.is_none() && disallowed.is_none() {
+            return None;
+        }
+        Some(Self { allowed, disallowed })
+    }
+
+    /// Check if a tool name is allowed by this filter.
+    ///
+    /// Logic: allowlist takes precedence. If allowlist is set, the tool
+    /// must be in it. If only denylist is set, the tool must NOT be in it.
+    pub fn is_allowed(&self, name: &str) -> bool {
+        if let Some(ref allowed) = self.allowed {
+            return allowed.iter().any(|a| a == name);
+        }
+        if let Some(ref disallowed) = self.disallowed {
+            return !disallowed.iter().any(|d| d == name);
+        }
+        true
+    }
+}
+
 /// Unified tool router — dispatches tool calls to built-in tools or MCP servers.
 ///
 /// This component owns all tool sources (built-in registry + optional MCP manager)
@@ -32,6 +73,8 @@ pub struct ToolRouter {
     /// The REPL sets this before each chat call so subagent tool events
     /// are rendered in real-time.
     subagent_event_callback: SharedEventCallback,
+    /// Optional tool filter (from --allowed-tools / --disallowed-tools).
+    tool_filter: Option<ToolFilter>,
 }
 
 impl ToolRouter {
@@ -43,6 +86,7 @@ impl ToolRouter {
             skills: Arc::new(SkillRegistry::new()),
             subagents: Arc::new(SubagentRegistry::new()),
             subagent_event_callback: Arc::new(std::sync::RwLock::new(None)),
+            tool_filter: None,
         }
     }
 
@@ -171,11 +215,25 @@ impl ToolRouter {
     /// Build tool definitions in OpenAI function-calling JSON format.
     ///
     /// Combines built-in (including skill) and MCP tool definitions into a single list.
+    /// If a tool filter is active, only matching tools are included.
     pub fn build_tool_definitions(&self) -> Vec<serde_json::Value> {
         let mut definitions = self.builtin.build_tool_definitions();
         if let Some(ref mcp) = self.mcp {
             definitions.extend(mcp.build_tool_definitions());
         }
+
+        // Apply tool filter if active
+        if let Some(ref filter) = self.tool_filter {
+            definitions.retain(|def| {
+                let name = def
+                    .get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("");
+                filter.is_allowed(name)
+            });
+        }
+
         definitions
     }
 
@@ -184,11 +242,26 @@ impl ToolRouter {
         self.builtin.has_tool(name)
     }
 
+    /// Set a tool filter for --allowed-tools / --disallowed-tools.
+    ///
+    /// When set, only tools matching the filter are exposed to the LLM
+    /// and allowed to execute.
+    pub fn set_tool_filter(&mut self, filter: Option<ToolFilter>) {
+        if let Some(ref f) = filter {
+            tracing::info!(?f, "Tool filter activated");
+        }
+        self.tool_filter = filter;
+    }
+
     /// Return tool metadata for CLI display and prompt building.
     pub fn tool_infos(&self) -> Vec<ToolInfo> {
         let mut infos = self.builtin.tool_infos();
         if let Some(ref mcp) = self.mcp {
             infos.extend(mcp.tool_infos());
+        }
+        // Apply tool filter if active
+        if let Some(ref filter) = self.tool_filter {
+            infos.retain(|info| filter.is_allowed(&info.name));
         }
         infos
     }
@@ -209,6 +282,20 @@ impl ToolRouter {
             arguments = %tool_call.arguments,
             "Executing tool call"
         );
+
+        // Check tool filter before execution
+        if let Some(ref filter) = self.tool_filter {
+            if !filter.is_allowed(&tool_call.function_name) {
+                tracing::warn!(
+                    tool = %tool_call.function_name,
+                    "Tool call blocked by filter"
+                );
+                return ToolResponse::error(
+                    &tool_call.call_id,
+                    format!("Error: Tool '{}' is not allowed by the current tool filter", tool_call.function_name),
+                );
+            }
+        }
 
         // Try built-in tools first (includes skill tool)
         if self.builtin.has_tool(&tool_call.function_name) {
@@ -282,5 +369,53 @@ impl ToolRouter {
             mcp.shutdown().await;
             tracing::info!("MCP servers shut down");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tool_filter_none_when_both_empty() {
+        let filter = ToolFilter::new(None, None);
+        assert!(filter.is_none());
+    }
+
+    #[test]
+    fn test_tool_filter_allowlist() {
+        let filter = ToolFilter::new(
+            Some(vec!["read_file".to_string(), "bash".to_string()]),
+            None,
+        ).unwrap();
+        assert!(filter.is_allowed("read_file"));
+        assert!(filter.is_allowed("bash"));
+        assert!(!filter.is_allowed("write_file"));
+        assert!(!filter.is_allowed("unknown"));
+    }
+
+    #[test]
+    fn test_tool_filter_denylist() {
+        let filter = ToolFilter::new(
+            None,
+            Some(vec!["bash".to_string(), "write_file".to_string()]),
+        ).unwrap();
+        assert!(filter.is_allowed("read_file"));
+        assert!(!filter.is_allowed("bash"));
+        assert!(!filter.is_allowed("write_file"));
+        assert!(filter.is_allowed("list_directory"));
+    }
+
+    #[test]
+    fn test_tool_filter_allowlist_takes_precedence() {
+        // When both are set, allowlist takes precedence
+        let filter = ToolFilter::new(
+            Some(vec!["read_file".to_string()]),
+            Some(vec!["read_file".to_string()]),
+        ).unwrap();
+        // read_file is in allowlist, so it's allowed (allowlist wins)
+        assert!(filter.is_allowed("read_file"));
+        // bash is not in allowlist, so it's blocked
+        assert!(!filter.is_allowed("bash"));
     }
 }
