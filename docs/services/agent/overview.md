@@ -253,9 +253,153 @@ fn skill_count(&self) -> usize { 0 }
 
 ---
 
+## 6. Subagent 系统 — 隔离上下文的任务委托
+
+> 📍 **代码位置**：`src/subagent/`
+
+### 概述
+
+Subagent 系统允许主 Agent 将任务委托给运行在**完全隔离上下文**中的专用子代理。每个 subagent 拥有独立的系统提示、独立的 LLM provider（可指定不同模型）、独立的工具集（白名单/黑名单控制），以及独立的对话历史。参考了 Claude Code 的 Sub-agents 设计。
+
+### 核心价值
+
+| 价值 | 说明 |
+|------|------|
+| **上下文隔离** | 子任务在独立上下文中运行，不污染主对话 |
+| **行为专业化** | 每个 subagent 有专用 system prompt，角色清晰 |
+| **工具约束** | 通过白名单/黑名单限制工具访问（如只读分析 agent） |
+| **成本控制** | 简单任务用轻量模型（haiku），复杂任务用强模型（opus） |
+| **可复用** | 一次定义，跨项目/跨会话复用 |
+
+### 模块组成
+
+| 文件 | 职责 |
+|------|------|
+| `subagent/mod.rs` | 模块入口，re-export 核心类型 |
+| `subagent/types.rs` | 核心数据结构（`SubagentDefinition`、`SubagentInfo`、`SubagentResult`、`TeamTask`、枚举类型） |
+| `subagent/builtins.rs` | 3 个内置 subagent 定义（explore、code-reviewer、plan），硬编码在二进制中 |
+| `subagent/loader.rs` | 从 `.md` 文件加载 subagent 定义（YAML frontmatter + Markdown body） |
+| `subagent/registry.rs` | 注册表管理，处理优先级覆盖（Builtin < Global < Project） |
+| `subagent/runner.rs` | 执行引擎——创建独立 LLM provider + 过滤工具集 + 工具调用循环 |
+| `subagent/tool.rs` | `SubagentTool`（`spawn_subagent`）和 `TeamTool`（`spawn_team`）的 `BuiltinTool` 适配器 |
+| `subagent/isolation.rs` | Git worktree 隔离和生命周期钩子（`onStart`/`onComplete`） |
+
+### 配置文件格式
+
+Subagent 定义为 `.md` 文件，放在 `agents/` 目录下：
+
+```yaml
+---
+name: code-reviewer
+description: Reviews code for quality and best practices.
+tools: read_file, list_directory, search_files, get_file_info
+model: sonnet
+permissionMode: plan
+maxTurns: 10
+isolation: none
+onStart: echo "Starting..."
+onComplete: echo "Done."
+---
+
+You are a senior code reviewer.
+```
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `name` | 否（默认取文件名） | 唯一标识名（kebab-case） |
+| `description` | 是 | LLM 用来判断何时调用的描述 |
+| `model` | 否（inherit） | 模型选择：`haiku`/`sonnet`/`opus`/完整 ID |
+| `tools` | 否 | 工具白名单（逗号分隔） |
+| `disallowedTools` | 否 | 工具黑名单（逗号分隔） |
+| `permissionMode` | 否（default） | 权限模式 |
+| `maxTurns` | 否 | 最大工具调用轮数 |
+| `isolation` | 否（none） | 隔离模式：`none`/`worktree` |
+| `onStart` | 否 | 启动前执行的 shell 命令 |
+| `onComplete` | 否 | 完成后执行的 shell 命令 |
+
+### 加载优先级
+
+```
+Builtin (最低) → Global (~/.daedalus/agents/) → Project (.daedalus/agents/) (最高)
+```
+
+同名 agent 按优先级覆盖。用户只需在 `.daedalus/agents/` 中放一个同名 `.md` 文件即可覆盖内置 agent。
+
+### 3 个内置 Subagent
+
+| 名称 | 用途 | 工具白名单 | maxTurns |
+|------|------|-----------|----------|
+| `explore` | 只读代码探索与分析 | 只读工具 | 8 |
+| `code-reviewer` | 代码质量审查 | 只读工具 | 10 |
+| `plan` | 架构分析与实现规划 | 只读工具 | 12 |
+
+### LLM 路由机制
+
+```
+启动时: builtins + agents/*.md → SubagentLoader → SubagentRegistry
+  → SubagentTool(spawn_subagent) + TeamTool(spawn_team) → BuiltinToolRegistry
+
+运行时: 用户输入 → LLM 看到 spawn_subagent 工具（含所有 agent 名称和描述）
+  → LLM 自主决定调用 spawn_subagent(agent_name="explore", task="...")
+  → ToolRouter → SubagentTool.execute()
+    → SubagentRunner.run()
+      → 创建独立 LLM provider（可能不同模型）
+      → 构建过滤后的工具集（无 spawn_subagent/spawn_team/use_skill）
+      → 执行工具调用循环（独立上下文）
+    → 返回 SubagentResult
+  → 格式化结果返回给主 LLM
+```
+
+### Agent Teams（并行多 Agent）
+
+`spawn_team` 工具允许 LLM 在一次调用中启动多个 subagent 并行执行：
+
+```json
+{
+  "name": "spawn_team",
+  "arguments": {
+    "tasks": [
+      {"agent_name": "explore", "task": "Find all error handling patterns"},
+      {"agent_name": "code-reviewer", "task": "Review src/agent/chat.rs"}
+    ]
+  }
+}
+```
+
+所有任务通过 `futures::future::join_all` 并行执行，结果汇总后返回。`spawn_team` 仅在 ≥2 个 subagent 可用时注册。
+
+### ToolEvent 透传
+
+Subagent 执行过程中的工具调用事件通过 `SharedEventCallback`（`Arc<RwLock<Option<ToolEventCallback>>>`）透传到 CLI 层实时渲染。REPL 在每次 chat 调用前设置回调，调用后清除。
+
+新增的 ToolEvent 变体：
+
+| 事件 | 时机 | 携带信息 |
+|------|------|----------|
+| `SubagentStart` | subagent 开始执行 | agent 名称、任务预览 |
+| `SubagentComplete` | subagent 执行完成 | agent 名称、成功/失败、工具轮数、结果预览 |
+
+### 防递归保护
+
+Subagent 的工具集中**永远不包含** `spawn_subagent`、`spawn_team`、`use_skill`，通过 `EXCLUDED_TOOLS` 常量硬编码排除，防止无限递归。
+
+### Worktree 隔离
+
+当 `isolation: worktree` 时，`SubagentRunner` 通过 `git worktree add` 创建临时工作树，subagent 在隔离的分支上操作。`WorktreeGuard` 实现 RAII 模式，在 subagent 完成后自动清理 worktree 和临时分支。
+
+### 优雅降级
+
+- `agents/` 目录不存在 → 静默跳过（debug 日志）
+- `.md` 文件加载失败 → warn 日志并跳过该 agent
+- 无 subagent 加载成功 → 不注册 `spawn_subagent` 工具
+- 内置 subagent 始终可用（即使无 `.md` 文件）
+
+---
+
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-15 | 新增 Subagent 系统章节（隔离执行、Agent Teams、ToolEvent 透传、Worktree 隔离、内置 agent） | Subagent 功能实现 |
 | 2026-04-14 | Session 从 `src/session.rs` 迁移至 `src/agent/session.rs`；新增 Session 管理章节 | 模块化重构 |
 | 2026-04-13 | 新增 Skill 系统章节（LLM 路由、SkillTool 适配器、AgentMode 扩展、优雅降级） | Skill 功能实现 |
 | 2026-04-09 | 工具调用改为并行执行（futures::join_all）；新增 ToolEvent 回调机制；AgentMode::chat() 签名增加 on_tool_event 参数 | 工具事件/并行化迭代 |

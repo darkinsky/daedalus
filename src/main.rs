@@ -7,6 +7,7 @@ mod mcp;
 mod memory;
 mod prompt;
 mod skill;
+mod subagent;
 mod tools;
 mod workspace;
 
@@ -18,19 +19,22 @@ async fn main() -> Result<()> {
     // Resolve workspace (zero-config: auto-creates ~/.daedalus/)
     let workspace = workspace::Workspace::resolve()?;
 
-    // Initialize logging — use workspace config file
-    let log_config = config::LogConfig::from_workspace(&workspace);
+    // Phase 1: Load raw config from workspace YAML (single file read, no tracing)
+    let (raw_config, log_config) = config::load_from_workspace(&workspace)?;
+
+    // Initialize logging with the loaded config
     let _log_guard = config::init_logging(&log_config)?;
+
+    // Phase 2: Build AgentConfig (now tracing is available for soul file loading)
+    let config = raw_config.into_agent_config(&workspace);
 
     tracing::info!("Daedalus Agent starting...");
     tracing::info!(
         workspace = %workspace.root().display(),
         kind = %workspace.kind(),
+        config_file = workspace.has_config_file(),
         "Workspace resolved"
     );
-
-    // Load configuration from workspace YAML config file
-    let config = config::AgentConfig::from_workspace(&workspace)?;
     tracing::info!("Using model: {}", config.model());
     if let Some(base_url) = config.api_base() {
         tracing::info!("Using API base URL: {}", base_url);
@@ -74,6 +78,9 @@ async fn main() -> Result<()> {
         load_skills(&mut agent, &cwd_skills_dir);
     }
 
+    // Load subagent definitions from workspace and global directories
+    load_subagents(&mut agent, &workspace, &config);
+
     // Run the interactive CLI (shutdown is called inside on exit)
     cli::run_interactive(&mut agent).await?;
 
@@ -104,4 +111,56 @@ fn load_skills(agent: &mut agent::ChatAgent, dir: &std::path::Path) {
             );
         }
     }
+}
+
+/// Load subagent definitions from workspace and global directories.
+///
+/// Subagents are loaded from two locations with priority:
+/// 1. Project-level: `.daedalus/agents/` (higher priority)
+/// 2. Global: `~/.daedalus/agents/` (lower priority, if different)
+fn load_subagents(
+    agent: &mut agent::ChatAgent,
+    workspace: &workspace::Workspace,
+    config: &config::AgentConfig,
+) {
+    let ws_agents_dir = workspace.agents_dir();
+
+    // Collect directories and sources
+    let mut dirs: Vec<&std::path::Path> = vec![&ws_agents_dir];
+    let mut sources = vec![subagent::SubagentSource::Project];
+
+    // Also load from global ~/.daedalus/agents/ if different from workspace
+    let global_agents_dir = global_agents_dir();
+    if let Some(ref global_dir) = global_agents_dir {
+        if *global_dir != ws_agents_dir {
+            dirs.push(global_dir.as_path());
+            sources.push(subagent::SubagentSource::Global);
+        }
+    }
+
+    match agent.load_subagents(&dirs, &sources, config.llm.clone()) {
+        Ok(count) if count > 0 => {
+            tracing::info!(
+                subagents = count,
+                "Subagents loaded successfully"
+            );
+        }
+        Ok(_) => {
+            tracing::debug!("No subagent definitions found");
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Failed to load subagents, continuing without subagents"
+            );
+        }
+    }
+}
+
+/// Get the global `~/.daedalus/agents/` directory path.
+fn global_agents_dir() -> Option<std::path::PathBuf> {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .map(|home| std::path::PathBuf::from(home).join(".daedalus/agents"))
 }

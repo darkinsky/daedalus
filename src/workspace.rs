@@ -125,6 +125,7 @@ impl Workspace {
             "memory/agentic",
             "sessions",
             "skills",
+            "agents",
             "logs",
         ];
         for d in &dirs {
@@ -202,6 +203,13 @@ impl Workspace {
         self.root.join("skills")
     }
 
+    // ── Agents path ──
+
+    /// Directory for subagent definitions.
+    pub fn agents_dir(&self) -> PathBuf {
+        self.root.join("agents")
+    }
+
     // ── Logs path ──
 
     /// Directory for rolling log files.
@@ -269,6 +277,7 @@ mod tests {
         assert!(dir.join("memory/agentic").is_dir());
         assert!(dir.join("sessions").is_dir());
         assert!(dir.join("skills").is_dir());
+        assert!(dir.join("agents").is_dir());
         assert!(dir.join("logs").is_dir());
 
         let _ = fs::remove_dir_all(&dir);
@@ -290,6 +299,7 @@ mod tests {
         assert_eq!(ws.sessions_dir(), PathBuf::from("/tmp/test_ws/sessions"));
         assert_eq!(ws.last_session_id_path(), PathBuf::from("/tmp/test_ws/sessions/last_session_id"));
         assert_eq!(ws.skills_dir(), PathBuf::from("/tmp/test_ws/skills"));
+        assert_eq!(ws.agents_dir(), PathBuf::from("/tmp/test_ws/agents"));
         assert_eq!(ws.logs_dir(), PathBuf::from("/tmp/test_ws/logs"));
     }
 

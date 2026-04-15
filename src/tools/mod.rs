@@ -75,6 +75,22 @@ impl BuiltinToolRegistry {
         Self { tools }
     }
 
+    /// Create an empty registry (no default tools).
+    ///
+    /// Used by `SubagentRunner` to build a filtered tool set by
+    /// selectively registering tools from the full registry.
+    pub fn new_empty() -> Self {
+        Self { tools: Vec::new() }
+    }
+
+    /// Consume the registry and return the owned tool list.
+    ///
+    /// Used by `SubagentRunner` to iterate over tools and selectively
+    /// register them into a filtered registry.
+    pub fn into_tools(self) -> Vec<Box<dyn BuiltinTool>> {
+        self.tools
+    }
+
     /// Register an additional built-in tool dynamically.
     ///
     /// This is used to add tools at runtime (e.g., the `use_skill` tool

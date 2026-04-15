@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 use crate::config::AgentConfig;
 use crate::llm::{
-    ChatMessage, ChatResponse, LlmApi, ToolResponse, ToolRound,
+    ChatMessage, ChatResponse, LlmApi, LlmConfig, ToolResponse, ToolRound,
     TokenUsage, format_messages_for_log,
 };
 use crate::tools::ToolInfo;
@@ -13,6 +13,7 @@ use crate::mcp::McpManager;
 use crate::memory::{MemoryFactory, SlidingWindowFactory};
 use crate::prompt::PromptBuilder;
 use crate::skill::SkillInfo;
+use crate::subagent::SubagentInfo;
 use crate::workspace::Workspace;
 
 use super::Session;
@@ -167,6 +168,27 @@ impl ChatAgent {
     /// decides which skill to invoke based on the user's request.
     pub fn load_skills(&mut self, dir: &Path) -> Result<usize> {
         let count = self.tool_router.load_skills(dir)?;
+        if count > 0 {
+            self.reset_with_updated_prompt();
+        }
+        Ok(count)
+    }
+
+    /// Load subagent definitions from directories and rebuild the system prompt.
+    ///
+    /// Subagents are exposed to the LLM as a `spawn_subagent` tool.
+    /// The LLM decides which subagent to invoke based on the subagent
+    /// descriptions embedded in the tool definition.
+    ///
+    /// Each directory is associated with a source priority. Project-level
+    /// agents override global agents with the same name.
+    pub fn load_subagents(
+        &mut self,
+        dirs: &[&Path],
+        sources: &[crate::subagent::SubagentSource],
+        parent_llm_config: LlmConfig,
+    ) -> Result<usize> {
+        let count = self.tool_router.load_subagents(dirs, sources, parent_llm_config)?;
         if count > 0 {
             self.reset_with_updated_prompt();
         }
@@ -522,6 +544,18 @@ impl AgentMode for ChatAgent {
 
     fn skill_count(&self) -> usize {
         self.tool_router.skill_registry().skill_count()
+    }
+
+    fn subagent_infos(&self) -> Vec<SubagentInfo> {
+        self.tool_router.subagent_registry().agent_infos()
+    }
+
+    fn subagent_count(&self) -> usize {
+        self.tool_router.subagent_registry().agent_count()
+    }
+
+    fn set_subagent_event_callback(&self, callback: Option<ToolEventCallback>) {
+        self.tool_router.set_subagent_event_callback(callback);
     }
 
     async fn shutdown(&mut self) -> Result<()> {

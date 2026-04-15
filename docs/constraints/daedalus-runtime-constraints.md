@@ -21,6 +21,10 @@
 | `DEFAULT_RETRIEVAL_LIMIT` | 5 | `src/memory/agentic/store.rs` | A-MEM 上下文检索返回的最大 note 数 |
 | `SKILL_FILENAME` | "SKILL.md" | `src/skill/loader.rs:8` | Skill 子目录中的入口文件名 |
 | `SKILL_TOOL_NAME` | "use_skill" | `src/skill/registry.rs` | LLM 调用 skill 时使用的工具名 |
+| `SUBAGENT_TOOL_NAME` | "spawn_subagent" | `src/subagent/tool.rs` | LLM 调用单个 subagent 时使用的工具名 |
+| `TEAM_TOOL_NAME` | "spawn_team" | `src/subagent/tool.rs` | LLM 调用并行多 agent 时使用的工具名 |
+| `DEFAULT_MAX_TOOL_ROUNDS` (subagent) | 10 | `src/subagent/runner.rs` | Subagent 默认最大工具调用轮数（可通过 `maxTurns` 覆盖） |
+| `EXCLUDED_TOOLS` | `["spawn_subagent", "spawn_team", "use_skill"]` | `src/subagent/runner.rs` | Subagent 工具集中永远排除的工具（防递归） |
 
 ## 工具调用摘要截断约束
 
@@ -124,11 +128,46 @@ Skill 从当前工作目录的 `skills/` 子目录加载，遵循子目录 + `SK
 | 名称冲突 | 后加载的 skill 覆盖先加载的（warn 日志） |
 | 降级策略 | 目录不存在/不是目录/文件加载失败均跳过，不阻断启动 |
 
+## Subagent 加载约束
+
+> 📍 **代码位置**：`src/subagent/loader.rs` + `src/subagent/builtins.rs` + `src/main.rs`
+
+Subagent 从三个来源加载，按优先级从低到高：
+
+| 来源 | 优先级 | 说明 |
+|------|--------|------|
+| `SubagentSource::Builtin` | 最低 | 硬编码在二进制中（3 个内置 agent） |
+| `SubagentSource::Global` | 中 | `~/.daedalus/agents/*.md` |
+| `SubagentSource::Project` | 最高 | `.daedalus/agents/*.md` |
+
+| 约束 | 说明 |
+|------|------|
+| 加载顺序 | `register_builtins()` → `load_from_dir(project)` → `load_from_dir(global)` |
+| 名称冲突 | 后加载的覆盖先加载的（warn 日志） |
+| 文件格式 | YAML frontmatter + Markdown body（同 SkillLoader 模式） |
+| 加载顺序 | `.md` 文件按字母序排序后加载（确定性） |
+| 降级策略 | 目录不存在/文件加载失败均跳过，不阻断启动 |
+| `spawn_team` 注册条件 | 仅在 ≥2 个 subagent 可用时注册 |
+
+## Subagent 执行约束
+
+> 📍 **代码位置**：`src/subagent/runner.rs` + `src/subagent/isolation.rs`
+
+| 约束 | 说明 |
+|------|------|
+| 上下文隔离 | 每次调用创建全新的 LLM provider + 工具集，不共享主 agent 的 session/memory |
+| 防递归 | `EXCLUDED_TOOLS` 硬编码排除 `spawn_subagent`、`spawn_team`、`use_skill` |
+| 模型简写 | 支持 `haiku`、`sonnet`、`opus` 简写，映射到完整模型 ID |
+| Worktree 隔离 | `isolation: worktree` 时通过 `git worktree add` 创建临时工作树，`WorktreeGuard` RAII 自动清理 |
+| 生命周期钩子 | `onStart`/`onComplete` 通过 `tokio::process::Command` 异步执行 shell 命令，任务/结果通过 stdin 传递 |
+| 并行团队 | `run_team()` 通过 `futures::future::join_all` 并行执行多个 subagent |
+
 ---
 
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-15 | 新增 Subagent 运行时常量和约束（加载优先级、执行隔离、防递归、Worktree、生命周期钩子） | Subagent 功能实现 |
 | 2026-04-14 | 更新原子写入影响文件列表（新增 notes.json）；更新 MCP 配置搜索约束（try_common_paths 重构） | 架构审查优化 |
 | 2026-04-14 | 新增 Workspace 解析约束（pre-logging）、记忆持久化原子写入约束、优雅关闭约束 | Workspace 系统实现 + 架构审查优化 |
 | 2026-04-13 | 新增 SKILL_FILENAME、SKILL_TOOL_NAME 常量；新增 Skill 加载约束章节 | Skill 功能实现 |

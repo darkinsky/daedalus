@@ -12,10 +12,9 @@ pub use types::{
     format_messages_for_log,
 };
 
-// Re-export ToolInfo from its canonical home in `crate::tools`.
-// New code should use `crate::tools::ToolInfo` directly.
-#[allow(unused_imports)]
-pub use crate::tools::ToolInfo;
+// NOTE: ToolInfo has been moved to `crate::tools::ToolInfo`.
+// It is no longer re-exported from `crate::llm` to avoid stale aliases.
+// All code should use `crate::tools::ToolInfo` directly.
 
 use anyhow::Result;
 use async_trait::async_trait;

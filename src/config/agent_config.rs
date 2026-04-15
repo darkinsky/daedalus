@@ -13,40 +13,15 @@ pub const DEFAULT_SYSTEM_PROMPT: &str =
     "You are Daedalus, a helpful AI assistant. \
      Be concise and accurate in your responses.";
 
-// ── YAML file structure ──
-
-/// Top-level YAML configuration file structure.
-///
-/// Expected format (`config/daedalus.yaml`):
-/// ```yaml
-/// llm:
-///   api_key: "sk-..."
-///   model: "gpt-4o"
-///   api_base: "https://your-proxy/v1"
-///   adapter_kind: "openai"
-///   venus:
-///     thinking_enabled: true
-///     thinking_tokens: 4096
-///     reasoning_effort: "high"
-///
-/// agent:
-///   name: "Daedalus"
-///   system_prompt: ""
-///   soul_file: "./SOUL.md"
-/// ```
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-#[serde(default)]
-struct DaedalusConfigFile {
-    /// LLM provider configuration.
-    llm: LlmConfig,
-    /// Agent-level configuration.
-    agent: AgentSection,
-}
+// ── YAML section structure ──
 
 /// Agent section in the YAML config file.
+///
+/// This type is `pub(super)` so the unified loader can deserialize it
+/// and pass it to `AgentConfig::build()`.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
-struct AgentSection {
+pub(super) struct AgentSection {
     /// Custom agent name (defaults to "Daedalus").
     name: Option<String>,
     /// Custom system prompt (overrides PromptBuilder when set).
@@ -75,68 +50,54 @@ pub struct AgentConfig {
 }
 
 impl AgentConfig {
-    /// Load configuration from a YAML config file with workspace support.
+    /// Build AgentConfig from pre-parsed YAML sections.
     ///
-    /// Searches for `config/daedalus.yaml` in the workspace. If not found,
-    /// returns a default configuration (requires `api_key` to be useful).
-    ///
-    /// Soul file resolution priority:
-    /// 1. `soul_file` field in the YAML config
-    /// 2. Workspace `config/soul.md`
-    pub fn from_workspace(workspace: &Workspace) -> Result<Self> {
-        let file_config = if workspace.has_config_file() {
-            let path = workspace.config_file_path();
-            tracing::info!("Loading config from: {}", path.display());
-            let content = std::fs::read_to_string(&path)
-                .with_context(|| format!("Failed to read config file: {}", path.display()))?;
-            let config: DaedalusConfigFile = serde_yaml::from_str(&content)
-                .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
-            config
-        } else {
-            tracing::debug!("No config file found, using defaults");
-            DaedalusConfigFile::default()
-        };
-
-        Self::build_from_file(file_config, Some(workspace))
-    }
-
-    /// Load configuration from a specific YAML file path.
-    #[allow(dead_code)]
-    pub fn from_file(path: &str) -> Result<Self> {
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read config file: {}", path))?;
-        let file_config: DaedalusConfigFile = serde_yaml::from_str(&content)
-            .with_context(|| format!("Failed to parse config file: {}", path))?;
-        Self::build_from_file(file_config, None)
-    }
-
-    /// Build AgentConfig from parsed YAML file content.
-    fn build_from_file(
-        file_config: DaedalusConfigFile,
+    /// Called by the unified loader (`config::loader`) after parsing the
+    /// YAML file once. This method handles soul file resolution and
+    /// custom prompt detection.
+    pub(super) fn build(
+        llm: LlmConfig,
+        agent: AgentSection,
         workspace: Option<&Workspace>,
-    ) -> Result<Self> {
-        let llm = file_config.llm;
-
+    ) -> Self {
         // Detect whether the user explicitly set a custom system prompt
-        let (system_prompt, is_custom_prompt) = match &file_config.agent.system_prompt {
+        let (system_prompt, is_custom_prompt) = match &agent.system_prompt {
             Some(custom) if !custom.is_empty() && custom != DEFAULT_SYSTEM_PROMPT => {
                 (custom.clone(), true)
             }
             _ => (DEFAULT_SYSTEM_PROMPT.to_string(), false),
         };
 
-        let agent_name = file_config.agent.name;
+        let agent_name = agent.name;
 
         // Load soul content
-        let soul = Self::load_soul(file_config.agent.soul_file.as_deref(), workspace);
+        let soul = Self::load_soul(agent.soul_file.as_deref(), workspace);
 
-        Ok(Self {
+        Self {
             llm,
             system_prompt,
             is_custom_prompt,
             agent_name,
             soul,
-        })
+        }
+    }
+
+    /// Load configuration from a specific YAML file path (standalone, for testing).
+    #[allow(dead_code)]
+    pub fn from_file(path: &str) -> Result<Self> {
+        /// Standalone YAML structure for `from_file()`.
+        #[derive(Debug, Clone, Default, serde::Deserialize)]
+        #[serde(default)]
+        struct StandaloneConfig {
+            llm: LlmConfig,
+            agent: AgentSection,
+        }
+
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read config file: {}", path))?;
+        let file_config: StandaloneConfig = serde_yaml::from_str(&content)
+            .with_context(|| format!("Failed to parse config file: {}", path))?;
+        Ok(Self::build(file_config.llm, file_config.agent, None))
     }
 
     /// Load soul content from the configured path or workspace fallback.

@@ -303,8 +303,7 @@ pub struct ChatOptions {
 }
 
 // NOTE: `ToolInfo` has been moved to `crate::tools::ToolInfo` where it
-// semantically belongs (it describes tools, not LLM concepts). It is
-// re-exported from `crate::llm` for backward compatibility.
+// semantically belongs (it describes tools, not LLM concepts).
 
 #[cfg(test)]
 mod tests {

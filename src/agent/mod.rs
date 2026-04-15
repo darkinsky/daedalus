@@ -13,6 +13,7 @@ use crate::llm::ChatResponse;
 use crate::tools::ToolInfo;
 use crate::mcp::McpManager;
 use crate::skill::SkillInfo;
+use crate::subagent::SubagentInfo;
 
 // ── Tool execution events (for CLI progress display) ──
 
@@ -45,6 +46,24 @@ pub enum ToolEvent {
     RoundComplete {
         /// Number of tool calls executed in this round.
         tool_count: usize,
+    },
+    /// A subagent has started execution.
+    SubagentStart {
+        /// The subagent name.
+        agent_name: String,
+        /// The task description (truncated).
+        task_preview: String,
+    },
+    /// A subagent has completed execution.
+    SubagentComplete {
+        /// The subagent name.
+        agent_name: String,
+        /// Whether the execution succeeded.
+        success: bool,
+        /// Number of tool rounds the subagent executed.
+        tool_rounds: usize,
+        /// Brief result summary (truncated).
+        result_preview: String,
     },
 }
 
@@ -119,6 +138,22 @@ pub trait AgentMode: Send + Sync {
     fn skill_count(&self) -> usize {
         0
     }
+
+    /// Return metadata for all available subagents.
+    fn subagent_infos(&self) -> Vec<SubagentInfo> {
+        vec![]
+    }
+
+    /// Return the number of loaded subagents.
+    fn subagent_count(&self) -> usize {
+        0
+    }
+
+    /// Set the subagent event callback for real-time progress display.
+    ///
+    /// Called by the REPL before each chat call to bind the callback
+    /// to the current spinner. Pass `None` to clear the callback.
+    fn set_subagent_event_callback(&self, _callback: Option<ToolEventCallback>) {}
 
     /// Persist all memory state to the workspace and perform cleanup.
     ///

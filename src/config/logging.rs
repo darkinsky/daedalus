@@ -1,3 +1,9 @@
+//! Logging configuration types and tracing subscriber initialization.
+//!
+//! Configuration types (`LogConfig`, `LogFormat`, etc.) are deserialized
+//! by the unified loader in `config::loader`. This module owns the
+//! tracing initialization logic that consumes those types.
+
 use anyhow::{Context, Result};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{
@@ -23,19 +29,6 @@ pub enum LogFormat {
     Full,
 }
 
-impl LogFormat {
-    /// Parse a log format string (case-insensitive), falling back to default.
-    #[allow(dead_code)]
-    pub fn parse_or_default(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "json" => Self::Json,
-            "compact" => Self::Compact,
-            "full" => Self::Full,
-            _ => Self::Pretty,
-        }
-    }
-}
-
 /// Log file rotation policy.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -52,18 +45,6 @@ pub enum LogRotation {
 }
 
 impl LogRotation {
-    /// Parse a rotation string (case-insensitive), falling back to default.
-    #[allow(dead_code)]
-    pub fn parse_or_default(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "minutely" | "minute" => Self::Minutely,
-            "hourly" | "hour" => Self::Hourly,
-            "daily" | "day" => Self::Daily,
-            "never" | "none" => Self::Never,
-            _ => Self::Daily,
-        }
-    }
-
     /// Convert to tracing_appender's Rotation type.
     fn to_appender_rotation(&self) -> tracing_appender::rolling::Rotation {
         match self {
@@ -141,14 +122,11 @@ macro_rules! apply_display_opts {
     };
 }
 
-/// Wrapper for extracting the `logging` section from the top-level YAML config.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-#[serde(default)]
-struct LogConfigWrapper {
-    logging: LogConfig,
-}
-
 /// Logging configuration.
+///
+/// Deserialized from the `logging` section of `config/daedalus.yaml`
+/// by the unified loader. Consumed by `init()` to set up the tracing
+/// subscriber.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
 pub struct LogConfig {
@@ -183,37 +161,6 @@ impl Default for LogConfig {
 }
 
 impl LogConfig {
-    /// Load log configuration from the workspace YAML config file.
-    ///
-    /// Reads the `logging` section from `config/daedalus.yaml`. If the config
-    /// file doesn't exist or has no logging section, returns defaults.
-    /// Uses the workspace logs directory as the default `log_dir`.
-    pub fn from_workspace(workspace: &crate::workspace::Workspace) -> Self {
-        let mut config = if workspace.has_config_file() {
-            let path = workspace.config_file_path();
-            match std::fs::read_to_string(&path) {
-                Ok(content) => {
-                    // Parse the top-level YAML and extract the logging section
-                    let top: LogConfigWrapper = serde_yaml::from_str(&content)
-                        .unwrap_or_default();
-                    top.logging
-                }
-                Err(_) => Self::default(),
-            }
-        } else {
-            Self::default()
-        };
-
-        // If no explicit log dir is set, use workspace logs directory
-        if config.log_dir.is_none() {
-            config.log_dir = Some(
-                workspace.logs_dir().to_string_lossy().into_owned()
-            );
-        }
-
-        config
-    }
-
     /// Build the `EnvFilter` from the configured filter string.
     fn build_filter(&self) -> EnvFilter {
         EnvFilter::try_new(&self.filter).unwrap_or_else(|e| {
@@ -238,14 +185,6 @@ pub struct LogGuard {
 ///
 /// Returns a `LogGuard` that **must** be held until the application exits.
 /// Dropping the guard flushes any buffered log entries to the file.
-///
-/// # Example
-/// ```no_run
-/// use daedalus::config::{LogConfig, init_logging};
-///
-/// // Use default configuration (stderr only)
-/// let _guard = init_logging(&LogConfig::default()).unwrap();
-/// ```
 pub fn init(config: &LogConfig) -> Result<LogGuard> {
     let filter = config.build_filter();
     let timer = local_timer();

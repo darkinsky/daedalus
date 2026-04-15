@@ -47,6 +47,9 @@ pub fn banner(agent: &dyn AgentMode) {
     if agent.skill_count() > 0 {
         print_dim(&format!("  Skills:   {} available", agent.skill_count()));
     }
+    if agent.subagent_count() > 0 {
+        print_dim(&format!("  Agents:   {} available", agent.subagent_count()));
+    }
     print_dim(&format!(
         "  Session:  {} ({})",
         agent.session().title,
@@ -281,6 +284,45 @@ pub fn skills_list(agent: &dyn AgentMode) {
     println!();
 }
 
+// ── Agents list ──
+
+/// Print the `/agents` output — list all available subagents.
+pub fn agents_list(agent: &dyn AgentMode) {
+    println!();
+    let infos = agent.subagent_infos();
+    if infos.is_empty() {
+        print_dim("  No subagents available.");
+        print_dim("  Place .md files in the .daedalus/agents/ directory to add subagents.");
+        println!();
+        return;
+    }
+
+    println!(
+        "{}",
+        format!("  Available subagents ({}):", infos.len())
+            .with(Color::White)
+            .attribute(Attribute::Bold)
+    );
+    println!();
+
+    for info in &infos {
+        println!(
+            "    {}  {}",
+            info.name.as_str().with(Color::Cyan),
+            format!("({})", info.source).with(Color::DarkGrey),
+        );
+        if !info.description.is_empty() {
+            // Show first line of description only
+            let first_line = info.description.lines().next().unwrap_or("").trim();
+            print_dim(&format!("      {}", first_line));
+        }
+    }
+
+    println!();
+    print_dim("    The LLM will automatically spawn subagents via the spawn_subagent tool when needed.");
+    println!();
+}
+
 // ── Tool execution events ──
 
 /// Render a tool execution event to the terminal.
@@ -323,6 +365,54 @@ pub fn tool_event(event: &ToolEvent) {
                 "  {}",
                 format!("  {} tool call(s) completed", tool_count).with(Color::DarkGrey),
             );
+            println!();
+        }
+        ToolEvent::SubagentStart { agent_name, task_preview } => {
+            println!();
+            println!(
+                "  {} {} {}",
+                "\u{1F916}".to_string(),
+                format!("Subagent '{}' started", agent_name)
+                    .with(Color::Magenta)
+                    .attribute(Attribute::Bold),
+                "—".with(Color::DarkGrey),
+            );
+            // Show truncated task preview
+            let preview = if task_preview.len() > 100 {
+                format!("{}...", &task_preview[..100])
+            } else {
+                task_preview.clone()
+            };
+            println!(
+                "    {}",
+                preview.with(Color::DarkGrey),
+            );
+            println!();
+        }
+        ToolEvent::SubagentComplete { agent_name, success, tool_rounds, result_preview } => {
+            let (icon, color) = if *success {
+                ("✓", Color::Green)
+            } else {
+                ("✗", Color::Red)
+            };
+            println!(
+                "  {} {} {}",
+                icon.with(color),
+                format!("Subagent '{}' completed", agent_name).with(color),
+                format!("({} tool rounds)", tool_rounds).with(Color::DarkGrey),
+            );
+            // Show brief result preview
+            let preview = if result_preview.len() > 120 {
+                format!("{}...", &result_preview[..120])
+            } else {
+                result_preview.clone()
+            };
+            if !preview.is_empty() {
+                println!(
+                    "    {}",
+                    preview.with(Color::DarkGrey),
+                );
+            }
             println!();
         }
     }

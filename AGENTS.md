@@ -13,6 +13,7 @@ Daedalus 是一个用 Rust 编写的终端 AI 助手，提供类似 Claude Code 
 | 了解整体架构 | → [ARCHITECTURE.md](./ARCHITECTURE.md) |
 | 了解 Agent 模块 | → [docs/services/agent/overview.md](./docs/services/agent/overview.md) |
 | 了解 Skill 系统 | → [docs/services/agent/overview.md](./docs/services/agent/overview.md)（第 5 章） |
+| 了解 Subagent 系统 | → [docs/services/agent/overview.md](./docs/services/agent/overview.md)（第 6 章） |
 | 了解 CLI 模块 | → [docs/services/cli/overview.md](./docs/services/cli/overview.md) |
 | 了解 LLM 模块 | → [docs/services/llm/overview.md](./docs/services/llm/overview.md) |
 | 了解 MCP 模块 | → [docs/services/mcp/overview.md](./docs/services/mcp/overview.md) |

@@ -34,6 +34,7 @@ fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &mut Sessio
         Command::Model => render::model_info(agent),
         Command::Tools => render::tools_list(agent),
         Command::Skills => render::skills_list(agent),
+        Command::Agents => render::agents_list(agent),
         Command::Unknown(raw) => render::unknown_command(raw),
     }
     Ok(false)
@@ -66,10 +67,16 @@ async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &mut SessionC
     // Build tool event callback for real-time tool progress display
     let tool_callback = build_tool_event_callback(&spinner);
 
+    // Set the subagent event callback so subagent tool events are also rendered
+    agent.set_subagent_event_callback(Some(Arc::clone(&tool_callback)));
+
     match agent.chat(input, Some(&tool_callback)).await {
         Ok(result) => {
             let elapsed = start.elapsed().as_secs_f64();
             spinner.finish_and_clear();
+
+            // Clear the subagent event callback
+            agent.set_subagent_event_callback(None);
 
             // Show reasoning/thinking process if present
             if let Some(ref reasoning) = result.reasoning_content
@@ -88,6 +95,10 @@ async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &mut SessionC
         }
         Err(e) => {
             spinner.finish_and_clear();
+
+            // Clear the subagent event callback
+            agent.set_subagent_event_callback(None);
+
             tracing::error!("Agent error: {}", e);
             render::error(&e);
         }

@@ -2,12 +2,8 @@
 /target
 
 # Secrets and environment files
-.secrets
 .env
 .env.*
-
-# Log files
-/logs
 
 # IDE / Editor
 .idea/
@@ -19,3 +15,6 @@
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# Config files
+.daedalus

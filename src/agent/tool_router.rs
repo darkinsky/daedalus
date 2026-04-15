@@ -3,9 +3,11 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::llm::{ToolCall, ToolResponse};
+use crate::llm::{LlmConfig, ToolCall, ToolResponse};
 use crate::mcp::McpManager;
 use crate::skill::SkillRegistry;
+use crate::subagent::{SubagentRegistry, SubagentRunner};
+use crate::subagent::tool::SharedEventCallback;
 use crate::tools::{BuiltinToolRegistry, ToolInfo};
 
 /// Unified tool router — dispatches tool calls to built-in tools or MCP servers.
@@ -16,14 +18,20 @@ use crate::tools::{BuiltinToolRegistry, ToolInfo};
 /// - Routing tool calls to the correct handler
 /// - Generating tool descriptions for CLI display
 ///
-/// Routing priority: built-in tools first (including skills), then MCP servers.
+/// Routing priority: built-in tools first (including skills/subagents), then MCP servers.
 pub struct ToolRouter {
-    /// Built-in tools (filesystem, skills, etc.) — always available.
+    /// Built-in tools (filesystem, skills, subagents, etc.) — always available.
     builtin: BuiltinToolRegistry,
     /// Optional MCP manager for external tool servers.
     mcp: Option<McpManager>,
     /// Skill registry (shared via Arc so SkillTool can reference it).
     skills: Arc<SkillRegistry>,
+    /// Subagent registry (shared via Arc so SubagentTool can reference it).
+    subagents: Arc<SubagentRegistry>,
+    /// Shared event callback for subagent tool execution progress.
+    /// The REPL sets this before each chat call so subagent tool events
+    /// are rendered in real-time.
+    subagent_event_callback: SharedEventCallback,
 }
 
 impl ToolRouter {
@@ -33,6 +41,8 @@ impl ToolRouter {
             builtin: BuiltinToolRegistry::new(),
             mcp: None,
             skills: Arc::new(SkillRegistry::new()),
+            subagents: Arc::new(SubagentRegistry::new()),
+            subagent_event_callback: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -61,6 +71,80 @@ impl ToolRouter {
             );
         }
         Ok(count)
+    }
+
+    /// Load subagent definitions from directories and register as a built-in tool.
+    ///
+    /// Subagents are exposed to the LLM as a single `spawn_subagent` tool.
+    /// The LLM decides which subagent to invoke based on the subagent
+    /// descriptions embedded in the tool definition.
+    ///
+    /// Loading order determines priority: project-level agents override
+    /// global agents with the same name.
+    pub fn load_subagents(
+        &mut self,
+        dirs: &[&Path],
+        sources: &[crate::subagent::SubagentSource],
+        parent_llm_config: LlmConfig,
+    ) -> Result<usize> {
+        let mut registry = SubagentRegistry::new();
+
+        // Register built-in subagents first (lowest priority).
+        // User-defined agents loaded below will override builtins with the same name.
+        registry.register_builtins();
+
+        for (dir, source) in dirs.iter().zip(sources.iter()) {
+            registry.load_from_dir(dir, source.clone())?;
+        }
+
+        // Use agent_count() for the actual number of unique agents after
+        // deduplication (builtins may be overridden by user-defined agents).
+        let actual_count = registry.agent_count();
+
+        if actual_count > 0 {
+            let registry = Arc::new(registry);
+            let runner = Arc::new(SubagentRunner::new(parent_llm_config));
+
+            // Register the SubagentTool as a regular built-in tool
+            if let Some(subagent_tool) = crate::subagent::tool::build_subagent_tool(
+                &registry,
+                Arc::clone(&runner),
+                Arc::clone(&self.subagent_event_callback),
+            ) {
+                self.builtin.register_tool(subagent_tool);
+            }
+
+            // Register the TeamTool for parallel multi-agent execution
+            if let Some(team_tool) = crate::subagent::tool::build_team_tool(
+                &registry,
+                Arc::clone(&runner),
+                Arc::clone(&self.subagent_event_callback),
+            ) {
+                self.builtin.register_tool(team_tool);
+            }
+            self.subagents = registry;
+            tracing::info!(
+                subagents = actual_count,
+                "Subagents loaded into ToolRouter as built-in tool"
+            );
+        }
+
+        Ok(actual_count)
+    }
+
+    /// Return the subagent registry reference (for CLI display).
+    pub fn subagent_registry(&self) -> &SubagentRegistry {
+        &self.subagents
+    }
+
+    /// Set the subagent event callback for real-time progress display.
+    ///
+    /// Called by the REPL before each chat call to bind the callback
+    /// to the current spinner. The callback is cleared after the call.
+    pub fn set_subagent_event_callback(&self, callback: Option<crate::agent::ToolEventCallback>) {
+        if let Ok(mut guard) = self.subagent_event_callback.write() {
+            *guard = callback;
+        }
     }
 
     /// Attach an MCP manager to enable external tool calling.

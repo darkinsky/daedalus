@@ -29,10 +29,18 @@ graph TD
 
     ToolRouter --> BuiltinTools[BuiltinToolRegistry<br/>内置工具]
     ToolRouter --> SkillTool[SkillTool<br/>LLM 路由技能]
+    ToolRouter --> SubagentTool[SubagentTool<br/>子代理委托]
     ToolRouter --> McpManager[McpManager<br/>MCP 工具管理]
 
     SkillTool --> SkillRegistry[SkillRegistry<br/>技能注册表]
     SkillRegistry --> SkillLoader[SkillLoader<br/>从 skills/ 加载]
+
+    SubagentTool --> SubagentRegistry[SubagentRegistry<br/>子代理注册表]
+    SubagentTool --> SubagentRunner[SubagentRunner<br/>隔离执行引擎]
+    SubagentRegistry --> SubagentBuiltins[builtins.rs<br/>内置 agent]
+    SubagentRegistry --> SubagentLoader[SubagentLoader<br/>从 agents/ 加载]
+    SubagentRunner --> SubLlm[dyn LlmApi<br/>独立 Provider]
+    SubagentRunner --> FilteredTools[BuiltinToolRegistry<br/>过滤后工具集]
 
     LlmApi --> GenAi[GenAiProvider<br/>genai 库适配]
     LlmApi --> Venus[VenusProvider<br/>HTTP 原始请求]
@@ -76,6 +84,7 @@ graph TD
 | agent | Agent 模式抽象 + ChatAgent + ToolRouter | async-trait | `src/agent/` | [agent](docs/services/agent/overview.md) |
 | tools | 内置工具 trait + 文件系统工具 | tokio::fs, chrono | `src/tools/` | [agent](docs/services/agent/overview.md) |
 | skill | Skill 加载 + 注册 + LLM 路由 | — | `src/skill/` | [agent](docs/services/agent/overview.md) |
+| subagent | Subagent 加载 + 注册 + 隔离执行 + Agent Teams | tokio, futures | `src/subagent/` | [agent](docs/services/agent/overview.md) |
 | cli | REPL 交互、命令解析、终端渲染 | rustyline, crossterm, termimad | `src/cli/` | [cli](docs/services/cli/overview.md) |
 | llm | LLM Provider 抽象 + 双 Provider 实现 | genai, reqwest | `src/llm/` | [llm](docs/services/llm/overview.md) |
 | mcp | MCP 协议客户端 + 工具管理 | tokio, serde_json | `src/mcp/` | [mcp](docs/services/mcp/overview.md) |
@@ -139,8 +148,9 @@ main()
   7. ChatAgent::new_with_workspace() → 创建 Agent + 从 workspace 加载持久化记忆
   8. agent.attach_mcp()      → 附加 MCP + 重建提示词
   9. agent.load_skills()     → 从 workspace/skills/ + cwd/skills/ 加载技能
-  10. cli::run_interactive() → 进入 REPL 主循环
-  11. agent.shutdown()       → 退出时持久化记忆到 workspace + 关闭 MCP 子进程
+  10. agent.load_subagents() → 注册内置 agent + 从 workspace/agents/ + ~/.daedalus/agents/ 加载
+  11. cli::run_interactive() → 进入 REPL 主循环
+  12. agent.shutdown()       → 退出时持久化记忆到 workspace + 关闭 MCP 子进程
 ```
 
 ## 技术栈概览
@@ -166,6 +176,7 @@ main()
 8. **工具调用并行执行**：同一轮中的多个工具调用通过 `futures::future::join_all` 并行执行，总耗时 = max(各工具耗时)。
 9. **工具执行可观测性**：通过 `ToolEvent` 回调机制，CLI 层实时渲染工具执行进度（开始/完成/成功/失败）。
 10. **Skill 即工具（LLM 路由）**：Skill 不静态注入 system prompt（浪费 token），而是作为 `use_skill` 内置工具暴露给 LLM，由 LLM 根据 skill 描述自主决定何时调用。Skill 通过 `BuiltinTool` trait 适配器模式集成，ToolRouter 无需特殊分支。
-11. **Workspace 统一路径管理**：所有 Daedalus 产生/消费的文件（配置、记忆、日志、技能）通过 `Workspace` 获取路径。支持三级优先级：环境变量 > 项目级 `.daedalus/` > 全局 `~/.daedalus/`。Workspace 是纯路径管理器，不持有业务逻辑。
+11. **Subagent 隔离执行**：Subagent 作为 `spawn_subagent` / `spawn_team` 内置工具暴露给 LLM。每次调用创建完全隔离的执行环境（独立 LLM provider、独立工具集、独立对话历史）。支持工具白名单/黑名单、模型选择、Git worktree 隔离、生命周期钩子、并行团队执行。内置 3 个只读 agent（explore、code-reviewer、plan），用户可通过 `.md` 文件覆盖或扩展。
+12. **Workspace 统一路径管理**：所有 Daedalus 产生/消费的文件（配置、记忆、日志、技能、子代理）通过 `Workspace` 获取路径。支持三级优先级：环境变量 > 项目级 `.daedalus/` > 全局 `~/.daedalus/`。Workspace 是纯路径管理器，不持有业务逻辑。
 12. **记忆持久化**：LongTermMemory（JSON）、HistoryLog（JSONL 追加写入）、AgenticMemoryStore（JSON）均支持磁盘持久化。通过 `MemoryPersistence` trait 统一接口，启动时自动加载、退出时自动保存。持久化使用原子写入（write-to-temp-then-rename）防止进程崩溃导致数据损坏。`Memory` trait 提供 `persist()` 方法，shutdown 时无需 downcast 到具体类型。
 13. **优雅关闭**：`agent.shutdown()` 依次执行记忆持久化和 MCP 子进程关闭，防止孤儿进程。

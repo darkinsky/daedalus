@@ -1,11 +1,15 @@
+//! Configuration module — unified loading and type definitions.
+//!
+//! ## Module structure
+//!
+//! - `loader`       — Unified YAML file reader (reads once, returns all sections)
+//! - `agent_config` — AgentConfig type and soul file resolution
+//! - `logging`      — LogConfig types and tracing subscriber initialization
+
 mod agent_config;
-mod logging;
+mod loader;
+pub(crate) mod logging;
 
 pub use agent_config::AgentConfig;
-pub use logging::{LogConfig, init as init_logging};
-
-// Re-export for potential external use.
-#[allow(unused_imports)]
-pub use agent_config::DEFAULT_SYSTEM_PROMPT;
-#[allow(unused_imports)]
-pub use logging::LogGuard;
+pub use loader::load_from_workspace;
+pub use logging::init as init_logging;

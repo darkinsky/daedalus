@@ -7,6 +7,7 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/model", "Show current model information"),
     ("/tools", "List available MCP tools"),
     ("/skills", "List available skills"),
+    ("/agents", "List available subagents"),
     ("/exit", "Exit the application (alias: /quit)"),
 ];
 
@@ -20,6 +21,7 @@ pub enum Command<'a> {
     Model,
     Tools,
     Skills,
+    Agents,
     Unknown(&'a str),
 }
 
@@ -41,6 +43,7 @@ pub fn parse(input: &str) -> Option<Command<'_>> {
         "/model" => Command::Model,
         "/tools" => Command::Tools,
         "/skills" => Command::Skills,
+        "/agents" => Command::Agents,
         _ => Command::Unknown(input),
     })
 }
