@@ -17,6 +17,48 @@ use clap::Parser;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let (mut agent, args, _log_guard) = bootstrap().await?;
+
+    // Dispatch to the appropriate mode
+    if let Some(ref prompt_arg) = args.print {
+        // ── Non-interactive (print) mode ──
+        let prompt = if prompt_arg == "-" {
+            cli::read_stdin_prompt()?
+        } else {
+            prompt_arg.clone()
+        };
+
+        tracing::info!(
+            prompt_len = prompt.len(),
+            output_format = ?args.output_format,
+            "Running in print mode"
+        );
+
+        let exit_code = cli::run_print(&mut agent, &prompt, &args.output_format).await?;
+
+        // Persist memory and perform cleanup before exiting
+        if let Err(e) = agent.shutdown().await {
+            tracing::error!(error = %e, "Failed to shutdown agent cleanly");
+        }
+
+        std::process::exit(match exit_code {
+            std::process::ExitCode::SUCCESS => 0,
+            _ => 1,
+        });
+    } else {
+        // ── Interactive (REPL) mode ──
+        cli::run_interactive(&mut agent).await?;
+    }
+
+    Ok(())
+}
+
+/// Bootstrap the application: parse args, load config, initialize logging,
+/// create the agent with all extensions (MCP, skills, subagents).
+///
+/// This separates initialization from mode dispatch, keeping `main()` focused
+/// on the high-level control flow.
+async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard)> {
     // Parse CLI arguments first (before any other initialization)
     let args = cli::CliArgs::parse();
 
@@ -56,26 +98,23 @@ async fn main() -> Result<()> {
         tracing::info!("Using API base URL: {}", base_url);
     }
 
-    // In bare mode, skip MCP/skills/subagents loading
+    // Build the agent with all extensions
+    let agent = build_agent(&args, &workspace, &agent_config).await?;
+
+    Ok((agent, args, _log_guard))
+}
+
+/// Create the ChatAgent and attach all extensions (MCP, skills, subagents, filters).
+async fn build_agent(
+    args: &cli::CliArgs,
+    workspace: &workspace::Workspace,
+    agent_config: &config::AgentConfig,
+) -> Result<agent::ChatAgent> {
     let skip_extensions = args.bare;
 
     // Load MCP configuration (workspace-aware search chain)
     let mcp_manager = if !skip_extensions {
-        let mcp_config = mcp::McpConfig::load_with_workspace(&workspace)?;
-        if !mcp_config.servers.is_empty() {
-            tracing::info!(
-                servers = mcp_config.servers.len(),
-                "Connecting to MCP servers..."
-            );
-            let manager = mcp::McpManager::from_config(&mcp_config).await;
-            tracing::info!(
-                tools = manager.tool_count(),
-                "MCP initialization complete"
-            );
-            Some(manager)
-        } else {
-            None
-        }
+        load_mcp(workspace).await?
     } else {
         tracing::info!("Bare mode: skipping MCP server discovery");
         None
@@ -85,7 +124,7 @@ async fn main() -> Result<()> {
     let provider = llm::create_provider(agent_config.llm.clone())?;
 
     // Build the chat agent with workspace-aware memory persistence
-    let mut agent = agent::ChatAgent::new_with_workspace(provider, &agent_config, workspace.clone());
+    let mut agent = agent::ChatAgent::new_with_workspace(provider, agent_config, workspace.clone());
     if let Some(manager) = mcp_manager {
         agent.attach_mcp(manager);
     }
@@ -104,51 +143,39 @@ async fn main() -> Result<()> {
         }
 
         // Load subagent definitions from workspace and global directories
-        load_subagents(&mut agent, &workspace, &agent_config);
+        load_subagents(&mut agent, workspace, agent_config);
     } else {
         tracing::info!("Bare mode: skipping skills and subagents discovery");
     }
 
     // Apply tool filtering from CLI args
-    apply_tool_filtering(&args, &mut agent);
+    apply_tool_filtering(args, &mut agent);
 
     // Apply max-turns override from CLI args
     if let Some(max_turns) = args.max_turns {
         agent.set_max_tool_rounds(max_turns);
     }
 
-    // Dispatch to the appropriate mode
-    if let Some(ref prompt_arg) = args.print {
-        // ── Non-interactive (print) mode ──
-        let prompt = if prompt_arg == "-" {
-            cli::read_stdin_prompt()?
-        } else {
-            prompt_arg.clone()
-        };
+    Ok(agent)
+}
 
-        tracing::info!(
-            prompt_len = prompt.len(),
-            output_format = ?args.output_format,
-            "Running in print mode"
-        );
-
-        let exit_code = cli::run_print(&mut agent, &prompt, &args.output_format).await?;
-
-        // Persist memory and perform cleanup before exiting
-        if let Err(e) = agent.shutdown().await {
-            tracing::error!(error = %e, "Failed to shutdown agent cleanly");
-        }
-
-        std::process::exit(match exit_code {
-            std::process::ExitCode::SUCCESS => 0,
-            _ => 1,
-        });
-    } else {
-        // ── Interactive (REPL) mode ──
-        cli::run_interactive(&mut agent).await?;
+/// Load MCP servers from workspace configuration.
+async fn load_mcp(workspace: &workspace::Workspace) -> Result<Option<mcp::McpManager>> {
+    let mcp_config = mcp::McpConfig::load_with_workspace(workspace)?;
+    if mcp_config.servers.is_empty() {
+        return Ok(None);
     }
 
-    Ok(())
+    tracing::info!(
+        servers = mcp_config.servers.len(),
+        "Connecting to MCP servers..."
+    );
+    let manager = mcp::McpManager::from_config(&mcp_config).await;
+    tracing::info!(
+        tools = manager.tool_count(),
+        "MCP initialization complete"
+    );
+    Ok(Some(manager))
 }
 
 /// Apply CLI argument overrides to the raw config (before AgentConfig is built).

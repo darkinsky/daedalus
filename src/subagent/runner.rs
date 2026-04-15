@@ -6,8 +6,6 @@ use crate::tools::BuiltinToolRegistry;
 
 use super::{IsolationMode, SubagentDefinition, SubagentResult, TeamTask};
 
-/// Truncate a string to at most `max_chars` characters, appending "…" if truncated.
-///
 /// Maximum tool-calling rounds for subagents (default, can be overridden per-agent).
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 10;
 

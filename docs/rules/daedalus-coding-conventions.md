@@ -1,7 +1,7 @@
 # 编码惯例与隐含规则
 
-> 最后更新：2026-04-14
-> 来源：存量代码分析 + 代码审查改进 + 记忆系统重构代码审查 + 架构审查优化
+> 最后更新：2026-04-15
+> 来源：存量代码分析 + 代码审查改进 + 记忆系统重构代码审查 + 架构审查优化 + 代码质量审查优化
 > 置信度：高
 
 ## 命名规范
@@ -18,13 +18,17 @@
 10. **裸元组替换为命名结构体**：当元组在多个函数签名中传递时，引入命名结构体提升可读性。例如 `ToolRound { calls, responses }` 替代 `(Vec<ToolCall>, Vec<ToolResponse>)`。
 11. **元数据方法命名一致性**：返回元数据列表的方法统一使用 `*_infos()` 模式（与返回类型 `*Info` 对齐）。例如 `tool_infos() -> Vec<ToolInfo>` 和 `skill_infos() -> Vec<SkillInfo>`，而非混用 `*_descriptions()` 和 `*_infos()`。
 12. **`*_count()` 方法使用单数前缀**：所有返回数量的方法统一使用单数前缀：`tool_count()`、`turn_count()`、`skill_count()`、`section_count()`。不使用复数形式如 `sections_count()`。
-13. **可失败的搜索方法用 `try_*()` 前缀**：当方法尝试从某个源加载数据，成功返回 `Some`、未找到返回 `None` 时，使用 `try_*()` 前缀。例如 `try_common_paths() -> Result<Option<Self>>`、`try_legacy_home_path() -> Result<Option<Self>>`。这与 `load()` / `from_*()` 的“必须成功”语义区分开。
-14. **无外部消费者时不标记 `#[deprecated]`**：`#[deprecated]` 属性仅在有外部 crate 依赖时才有意义。对于纯内部的 re-export（如 `crate::llm::ToolInfo`），使用注释说明“新代码应使用 `crate::tools::ToolInfo`”即可，无需 `#[deprecated]` 产生编译警告噪音。
-## 魔法常量提取
+13. **可失败的搜索方法用 `try_*()` 前缀**：当方法尝试从某个源加载数据，成功返回 `Some`、未找到返回 `None` 时，使用 `try_*()` 前缀。例如 `try_common_paths() -> Result<Option<Self>>`、`try_legacy_home_path() -> Result<Option<Self>>`。这与 `load()` / `from_*()` 的"必须成功"语义区分开。
+14. **无外部消费者时不标记 `#[deprecated]`**：`#[deprecated]` 属性仅在有外部 crate 依赖时才有意义。对于纯内部的 re-export（如 `crate::llm::ToolInfo`），使用注释说明"新代码应使用 `crate::tools::ToolInfo`"即可，无需 `#[deprecated]` 产生编译警告噪音。
+15. **组合模式不用 `Base` 后缀**：Rust 中使用组合（composition）而非继承。当提取共享状态结构体时，使用 `*Context` 或 `Shared*State` 后缀，而非 OOP 风格的 `*Base`。例如 `SubagentToolContext` 而非 `SubagentToolBase`。
+16. **循环变量与事件值保持同基数**：当循环变量用于发射事件或日志时，循环变量的基数应与事件语义一致，避免 `+1` 偏移。例如事件中 `round` 是 1-based，则循环应使用 `for round_number in 1..=max` 而非 `for round in 0..max` + `round + 1`。
+17. **未使用的 re-export 及时清理**：`#[allow(unused_imports)]` 不应堆积。如果 re-export 的类型当前没有外部消费者，应移除 re-export 而非用 `#[allow(unused_imports)]` 压制警告。保留的 re-export 应有注释说明保留原因。
+18. **UTF-8 安全截断必须使用共享函数**：所有字符串截断操作必须使用 UTF-8 安全的截断函数（如 `truncate_chars()`），禁止使用 `&s[..N]` 按字节截断——多字节字符（中文、emoji）会导致 panic。截断函数应定义在共享位置供全项目复用。
 
+## 魔法常量提取
 1. **硬编码列表提取为常量**：当多个字符串在代码中以列表形式出现时，提取为命名常量。例如 `IGNORED_DIRS: &[&str] = &["node_modules", "target", "__pycache__", ".git"]`。
 2. **截断阈值明确化**：工具调用摘要中的截断长度（参数 200 字符、结果 500 字符）通过独立函数 `truncate_at_char_boundary()` 实现，而非内联硬编码。
-3. **`Option` 替代魔数**：当参数的某个特殊值表示“无限制”或“不适用”时，使用 `Option<T>` 而非魔数约定。例如 `limit: Option<usize>`（`None` = 不限制）优于 `limit: usize`（`0` = 不限制），后者需要读者记住魔数含义。
+3. **`Option` 替代魔数**：当参数的某个特殊值表示"无限制"或"不适用"时，使用 `Option<T>` 而非魔数约定。例如 `limit: Option<usize>`（`None` = 不限制）优于 `limit: usize`（`0` = 不限制），后者需要读者记住魔数含义。
 4. **LLM Prompt 模板与业务逻辑分离**：当业务方法内嵌了完整的 LLM prompt 字符串时，应提取为模块级常量（system prompt）和独立的构造函数（user prompt）。这便于调整措辞、支持多语言或 A/B 测试不同 prompt，无需修改核心业务逻辑。
 ## 迭代器与副作用
 
@@ -32,7 +36,7 @@
 
 ## 注释与文档字符串准确性
 
-1. **注释必须反映实际行为**：不得夸大功能。例如如果函数只是简单拼接路径，不应声称“preventing directory traversal attacks”或“canonicalized absolute path”。
+1. **注释必须反映实际行为**：不得夸大功能。例如如果函数只是简单拼接路径，不应声称"preventing directory traversal attacks"或"canonicalized absolute path"。
 2. **复杂模式加注释**：当使用不直观的模式（如 `[Option].into_iter().flatten()`）时，添加解释性注释降低认知负担。
 
 ## 错误处理模式
@@ -98,7 +102,9 @@
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
-| 2026-04-14 | 新增：模块组织规范中的就近原则、同领域合并、Rust 2024 edition 模块模式规则 | 模块化重构 |\n| 2026-04-14 | 新增：`try_*()` 可失败搜索方法前缀规则、无外部消费者时不标记 deprecated 规则 | 架构审查优化 |
+| 2026-04-15 | 新增：组合模式不用 Base 后缀、循环变量同基数、未使用 re-export 及时清理、UTF-8 安全截断共享函数四条规则 | 代码质量审查优化 |
+| 2026-04-14 | 新增：模块组织规范中的就近原则、同领域合并、Rust 2024 edition 模块模式规则 | 模块化重构 |
+| 2026-04-14 | 新增：`try_*()` 可失败搜索方法前缀规则、无外部消费者时不标记 deprecated 规则 | 架构审查优化 |
 | 2026-04-14 | 新增：元数据方法 `*_infos()` 命名一致性、`*_count()` 单数前缀规则 | 代码可读性审查优化 |
 | 2026-04-13 | 新增：数量上限加 max_ 前缀、游标加 _cursor 后缀、裸元组替换为命名结构体、Prompt 模板分离、expect 替代裸 unwrap 规则 | A-MEM 实现 + 代码审查 |
 | 2026-04-13 | 新增：消除同义字段混淆、纯函数不作为关联方法、Option 替代魔数、副作用不用 map+collect 规则；truncate_for_summary 更名为 truncate_at_char_boundary | 记忆系统重构代码审查 |

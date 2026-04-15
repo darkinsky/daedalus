@@ -28,13 +28,13 @@ pub type SharedEventCallback = Arc<std::sync::RwLock<Option<ToolEventCallback>>>
 ///
 /// Extracted to avoid duplicating the same three `Arc` fields and
 /// their accessor patterns across both tool implementations.
-struct SubagentToolBase {
+struct SubagentToolContext {
     registry: Arc<SubagentRegistry>,
     runner: Arc<SubagentRunner>,
     shared_callback: SharedEventCallback,
 }
 
-impl SubagentToolBase {
+impl SubagentToolContext {
     /// Read the current event callback from the shared container.
     ///
     /// Returns `None` if the lock is poisoned or no callback is set.
@@ -90,7 +90,6 @@ fn truncate_preview(s: &str, max_chars: usize) -> String {
     }
 }
 
-/// Format
 /// Format a successful SubagentResult into the output string for the main agent.
 fn format_result(result: &SubagentResult) -> String {
     format!(
@@ -121,7 +120,7 @@ pub fn build_subagent_tool(
         return None;
     }
     Some(Box::new(SubagentTool {
-        base: SubagentToolBase {
+        ctx: SubagentToolContext {
             registry: Arc::clone(registry),
             runner,
             shared_callback,
@@ -142,7 +141,7 @@ pub fn build_team_tool(
         return None;
     }
     Some(Box::new(TeamTool {
-        base: SubagentToolBase {
+        ctx: SubagentToolContext {
             registry: Arc::clone(registry),
             runner,
             shared_callback,
@@ -221,7 +220,7 @@ pub fn build_tool_definition(registry: &SubagentRegistry) -> Option<serde_json::
 /// tool in the tool list and decides when to use it based on the subagent
 /// descriptions in the tool definition.
 pub struct SubagentTool {
-    base: SubagentToolBase,
+    ctx: SubagentToolContext,
 }
 
 #[async_trait]
@@ -237,7 +236,7 @@ impl BuiltinTool for SubagentTool {
     fn input_schema(&self) -> serde_json::Value {
         // NOTE: Overridden by to_openai_json() below. Kept for trait compliance.
         let agent_names: Vec<serde_json::Value> = self
-            .base.registry
+            .ctx.registry
             .agent_infos()
             .iter()
             .map(|info| serde_json::Value::String(info.name.clone()))
@@ -278,9 +277,9 @@ impl BuiltinTool for SubagentTool {
         );
 
         // Look up the subagent definition
-        let definition = self.base.registry.get(agent_name).ok_or_else(|| {
+        let definition = self.ctx.registry.get(agent_name).ok_or_else(|| {
             let available: Vec<String> = self
-                .base.registry
+                .ctx.registry
                 .agent_infos()
                 .iter()
                 .map(|info| info.name.clone())
@@ -296,13 +295,13 @@ impl BuiltinTool for SubagentTool {
             )
         })?;
 
-        self.base.emit_start(agent_name, task);
+        self.ctx.emit_start(agent_name, task);
 
         // Execute the subagent task (pass through the event callback)
-        let callback = self.base.read_callback();
-        let result = self.base.runner.run(definition, task, callback.as_ref()).await;
+        let callback = self.ctx.read_callback();
+        let result = self.ctx.runner.run(definition, task, callback.as_ref()).await;
 
-        self.base.emit_complete(agent_name, &result);
+        self.ctx.emit_complete(agent_name, &result);
 
         let result = result?;
         Ok(format_result(&result))
@@ -311,7 +310,7 @@ impl BuiltinTool for SubagentTool {
     /// Override the default `to_openai_json` to use the rich description
     /// from `build_tool_definition`.
     fn to_openai_json(&self) -> serde_json::Value {
-        build_tool_definition(&self.base.registry)
+        build_tool_definition(&self.ctx.registry)
             .unwrap_or_else(|| {
                 serde_json::json!({
                     "type": "function",
@@ -333,7 +332,7 @@ impl BuiltinTool for SubagentTool {
 /// different subagents and have them all execute concurrently. Results
 /// are collected and returned as a combined summary.
 pub struct TeamTool {
-    base: SubagentToolBase,
+    ctx: SubagentToolContext,
 }
 
 #[async_trait]
@@ -350,7 +349,7 @@ impl BuiltinTool for TeamTool {
 
     fn input_schema(&self) -> serde_json::Value {
         let agent_names: Vec<serde_json::Value> = self
-            .base.registry
+            .ctx.registry
             .agent_infos()
             .iter()
             .map(|info| serde_json::Value::String(info.name.clone()))
@@ -403,13 +402,13 @@ impl BuiltinTool for TeamTool {
 
         // Emit SubagentStart events for all team members
         for task in &tasks {
-            self.base.emit_start(&format!("team:{}", task.agent_name), &task.task);
+            self.ctx.emit_start(&format!("team:{}", task.agent_name), &task.task);
         }
 
         // Execute all tasks in parallel
-        let callback = self.base.read_callback();
-        let results = self.base.runner.run_team(
-            &tasks, &self.base.registry, callback.as_ref(),
+        let callback = self.ctx.read_callback();
+        let results = self.ctx.runner.run_team(
+            &tasks, &self.ctx.registry, callback.as_ref(),
         ).await;
 
         // Format combined results
@@ -443,7 +442,7 @@ impl BuiltinTool for TeamTool {
                     ));
                 }
             }
-            self.base.emit_complete(&team_agent_name, result);
+            self.ctx.emit_complete(&team_agent_name, result);
         }
 
         Ok(output_parts.join("\n"))

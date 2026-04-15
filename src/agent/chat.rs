@@ -18,7 +18,7 @@ use crate::workspace::Workspace;
 
 use super::Session;
 
-use super::{AgentMode, ToolEvent, ToolEventCallback};
+use super::{AgentMetadata, AgentMode, ToolEvent, ToolEventCallback};
 use super::tool_router::ToolRouter;
 
 /// Maximum number of tool-calling rounds per user message.
@@ -406,7 +406,7 @@ impl ChatAgent {
         let mut total_usage = TokenUsage::default();
         let mut last_reasoning_content: Option<String> = None;
 
-        for round in 0..self.max_tool_rounds {
+        for round_number in 1..=self.max_tool_rounds {
             let response = self.llm.chat_with_tools(
                 messages, &tools, &tool_history, None,
             ).await?;
@@ -431,13 +431,13 @@ impl ChatAgent {
             }
 
             tracing::info!(
-                round = round,
+                round = round_number,
                 tool_calls = response.tool_calls.len(),
                 "LLM requested tool calls"
             );
 
             // Notify CLI about the new round
-            Self::emit_event(on_tool_event, ToolEvent::RoundStart { round: round + 1 });
+            Self::emit_event(on_tool_event, ToolEvent::RoundStart { round: round_number });
 
             // Emit start events and execute all tool calls in parallel
             self.emit_tool_start_events(&response.tool_calls, on_tool_event);
@@ -452,6 +452,60 @@ impl ChatAgent {
         anyhow::bail!("Exceeded maximum tool-calling rounds ({})", self.max_tool_rounds)
     }
 }
+
+// ── AgentMetadata implementation (read-only introspection) ──
+
+impl AgentMetadata for ChatAgent {
+    fn has_tools(&self) -> bool {
+        self.tool_router.has_tools()
+    }
+
+    fn tool_count(&self) -> usize {
+        self.tool_router.tool_count()
+    }
+
+    fn tool_infos(&self) -> Vec<ToolInfo> {
+        self.tool_router.tool_infos()
+    }
+
+    fn session(&self) -> &Session {
+        &self.session
+    }
+
+    fn provider_name(&self) -> &str {
+        self.llm.provider_name()
+    }
+
+    fn model_name(&self) -> &str {
+        self.llm.model_name()
+    }
+
+    fn mode_name(&self) -> &str {
+        if self.has_tools() {
+            "chat+tools"
+        } else {
+            "chat"
+        }
+    }
+
+    fn skill_infos(&self) -> Vec<SkillInfo> {
+        self.tool_router.skill_registry().skill_infos()
+    }
+
+    fn skill_count(&self) -> usize {
+        self.tool_router.skill_registry().skill_count()
+    }
+
+    fn subagent_infos(&self) -> Vec<SubagentInfo> {
+        self.tool_router.subagent_registry().agent_infos()
+    }
+
+    fn subagent_count(&self) -> usize {
+        self.tool_router.subagent_registry().agent_count()
+    }
+}
+
+// ── AgentMode implementation (core behavior) ──
 
 #[async_trait]
 impl AgentMode for ChatAgent {
@@ -503,18 +557,6 @@ impl AgentMode for ChatAgent {
         self.reset_with_updated_prompt();
     }
 
-    fn has_tools(&self) -> bool {
-        self.tool_router.has_tools()
-    }
-
-    fn tool_count(&self) -> usize {
-        self.tool_router.tool_count()
-    }
-
-    fn tool_infos(&self) -> Vec<ToolInfo> {
-        self.tool_router.tool_infos()
-    }
-
     fn new_session(&mut self) {
         let tools = self.tool_router.tool_infos();
         self.system_prompt = Self::build_prompt(
@@ -530,42 +572,6 @@ impl AgentMode for ChatAgent {
             session_id = %self.session.id,
             "New session created with migrated persistent memory"
         );
-    }
-
-    fn session(&self) -> &Session {
-        &self.session
-    }
-
-    fn provider_name(&self) -> &str {
-        self.llm.provider_name()
-    }
-
-    fn model_name(&self) -> &str {
-        self.llm.model_name()
-    }
-
-    fn mode_name(&self) -> &str {
-        if self.has_tools() {
-            "chat+tools"
-        } else {
-            "chat"
-        }
-    }
-
-    fn skill_infos(&self) -> Vec<SkillInfo> {
-        self.tool_router.skill_registry().skill_infos()
-    }
-
-    fn skill_count(&self) -> usize {
-        self.tool_router.skill_registry().skill_count()
-    }
-
-    fn subagent_infos(&self) -> Vec<SubagentInfo> {
-        self.tool_router.subagent_registry().agent_infos()
-    }
-
-    fn subagent_count(&self) -> usize {
-        self.tool_router.subagent_registry().agent_count()
     }
 
     fn set_subagent_event_callback(&self, callback: Option<ToolEventCallback>) {

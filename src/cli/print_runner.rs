@@ -20,6 +20,7 @@ use super::output_format::{
     StreamEvent, ResultPayload, UsageSummary,
     emit_stream_event, emit_json_result,
 };
+use super::render::{truncate_chars, format_truncated_output};
 
 /// Read the prompt from stdin (used when `-p -` is passed).
 pub fn read_stdin_prompt() -> Result<String> {
@@ -79,110 +80,127 @@ pub async fn run(
     // Output the result in the requested format
     match result {
         Ok(response) => {
-            let usage_summary = response.usage.as_ref().map(|u| UsageSummary {
-                prompt_tokens: u.prompt_tokens,
-                completion_tokens: u.completion_tokens,
-                total_tokens: u.total_tokens,
-            });
-
-            match format {
-                OutputFormat::Text => {
-                    // Show reasoning if present
-                    if let Some(ref reasoning) = response.reasoning_content {
-                        if !reasoning.is_empty() {
-                            eprintln!(
-                                "{}",
-                                format!("💭 Reasoning:\n{}", reasoning)
-                                    .with(Color::DarkGrey)
-                            );
-                            eprintln!();
-                        }
-                    }
-                    // Main response to stdout (for piping)
-                    print!("{}", response.content);
-                    // Token usage to stderr
-                    if let Some(ref usage) = response.usage {
-                        let parts: Vec<String> = [
-                            usage.prompt_tokens.map(|t| format!("{}↑", t)),
-                            usage.completion_tokens.map(|t| format!("{}↓", t)),
-                            Some(format!("{:.1}s", elapsed.as_secs_f64())),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        .collect();
-                        eprintln!();
-                        eprintln!(
-                            "{}",
-                            parts.join(" · ").with(Color::DarkGrey)
-                        );
-                    }
-                }
-                OutputFormat::Json => {
-                    let payload = ResultPayload {
-                        result: response.content,
-                        session_id: agent.session().id.clone(),
-                        is_error: false,
-                        usage: usage_summary,
-                        duration_ms,
-                        tool_rounds: agent.session().request_count.saturating_sub(1),
-                    };
-                    emit_json_result(&payload);
-                }
-                OutputFormat::StreamJson => {
-                    // Emit the assistant content
-                    emit_stream_event(&StreamEvent::Assistant {
-                        content: response.content.clone(),
-                        reasoning: response.reasoning_content.clone(),
-                    });
-                    // Emit the final result event
-                    emit_stream_event(&StreamEvent::Result(ResultPayload {
-                        result: response.content,
-                        session_id: agent.session().id.clone(),
-                        is_error: false,
-                        usage: usage_summary,
-                        duration_ms,
-                        tool_rounds: agent.session().request_count.saturating_sub(1),
-                    }));
-                }
-            }
-
+            emit_success(agent, &response, format, elapsed, duration_ms);
             Ok(ExitCode::SUCCESS)
         }
         Err(e) => {
-            let error_msg = format!("{:#}", e);
+            emit_error(agent, &e, format, duration_ms);
+            Ok(ExitCode::FAILURE)
+        }
+    }
+}
 
-            match format {
-                OutputFormat::Text => {
+/// Emit a successful response in the requested output format.
+fn emit_success(
+    agent: &dyn AgentMode,
+    response: &crate::llm::ChatResponse,
+    format: &OutputFormat,
+    elapsed: std::time::Duration,
+    duration_ms: u64,
+) {
+    let usage_summary = response.usage.as_ref().map(|u| UsageSummary {
+        prompt_tokens: u.prompt_tokens,
+        completion_tokens: u.completion_tokens,
+        total_tokens: u.total_tokens,
+    });
+
+    match format {
+        OutputFormat::Text => {
+            // Show reasoning if present
+            if let Some(ref reasoning) = response.reasoning_content {
+                if !reasoning.is_empty() {
                     eprintln!(
-                        "{} {}",
-                        "✗".with(Color::Red),
-                        format!("Error: {}", error_msg).with(Color::Red)
+                        "{}",
+                        format!("💭 Reasoning:\n{}", reasoning)
+                            .with(Color::DarkGrey)
                     );
-                }
-                OutputFormat::Json => {
-                    let payload = ResultPayload {
-                        result: error_msg,
-                        session_id: agent.session().id.clone(),
-                        is_error: true,
-                        usage: None,
-                        duration_ms,
-                        tool_rounds: 0,
-                    };
-                    emit_json_result(&payload);
-                }
-                OutputFormat::StreamJson => {
-                    emit_stream_event(&StreamEvent::Result(ResultPayload {
-                        result: error_msg,
-                        session_id: agent.session().id.clone(),
-                        is_error: true,
-                        usage: None,
-                        duration_ms,
-                        tool_rounds: 0,
-                    }));
+                    eprintln!();
                 }
             }
+            // Main response to stdout (for piping)
+            print!("{}", response.content);
+            // Token usage to stderr
+            if let Some(ref usage) = response.usage {
+                let parts: Vec<String> = [
+                    usage.prompt_tokens.map(|t| format!("{}↑", t)),
+                    usage.completion_tokens.map(|t| format!("{}↓", t)),
+                    Some(format!("{:.1}s", elapsed.as_secs_f64())),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                eprintln!();
+                eprintln!(
+                    "{}",
+                    parts.join(" · ").with(Color::DarkGrey)
+                );
+            }
+        }
+        OutputFormat::Json => {
+            let payload = ResultPayload {
+                result: response.content.clone(),
+                session_id: agent.session().id.clone(),
+                is_error: false,
+                usage: usage_summary,
+                duration_ms,
+                tool_rounds: agent.session().request_count.saturating_sub(1),
+            };
+            emit_json_result(&payload);
+        }
+        OutputFormat::StreamJson => {
+            emit_stream_event(&StreamEvent::Assistant {
+                content: response.content.clone(),
+                reasoning: response.reasoning_content.clone(),
+            });
+            emit_stream_event(&StreamEvent::Result(ResultPayload {
+                result: response.content.clone(),
+                session_id: agent.session().id.clone(),
+                is_error: false,
+                usage: usage_summary,
+                duration_ms,
+                tool_rounds: agent.session().request_count.saturating_sub(1),
+            }));
+        }
+    }
+}
 
-            Ok(ExitCode::FAILURE)
+/// Emit an error response in the requested output format.
+fn emit_error(
+    agent: &dyn AgentMode,
+    error: &anyhow::Error,
+    format: &OutputFormat,
+    duration_ms: u64,
+) {
+    let error_msg = format!("{:#}", error);
+
+    match format {
+        OutputFormat::Text => {
+            eprintln!(
+                "{} {}",
+                "✗".with(Color::Red),
+                format!("Error: {}", error_msg).with(Color::Red)
+            );
+        }
+        OutputFormat::Json => {
+            let payload = ResultPayload {
+                result: error_msg,
+                session_id: agent.session().id.clone(),
+                is_error: true,
+                usage: None,
+                duration_ms,
+                tool_rounds: 0,
+            };
+            emit_json_result(&payload);
+        }
+        OutputFormat::StreamJson => {
+            emit_stream_event(&StreamEvent::Result(ResultPayload {
+                result: error_msg,
+                session_id: agent.session().id.clone(),
+                is_error: true,
+                usage: None,
+                duration_ms,
+                tool_rounds: 0,
+            }));
         }
     }
 }
@@ -266,39 +284,13 @@ fn build_text_stderr_callback() -> ToolEventCallback {
                         icon.with(color),
                         format!("{} ({} lines)", tool_name, line_count).with(Color::DarkGrey),
                     );
-                    // Render output with smart truncation (same constants as render.rs)
-                    const MAX_LINES: usize = 10;
-                    const HEAD_LINES: usize = 5;
-                    const TAIL_LINES: usize = 3;
-                    if line_count > 0 && line_count <= MAX_LINES {
-                        for line in &lines {
-                            eprintln!(
-                                "    {}  {}",
-                                "│".with(Color::DarkGrey),
-                                line.with(Color::DarkGrey),
-                            );
-                        }
-                    } else if line_count > MAX_LINES {
-                        for line in &lines[..HEAD_LINES] {
-                            eprintln!(
-                                "    {}  {}",
-                                "│".with(Color::DarkGrey),
-                                line.with(Color::DarkGrey),
-                            );
-                        }
-                        let hidden = line_count - HEAD_LINES - TAIL_LINES;
+                    // Render output with smart truncation (reuses shared logic from render.rs)
+                    for formatted_line in format_truncated_output(&lines) {
                         eprintln!(
                             "    {}  {}",
                             "│".with(Color::DarkGrey),
-                            format!("... ({} lines hidden) ...", hidden).with(Color::DarkGrey),
+                            formatted_line.with(Color::DarkGrey),
                         );
-                        for line in &lines[line_count - TAIL_LINES..] {
-                            eprintln!(
-                                "    {}  {}",
-                                "│".with(Color::DarkGrey),
-                                line.with(Color::DarkGrey),
-                            );
-                        }
                     }
                 } else {
                     let first_line = result_content.lines().next().unwrap_or("");
@@ -339,11 +331,8 @@ fn build_text_stderr_callback() -> ToolEventCallback {
                     format!("({} tool rounds)", tool_rounds).with(Color::DarkGrey),
                 );
                 if !result_preview.is_empty() {
-                    let preview = if result_preview.len() > 120 {
-                        format!("{}...", &result_preview[..120])
-                    } else {
-                        result_preview
-                    };
+                    // UTF-8 safe truncation
+                    let preview = truncate_chars(&result_preview, 120);
                     eprintln!("    {}", preview.with(Color::DarkGrey));
                 }
                 eprintln!();

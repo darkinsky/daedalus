@@ -1,7 +1,7 @@
 use crossterm::style::{Attribute, Color, Stylize};
 use indicatif::{ProgressBar, ProgressStyle};
 
-use crate::agent::{AgentMode, ToolEvent};
+use crate::agent::{AgentMetadata, ToolEvent};
 use crate::llm::TokenUsage;
 use super::commands::SLASH_COMMANDS;
 use super::cost::SessionCost;
@@ -9,11 +9,58 @@ use super::cost::SessionCost;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Maximum number of lines to display for tool output before truncating.
-const TOOL_OUTPUT_MAX_LINES: usize = 10;
+pub(super) const TOOL_OUTPUT_MAX_LINES: usize = 10;
 /// Number of lines to show from the beginning when truncating.
-const TOOL_OUTPUT_HEAD_LINES: usize = 5;
+pub(super) const TOOL_OUTPUT_HEAD_LINES: usize = 5;
 /// Number of lines to show from the end when truncating.
-const TOOL_OUTPUT_TAIL_LINES: usize = 3;
+pub(super) const TOOL_OUTPUT_TAIL_LINES: usize = 3;
+
+// ── Shared text utilities ──
+
+/// Truncate a string to at most `max_chars` characters, appending "…" if truncated.
+///
+/// Uses `char_indices` for UTF-8 safe truncation — never panics on
+/// multi-byte characters (e.g. Chinese, emoji).
+pub(super) fn truncate_chars(s: &str, max_chars: usize) -> String {
+    match s.char_indices().nth(max_chars) {
+        Some((byte_pos, _)) => format!("{}…", &s[..byte_pos]),
+        None => s.to_string(),
+    }
+}
+
+/// Format tool output lines with smart truncation (head + tail).
+///
+/// Returns a `Vec<String>` of formatted lines, ready to be printed.
+/// Each line is prefixed with a dim vertical bar (`│`).
+///
+/// Mimics Claude Code's approach: if the output exceeds `TOOL_OUTPUT_MAX_LINES`,
+/// show the first `TOOL_OUTPUT_HEAD_LINES` lines, a "... (N lines hidden) ..."
+/// indicator, and the last `TOOL_OUTPUT_TAIL_LINES` lines.
+pub(super) fn format_truncated_output(lines: &[&str]) -> Vec<String> {
+    let line_count = lines.len();
+    let mut result = Vec::new();
+
+    if line_count == 0 {
+        return result;
+    }
+
+    if line_count <= TOOL_OUTPUT_MAX_LINES {
+        for line in lines {
+            result.push(line.to_string());
+        }
+    } else {
+        for line in &lines[..TOOL_OUTPUT_HEAD_LINES] {
+            result.push(line.to_string());
+        }
+        let hidden = line_count - TOOL_OUTPUT_HEAD_LINES - TOOL_OUTPUT_TAIL_LINES;
+        result.push(format!("... ({} lines hidden) ...", hidden));
+        for line in &lines[line_count - TOOL_OUTPUT_TAIL_LINES..] {
+            result.push(line.to_string());
+        }
+    }
+
+    result
+}
 
 // ── Primitive helpers ──
 
@@ -34,7 +81,7 @@ fn print_key_value(key: &str, value: &str, value_color: Color) {
 // ── Banner ──
 
 /// Print the startup banner in Claude Code style.
-pub fn banner(agent: &dyn AgentMode) {
+pub fn banner(agent: &dyn AgentMetadata) {
     println!();
     println!(
         "{}  {}",
@@ -113,7 +160,7 @@ pub fn cost(cost: &SessionCost) {
 // ── Model info ──
 
 /// Print the `/model` output.
-pub fn model_info(agent: &dyn AgentMode) {
+pub fn model_info(agent: &dyn AgentMetadata) {
     println!();
     print_key_value("Provider:", agent.provider_name(), Color::White);
     print_key_value("Model:", agent.model_name(), Color::Cyan);
@@ -195,7 +242,7 @@ pub fn response_footer(usage: Option<&TokenUsage>, elapsed: f64) {
 // ── Session events ──
 
 /// Print the "new session started" message.
-pub fn new_session(agent: &dyn AgentMode) {
+pub fn new_session(agent: &dyn AgentMetadata) {
     println!();
     println!(
         "  {} New session started.",
@@ -210,7 +257,7 @@ pub fn new_session(agent: &dyn AgentMode) {
 }
 
 /// Print the "screen cleared" message.
-pub fn screen_cleared(agent: &dyn AgentMode) {
+pub fn screen_cleared(agent: &dyn AgentMetadata) {
     print_dim(&format!(
         "  Screen cleared. Session: {} ({})",
         agent.session().title,
@@ -222,7 +269,7 @@ pub fn screen_cleared(agent: &dyn AgentMode) {
 // ── Tools list ──
 
 /// Print the `/tools` output — list all available MCP tools.
-pub fn tools_list(agent: &dyn AgentMode) {
+pub fn tools_list(agent: &dyn AgentMetadata) {
     println!();
     if !agent.has_tools() {
         print_dim("  No MCP tools available.");
@@ -258,7 +305,7 @@ pub fn tools_list(agent: &dyn AgentMode) {
 // ── Skills list ──
 
 /// Print the `/skills` output — list all available skills.
-pub fn skills_list(agent: &dyn AgentMode) {
+pub fn skills_list(agent: &dyn AgentMetadata) {
     println!();
     let infos = agent.skill_infos();
     if infos.is_empty() {
@@ -294,7 +341,7 @@ pub fn skills_list(agent: &dyn AgentMode) {
 // ── Agents list ──
 
 /// Print the `/agents` output — list all available subagents.
-pub fn agents_list(agent: &dyn AgentMode) {
+pub fn agents_list(agent: &dyn AgentMetadata) {
     println!();
     let infos = agent.subagent_infos();
     if infos.is_empty() {
@@ -332,51 +379,17 @@ pub fn agents_list(agent: &dyn AgentMode) {
 
 // ── Tool output rendering ──
 
-/// Render tool output lines with smart truncation (head + tail).
+/// Render tool output lines with smart truncation (head + tail) to stdout.
 ///
-/// Mimics Claude Code's approach: if the output exceeds `TOOL_OUTPUT_MAX_LINES`,
-/// show the first `TOOL_OUTPUT_HEAD_LINES` lines, a "... (N lines hidden) ..."
-/// indicator, and the last `TOOL_OUTPUT_TAIL_LINES` lines.
+/// Delegates to `format_truncated_output` for the truncation logic,
+/// then prints each line with dim styling and a vertical bar prefix.
 fn render_tool_output(lines: &[&str]) {
-    let line_count = lines.len();
-
-    if line_count == 0 {
-        return;
-    }
-
-    if line_count <= TOOL_OUTPUT_MAX_LINES {
-        // Short output: show all lines
-        for line in lines {
-            println!(
-                "    {}  {}",
-                "│".with(Color::DarkGrey),
-                line.with(Color::DarkGrey),
-            );
-        }
-    } else {
-        // Long output: head + hidden indicator + tail
-        for line in &lines[..TOOL_OUTPUT_HEAD_LINES] {
-            println!(
-                "    {}  {}",
-                "│".with(Color::DarkGrey),
-                line.with(Color::DarkGrey),
-            );
-        }
-        let hidden = line_count - TOOL_OUTPUT_HEAD_LINES - TOOL_OUTPUT_TAIL_LINES;
+    for formatted_line in format_truncated_output(lines) {
         println!(
             "    {}  {}",
             "│".with(Color::DarkGrey),
-            format!("... ({} lines hidden) ...", hidden)
-                .with(Color::DarkGrey)
-                .attribute(Attribute::Italic),
+            formatted_line.with(Color::DarkGrey),
         );
-        for line in &lines[line_count - TOOL_OUTPUT_TAIL_LINES..] {
-            println!(
-                "    {}  {}",
-                "│".with(Color::DarkGrey),
-                line.with(Color::DarkGrey),
-            );
-        }
     }
 }
 
@@ -448,12 +461,8 @@ pub fn tool_event(event: &ToolEvent) {
                     .attribute(Attribute::Bold),
                 "—".with(Color::DarkGrey),
             );
-            // Show truncated task preview
-            let preview = if task_preview.len() > 100 {
-                format!("{}...", &task_preview[..100])
-            } else {
-                task_preview.clone()
-            };
+            // Show truncated task preview (UTF-8 safe)
+            let preview = truncate_chars(task_preview, 100);
             println!(
                 "    {}",
                 preview.with(Color::DarkGrey),
@@ -472,12 +481,8 @@ pub fn tool_event(event: &ToolEvent) {
                 format!("Subagent '{}' completed", agent_name).with(color),
                 format!("({} tool rounds)", tool_rounds).with(Color::DarkGrey),
             );
-            // Show brief result preview
-            let preview = if result_preview.len() > 120 {
-                format!("{}...", &result_preview[..120])
-            } else {
-                result_preview.clone()
-            };
+            // Show brief result preview (UTF-8 safe)
+            let preview = truncate_chars(result_preview, 120);
             if !preview.is_empty() {
                 println!(
                     "    {}",

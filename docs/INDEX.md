@@ -1,7 +1,7 @@
 # 文档索引
 
 > 最后更新：2026-04-15
-> 来源：存量代码分析 + 代码审查改进 + 工具事件/并行化迭代 + 记忆系统重构 + A-MEM 实现 + Skill 功能实现 + Workspace 系统实现 + YAML 配置迁移 + 模块化重构 + Subagent 功能实现
+> 来源：存量代码分析 + 代码审查改进 + 工具事件/并行化迭代 + 记忆系统重构 + A-MEM 实现 + Skill 功能实现 + Workspace 系统实现 + YAML 配置迁移 + 模块化重构 + Subagent 功能实现 + 代码质量审查优化
 
 ## 服务/模块文档
 
@@ -9,7 +9,7 @@
 |------|------|---------|
 | [core/overview.md](services/core/overview.md) | 核心入口、Workspace 统一路径管理、YAML 配置、日志（config/ 模块） | 2026-04-14 |
 | [agent/overview.md](services/agent/overview.md) | Agent 模式抽象 + ChatAgent + Session + ToolRouter + 内置工具（含 Bash） + ToolEvent 回调 + 并行工具执行 + Skill 系统 + **Subagent 系统**（隔离执行、Agent Teams、Worktree 隔离、生命周期钩子） | 2026-04-15 |
-| [cli/overview.md](services/cli/overview.md) | REPL 交互界面、命令、渲染、工具事件渲染 | 2026-04-09 |
+| [cli/overview.md](services/cli/overview.md) | REPL 交互界面、命令、渲染、工具事件渲染、**非交互模式（Print Mode）**、**共享文本工具函数** | 2026-04-15 |
 | [llm/overview.md](services/llm/overview.md) | LLM Provider 抽象 + 双 Provider 实现（ToolInfo 已迁移至 tools） | 2026-04-09 |
 | [mcp/overview.md](services/mcp/overview.md) | MCP 协议客户端 + 工具管理 + Workspace 配置搜索链 + try_common_paths 重构 | 2026-04-14 |
 | [memory/overview.md](services/memory/overview.md) | 双层记忆架构 + A-MEM 知识图谱引擎 + Embedding trait + 整合机制 + 持久化迁移 + 原子写入 + Memory::persist() | 2026-04-14 |

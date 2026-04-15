@@ -1,5 +1,10 @@
 pub mod bash;
-pub mod fs;
+mod fs_utils;
+mod get_file_info;
+mod list_directory;
+mod read_file;
+mod search_files;
+mod write_file;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -61,11 +66,11 @@ impl BuiltinToolRegistry {
     /// Create a new registry with the default set of built-in tools.
     pub fn new() -> Self {
         let tools: Vec<Box<dyn BuiltinTool>> = vec![
-            Box::new(fs::ReadFileTool),
-            Box::new(fs::WriteFileTool),
-            Box::new(fs::ListDirectoryTool),
-            Box::new(fs::SearchFilesTool),
-            Box::new(fs::GetFileInfoTool),
+            Box::new(read_file::ReadFileTool),
+            Box::new(write_file::WriteFileTool),
+            Box::new(list_directory::ListDirectoryTool),
+            Box::new(search_files::SearchFilesTool),
+            Box::new(get_file_info::GetFileInfoTool),
             Box::new(bash::BashTool),
         ];
 

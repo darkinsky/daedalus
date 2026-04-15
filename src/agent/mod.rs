@@ -74,32 +74,17 @@ pub enum ToolEvent {
 /// It takes a `ToolEvent` and renders it to the terminal (or ignores it).
 pub type ToolEventCallback = Arc<dyn Fn(ToolEvent) + Send + Sync>;
 
-// ── Agent mode trait ──
+// ── Agent metadata trait (read-only introspection) ──
 
-/// The agent mode trait — unified interface for different agent modes.
+/// Read-only metadata about an agent — used by the CLI layer for display.
 ///
-/// Currently we have:
-/// - `ChatAgent`: Multi-turn conversation with optional MCP tool calling.
+/// This trait is separated from `AgentMode` to keep the core trait focused
+/// on behavior (chat, session management, shutdown) while metadata methods
+/// (tool listing, model info, skill/subagent introspection) live here.
 ///
-/// In the future, more modes can be added, such as:
-/// - Full agent mode with planning and multi-step execution.
-#[async_trait]
-pub trait AgentMode: Send + Sync {
-    /// Send a user message and get the response (with usage metadata).
-    ///
-    /// An optional `on_tool_event` callback can be provided to receive
-    /// real-time notifications about tool execution progress.
-    async fn chat(
-        &mut self,
-        user_input: &str,
-        on_tool_event: Option<&ToolEventCallback>,
-    ) -> Result<ChatResponse>;
-
-    /// Attach an MCP manager to enable tool calling.
-    ///
-    /// The default implementation does nothing (for modes that don't support tools).
-    fn attach_mcp(&mut self, _mcp: McpManager) {}
-
+/// `AgentMode` requires `AgentMetadata` as a supertrait, so any `dyn AgentMode`
+/// automatically provides all metadata methods.
+pub trait AgentMetadata {
     /// Return true if this agent has any tools available (built-in, skill, or MCP).
     fn has_tools(&self) -> bool {
         false
@@ -114,9 +99,6 @@ pub trait AgentMode: Send + Sync {
     fn tool_infos(&self) -> Vec<ToolInfo> {
         vec![]
     }
-
-    /// Start a new conversation session.
-    fn new_session(&mut self);
 
     /// Return a reference to the current session.
     fn session(&self) -> &Session;
@@ -149,6 +131,39 @@ pub trait AgentMode: Send + Sync {
     fn subagent_count(&self) -> usize {
         0
     }
+}
+
+// ── Agent mode trait (core behavior) ──
+
+/// The agent mode trait — unified interface for different agent modes.
+///
+/// Focused on core behavior: chat interaction, session lifecycle, and cleanup.
+/// Read-only introspection methods are in the `AgentMetadata` supertrait.
+///
+/// Currently we have:
+/// - `ChatAgent`: Multi-turn conversation with optional MCP tool calling.
+///
+/// In the future, more modes can be added, such as:
+/// - Full agent mode with planning and multi-step execution.
+#[async_trait]
+pub trait AgentMode: AgentMetadata + Send + Sync {
+    /// Send a user message and get the response (with usage metadata).
+    ///
+    /// An optional `on_tool_event` callback can be provided to receive
+    /// real-time notifications about tool execution progress.
+    async fn chat(
+        &mut self,
+        user_input: &str,
+        on_tool_event: Option<&ToolEventCallback>,
+    ) -> Result<ChatResponse>;
+
+    /// Attach an MCP manager to enable tool calling.
+    ///
+    /// The default implementation does nothing (for modes that don't support tools).
+    fn attach_mcp(&mut self, _mcp: McpManager) {}
+
+    /// Start a new conversation session.
+    fn new_session(&mut self);
 
     /// Set the subagent event callback for real-time progress display.
     ///

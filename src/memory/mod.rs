@@ -2,19 +2,11 @@ pub mod agentic;
 pub mod persistence;
 pub mod sliding_window;
 
-#[allow(unused_imports)]
-pub use persistence::MemoryPersistence;
-#[allow(unused_imports)]
-pub use sliding_window::{
-    ConsolidationResult,
-    HistoryEntry,
-    LongTermMemory,
-    SlidingWindowConfig,
-    SlidingWindowFactory,
-    SlidingWindowMemory,
-};
-#[allow(unused_imports)]
-pub use agentic::{AgenticMemoryStore, MemoryNote};
+// Re-exports for public API.
+// These types are used by other modules (agent, config) and may be
+// used by future external consumers. Kept as pub re-exports for
+// convenience even if not all are currently referenced.
+pub use sliding_window::SlidingWindowFactory;
 
 use std::any::Any;
 
@@ -136,10 +128,14 @@ pub trait Memory: Send + Sync {
     ///
     /// This enables the agent layer to access strategy-specific features
     /// (e.g., consolidation, history search) without polluting the base trait.
+    ///
+    /// Reserved for future use when consolidation is triggered externally.
     #[allow(dead_code)]
     fn as_any(&self) -> &dyn Any;
 
     /// Downcast to a mutable concrete type for advanced operations.
+    ///
+    /// Reserved for future use when consolidation is triggered externally.
     #[allow(dead_code)]
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }

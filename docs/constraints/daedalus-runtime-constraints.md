@@ -27,6 +27,9 @@
 | `EXCLUDED_TOOLS` | `["spawn_subagent", "spawn_team", "use_skill"]` | `src/subagent/runner.rs` | Subagent 工具集中永远排除的工具（防递归） |
 | `DEFAULT_TIMEOUT_SECS` (bash) | 30 | `src/tools/bash.rs:16` | Bash 工具默认命令超时时间（秒） |
 | `MAX_OUTPUT_BYTES` (bash) | 256 KB | `src/tools/bash.rs:19` | Bash 工具最大输出截断大小，防止无界内存使用 |
+| `TOOL_OUTPUT_MAX_LINES` | 10 | `src/cli/render.rs` | 工具输出显示的最大行数，超过则截断 |
+| `TOOL_OUTPUT_HEAD_LINES` | 5 | `src/cli/render.rs` | 截断时保留的头部行数 |
+| `TOOL_OUTPUT_TAIL_LINES` | 3 | `src/cli/render.rs` | 截断时保留的尾部行数 |
 
 ## 工具调用摘要截断约束
 
@@ -169,6 +172,7 @@ Subagent 从三个来源加载，按优先级从低到高：
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-15 | 新增工具输出截断常量（TOOL_OUTPUT_MAX_LINES/HEAD_LINES/TAIL_LINES） | 代码质量审查优化 |
 | 2026-04-15 | 新增 Bash 工具运行时常量（DEFAULT_TIMEOUT_SECS、MAX_OUTPUT_BYTES） | Bash 工具实现 |
 | 2026-04-15 | 新增 Subagent 运行时常量和约束（加载优先级、执行隔离、防递归、Worktree、生命周期钩子） | Subagent 功能实现 |
 | 2026-04-14 | 更新原子写入影响文件列表（新增 notes.json）；更新 MCP 配置搜索约束（try_common_paths 重构） | 架构审查优化 |
