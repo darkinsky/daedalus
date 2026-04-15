@@ -1,7 +1,7 @@
 # 运行时约束
 
-> 最后更新：2026-04-14
-> 来源：存量代码分析 + 代码审查改进 + 并行化迭代 + 记忆系统重构 + Skill 功能实现 + Workspace 系统实现 + 架构审查优化
+> 最后更新：2026-04-15
+> 来源：存量代码分析 + 代码审查改进 + 并行化迭代 + 记忆系统重构 + Skill 功能实现 + Workspace 系统实现 + 架构审查优化 + Bash 工具
 > 置信度：高
 
 ## 硬编码常量
@@ -25,6 +25,8 @@
 | `TEAM_TOOL_NAME` | "spawn_team" | `src/subagent/tool.rs` | LLM 调用并行多 agent 时使用的工具名 |
 | `DEFAULT_MAX_TOOL_ROUNDS` (subagent) | 10 | `src/subagent/runner.rs` | Subagent 默认最大工具调用轮数（可通过 `maxTurns` 覆盖） |
 | `EXCLUDED_TOOLS` | `["spawn_subagent", "spawn_team", "use_skill"]` | `src/subagent/runner.rs` | Subagent 工具集中永远排除的工具（防递归） |
+| `DEFAULT_TIMEOUT_SECS` (bash) | 30 | `src/tools/bash.rs:16` | Bash 工具默认命令超时时间（秒） |
+| `MAX_OUTPUT_BYTES` (bash) | 256 KB | `src/tools/bash.rs:19` | Bash 工具最大输出截断大小，防止无界内存使用 |
 
 ## 工具调用摘要截断约束
 
@@ -167,6 +169,7 @@ Subagent 从三个来源加载，按优先级从低到高：
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-15 | 新增 Bash 工具运行时常量（DEFAULT_TIMEOUT_SECS、MAX_OUTPUT_BYTES） | Bash 工具实现 |
 | 2026-04-15 | 新增 Subagent 运行时常量和约束（加载优先级、执行隔离、防递归、Worktree、生命周期钩子） | Subagent 功能实现 |
 | 2026-04-14 | 更新原子写入影响文件列表（新增 notes.json）；更新 MCP 配置搜索约束（try_common_paths 重构） | 架构审查优化 |
 | 2026-04-14 | 新增 Workspace 解析约束（pre-logging）、记忆持久化原子写入约束、优雅关闭约束 | Workspace 系统实现 + 架构审查优化 |

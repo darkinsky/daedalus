@@ -82,7 +82,7 @@ graph TD
 | config | YAML 配置加载（支持 workspace 回退） | serde_yaml, anyhow | `src/config.rs` → `src/config/` | [core](docs/services/core/overview.md) |
 | logging | 结构化日志（双通道、轮转） | tracing, tracing-appender | `src/config/logging.rs` | [core](docs/services/core/overview.md) |
 | agent | Agent 模式抽象 + ChatAgent + ToolRouter | async-trait | `src/agent/` | [agent](docs/services/agent/overview.md) |
-| tools | 内置工具 trait + 文件系统工具 | tokio::fs, chrono | `src/tools/` | [agent](docs/services/agent/overview.md) |
+| tools | 内置工具 trait + 文件系统工具 + Bash 命令执行 | tokio::fs, tokio::process, chrono | `src/tools/` | [agent](docs/services/agent/overview.md) |
 | skill | Skill 加载 + 注册 + LLM 路由 | — | `src/skill/` | [agent](docs/services/agent/overview.md) |
 | subagent | Subagent 加载 + 注册 + 隔离执行 + Agent Teams | tokio, futures | `src/subagent/` | [agent](docs/services/agent/overview.md) |
 | cli | REPL 交互、命令解析、终端渲染 | rustyline, crossterm, termimad | `src/cli/` | [cli](docs/services/cli/overview.md) |
@@ -172,7 +172,7 @@ main()
 4. **优雅降级**：MCP 连接失败跳过该服务器、SOUL 文件读取失败仅 warn、日志 filter 解析失败回退默认值。
 5. **OpenAI JSON 作为中间格式**：工具定义使用 OpenAI function-calling JSON 作为 Provider 无关的中间表示，各 Provider 各自转换。
 6. **近因效应利用**：系统提示词中 Critical Reminders 放在最后，利用 LLM 的近因偏差确保硬规则最被重视。
-7. **内置工具始终可用**：文件系统等基础工具通过 `BuiltinToolRegistry` 内置，无需外部 MCP 配置即可使用。工具路由优先级：内置工具 > MCP 工具。
+7. **内置工具始终可用**：文件系统和 Bash 命令执行等基础工具通过 `BuiltinToolRegistry` 内置，无需外部 MCP 配置即可使用。工具路由优先级：内置工具 > MCP 工具。
 8. **工具调用并行执行**：同一轮中的多个工具调用通过 `futures::future::join_all` 并行执行，总耗时 = max(各工具耗时)。
 9. **工具执行可观测性**：通过 `ToolEvent` 回调机制，CLI 层实时渲染工具执行进度（开始/完成/成功/失败）。
 10. **Skill 即工具（LLM 路由）**：Skill 不静态注入 system prompt（浪费 token），而是作为 `use_skill` 内置工具暴露给 LLM，由 LLM 根据 skill 描述自主决定何时调用。Skill 通过 `BuiltinTool` trait 适配器模式集成，ToolRouter 无需特殊分支。

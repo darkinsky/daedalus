@@ -68,7 +68,7 @@ That's it. Daedalus starts an interactive REPL with the default `gpt-4o` model. 
 
 ### Tool System
 
-- **Built-in Tools** — 5 file system tools ship out of the box, no external setup required
+- **Built-in Tools** — 6 built-in tools ship out of the box (5 file system + bash), no external setup required
 - **MCP Protocol** — Connect to any [MCP-compatible](https://modelcontextprotocol.io/) tool server via stdio
 - **Unified Routing** — `ToolRouter` transparently routes tool calls: built-in tools first, MCP fallback
 - **Multi-round Tool Use** — Up to 10 tool-calling rounds per message, with automatic token accumulation
@@ -93,6 +93,7 @@ These tools are always available, with zero configuration:
 | `list_directory` | List directory contents, with optional recursion and entry limit |
 | `search_files` | Search for files by name pattern |
 | `get_file_info` | Get file/directory metadata (size, timestamps, permissions) |
+| `bash` | Execute a bash command and return stdout/stderr (with timeout and output truncation) |
 
 ### MCP Tools
 
@@ -329,7 +330,8 @@ src/
 │       └── reminders.rs       # Critical safety reminders
 └── tools/
     ├── mod.rs                 # BuiltinTool trait + registry
-    └── fs.rs                  # File system tools (5 tools)
+    ├── fs.rs                  # File system tools (5 tools)
+    └── bash.rs                # Bash command execution tool
 ```
 
 ## �️ Development

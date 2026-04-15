@@ -1,7 +1,7 @@
 # Agent — Agent 模式抽象、ChatAgent 与 ToolRouter
 
-> 最后更新：2026-04-14
-> 来源：存量代码分析 + 代码审查改进 + 工具事件/并行化迭代 + 记忆系统重构 + Skill 功能实现 + 模块化重构
+> 最后更新：2026-04-15
+> 来源：存量代码分析 + 代码审查改进 + 工具事件/并行化迭代 + 记忆系统重构 + Skill 功能实现 + 模块化重构 + Bash 工具
 
 ## 1. 模块概述
 
@@ -162,7 +162,7 @@ tool_call → ToolRouter.execute()
 
 ### 内置工具（BuiltinToolRegistry）
 
-> 📍 **代码位置**：`src/tools/mod.rs` + `src/tools/fs.rs`
+> 📍 **代码位置**：`src/tools/mod.rs` + `src/tools/fs.rs` + `src/tools/bash.rs`
 
 内置工具通过 `BuiltinTool` trait 定义，与 MCP 工具使用相同的 OpenAI function-calling JSON 格式，对 LLM 完全透明。
 
@@ -175,6 +175,7 @@ tool_call → ToolRouter.execute()
 | `list_directory` | 列出目录内容，支持递归 | `path`, `recursive?`, `max_entries?` |
 | `search_files` | 按文件名模式搜索 | `path`, `pattern`, `max_results?` |
 | `get_file_info` | 获取文件/目录元数据 | `path` |
+| `bash` | 执行 bash 命令，返回 stdout/stderr | `command`, `working_directory?`, `timeout_secs?` |
 
 ---
 
@@ -399,6 +400,7 @@ Subagent 的工具集中**永远不包含** `spawn_subagent`、`spawn_team`、`u
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-15 | 内置工具表格新增 `bash` 工具（shell 命令执行） | Bash 工具实现 |
 | 2026-04-15 | 新增 Subagent 系统章节（隔离执行、Agent Teams、ToolEvent 透传、Worktree 隔离、内置 agent） | Subagent 功能实现 |
 | 2026-04-14 | Session 从 `src/session.rs` 迁移至 `src/agent/session.rs`；新增 Session 管理章节 | 模块化重构 |
 | 2026-04-13 | 新增 Skill 系统章节（LLM 路由、SkillTool 适配器、AgentMode 扩展、优雅降级） | Skill 功能实现 |

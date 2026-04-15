@@ -1,3 +1,4 @@
+pub mod bash;
 pub mod fs;
 
 use anyhow::Result;
@@ -65,6 +66,7 @@ impl BuiltinToolRegistry {
             Box::new(fs::ListDirectoryTool),
             Box::new(fs::SearchFilesTool),
             Box::new(fs::GetFileInfoTool),
+            Box::new(bash::BashTool),
         ];
 
         tracing::info!(
