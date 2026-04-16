@@ -12,6 +12,7 @@ use crate::tools::ToolInfo;
 use crate::mcp::McpManager;
 use crate::memory::{
     AgenticFactory, CheatsheetFactory, MemoryFactory, SlidingWindowFactory,
+    WikiFactory,
 };
 use crate::prompt::PromptBuilder;
 use crate::skill::SkillInfo;
@@ -187,6 +188,31 @@ impl ChatAgent {
                              falling back to sliding_window"
                         );
                         Self::sliding_window_factory(workspace)
+                    }
+                }
+            }
+            MemoryStrategy::Wiki => {
+                match config.embedding.create_provider() {
+                    Ok(embedder) => {
+                        tracing::info!(
+                            "Wiki memory initialized with embedding provider (enhanced retrieval)"
+                        );
+                        let factory = WikiFactory::with_workspace(
+                            workspace.wiki_dir(),
+                            embedder,
+                        );
+                        Box::new(factory)
+                    }
+                    Err(e) => {
+                        tracing::info!(
+                            error = %e,
+                            "No embedding provider configured for wiki memory, \
+                             using keyword-only retrieval mode"
+                        );
+                        let factory = WikiFactory::with_workspace_only(
+                            workspace.wiki_dir(),
+                        );
+                        Box::new(factory)
                     }
                 }
             }

@@ -123,6 +123,7 @@ impl Workspace {
             "config",
             "memory",
             "memory/agentic",
+            "memory/wiki",
             "sessions",
             "skills",
             "agents",
@@ -187,6 +188,11 @@ impl Workspace {
     /// Path to the Dynamic Cheatsheet persistence file.
     pub fn cheatsheet_path(&self) -> PathBuf {
         self.root.join("memory/cheatsheet.json")
+    }
+
+    /// Path to the Wiki memory directory (Markdown files).
+    pub fn wiki_dir(&self) -> PathBuf {
+        self.root.join("memory/wiki")
     }
 
     // ── Session paths ──
@@ -280,6 +286,7 @@ mod tests {
         assert!(dir.join("config").is_dir());
         assert!(dir.join("memory").is_dir());
         assert!(dir.join("memory/agentic").is_dir());
+        assert!(dir.join("memory/wiki").is_dir());
         assert!(dir.join("sessions").is_dir());
         assert!(dir.join("skills").is_dir());
         assert!(dir.join("agents").is_dir());
@@ -302,6 +309,7 @@ mod tests {
         assert_eq!(ws.history_log_path(), PathBuf::from("/tmp/test_ws/memory/history.jsonl"));
         assert_eq!(ws.agentic_notes_path(), PathBuf::from("/tmp/test_ws/memory/agentic/notes.json"));
         assert_eq!(ws.cheatsheet_path(), PathBuf::from("/tmp/test_ws/memory/cheatsheet.json"));
+        assert_eq!(ws.wiki_dir(), PathBuf::from("/tmp/test_ws/memory/wiki"));
         assert_eq!(ws.sessions_dir(), PathBuf::from("/tmp/test_ws/sessions"));
         assert_eq!(ws.last_session_id_path(), PathBuf::from("/tmp/test_ws/sessions/last_session_id"));
         assert_eq!(ws.skills_dir(), PathBuf::from("/tmp/test_ws/skills"));

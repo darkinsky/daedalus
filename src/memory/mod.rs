@@ -2,6 +2,7 @@ pub mod agentic;
 pub mod dynamic_cheatsheet;
 pub mod persistence;
 pub mod sliding_window;
+pub mod wiki;
 
 // Re-exports for public API.
 // These types are used by other modules (agent, config) and may be
@@ -10,6 +11,7 @@ pub mod sliding_window;
 pub use sliding_window::SlidingWindowFactory;
 pub use dynamic_cheatsheet::CheatsheetFactory;
 pub use agentic::AgenticFactory;
+pub use wiki::WikiFactory;
 
 use std::any::Any;
 
@@ -56,7 +58,7 @@ impl PersistentState {
 /// - Performing post-turn reflection (for strategies with adaptive memory).
 /// - Providing `Any`-based downcasting for advanced operations.
 ///
-/// Currently we have three implementations:
+/// Currently we have four implementations:
 ///
 /// - **`SlidingWindowMemory`**: Dual-layer memory with sliding window,
 ///   long-term memory (auto-injected into system prompt), history event
@@ -72,6 +74,11 @@ impl PersistentState {
 ///   embedding-based retrieval and memory evolution. Stores each
 ///   response as a memory note and pre-retrieves relevant context
 ///   for the next turn. Best for long-term knowledge accumulation.
+///
+/// - **`WikiMemory`**: LLM Wiki memory (Karpathy pattern) with
+///   structured Markdown pages, YAML frontmatter, wikilinks, and
+///   periodic lint. Compiles conversation knowledge into an
+///   Obsidian-compatible wiki. Best for deep knowledge compilation.
 pub trait Memory: Send + Sync {
     /// Add a user message to memory.
     fn add_user_message(&mut self, content: &str);

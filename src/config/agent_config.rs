@@ -31,6 +31,9 @@ pub const DEFAULT_SYSTEM_PROMPT: &str =
 /// - **Agentic**: Knowledge graph memory (A-MEM) with embedding-based
 ///   retrieval and memory evolution. Best for long-term knowledge
 ///   accumulation across sessions.
+/// - **Wiki**: LLM Wiki memory (Karpathy pattern) with structured
+///   Markdown pages, wikilinks, and periodic lint. Best for deep
+///   knowledge compilation into an Obsidian-compatible wiki.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryStrategy {
@@ -41,6 +44,8 @@ pub enum MemoryStrategy {
     DynamicCheatsheet,
     /// Agentic Memory (A-MEM) — knowledge graph with embedding retrieval.
     Agentic,
+    /// LLM Wiki — structured knowledge compilation with Markdown persistence.
+    Wiki,
 }
 
 impl std::fmt::Display for MemoryStrategy {
@@ -49,6 +54,7 @@ impl std::fmt::Display for MemoryStrategy {
             Self::SlidingWindow => write!(f, "sliding_window"),
             Self::DynamicCheatsheet => write!(f, "dynamic_cheatsheet"),
             Self::Agentic => write!(f, "agentic"),
+            Self::Wiki => write!(f, "wiki"),
         }
     }
 }
