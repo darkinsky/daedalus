@@ -1,3 +1,4 @@
+pub mod ace;
 pub mod agentic;
 pub mod dynamic_cheatsheet;
 pub mod persistence;
@@ -8,6 +9,7 @@ pub mod wiki;
 // These types are used by other modules (agent, config) and may be
 // used by future external consumers. Kept as pub re-exports for
 // convenience even if not all are currently referenced.
+pub use ace::AceFactory;
 pub use sliding_window::SlidingWindowFactory;
 pub use dynamic_cheatsheet::CheatsheetFactory;
 pub use agentic::AgenticFactory;
@@ -16,6 +18,114 @@ pub use wiki::WikiFactory;
 use std::any::Any;
 
 use crate::llm::{ChatMessage, LlmApi};
+
+// ── Shared parsing utilities ──
+
+/// Approximate characters per token for budget estimation.
+///
+/// Shared by memory strategies that render content for system prompt injection
+/// and need to respect a token budget (Playbook and DynamicCheatsheet).
+pub(crate) const CHARS_PER_TOKEN: usize = 4;
+
+/// Truncate rendered text to fit within a token budget, cutting at a line boundary.
+///
+/// If the text fits within `max_tokens * CHARS_PER_TOKEN` characters, it is
+/// returned as-is. Otherwise, it is truncated at the last newline before the
+/// budget limit, and `truncation_suffix` is appended.
+///
+/// Shared by `Playbook::to_markdown` and `DynamicCheatsheet::to_markdown`.
+pub(crate) fn truncate_to_token_budget(text: String, max_tokens: usize, truncation_suffix: &str) -> String {
+    let max_chars = max_tokens * CHARS_PER_TOKEN;
+    if text.len() <= max_chars {
+        return text;
+    }
+
+    // Truncate at a line boundary to avoid cutting mid-entry.
+    let truncated: String = text.chars().take(max_chars).collect();
+    let cut_point = truncated.rfind('\n').unwrap_or(truncated.len());
+    format!("{}\n\n{}", &truncated[..cut_point], truncation_suffix)
+}
+
+/// Strip a directive prefix (e.g., `NEW:`, `ADD:`, `UPDATE:`) case-insensitively.
+///
+/// Shared by memory strategies that parse structured LLM reflection responses
+/// (Dynamic Cheatsheet and ACE). Returns the remainder of the line after the
+/// prefix, or `None` if the prefix doesn't match.
+pub(crate) fn strip_directive_prefix<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
+    if line.len() >= prefix.len()
+        && line[..prefix.len()].eq_ignore_ascii_case(prefix)
+    {
+        Some(&line[prefix.len()..])
+    } else {
+        None
+    }
+}
+
+// ── Shared message buffer ──
+
+/// Reusable message buffer for memory strategies that manage their own
+/// conversation history with a sliding window.
+///
+/// Encapsulates the common pattern shared by `CheatsheetMemory`, `AgenticMemory`,
+/// `WikiMemory`, and `AceMemory` — all of which maintain a `Vec<ChatMessage>`
+/// with a `max_messages` window limit.
+///
+/// Using composition (embedding `MessageBuffer` as a field) rather than
+/// inheritance keeps each strategy's `Memory` impl in full control while
+/// eliminating ~30 lines of duplicated boilerplate per strategy.
+pub(crate) struct MessageBuffer {
+    messages: Vec<ChatMessage>,
+    max_messages: usize,
+}
+
+impl MessageBuffer {
+    /// Create a new buffer with the given window size.
+    pub fn new(max_messages: usize) -> Self {
+        Self {
+            messages: Vec::new(),
+            max_messages,
+        }
+    }
+
+    /// Append a user message.
+    pub fn add_user(&mut self, content: &str) {
+        self.messages.push(ChatMessage::user(content));
+    }
+
+    /// Append an assistant message.
+    pub fn add_assistant(&mut self, content: &str) {
+        self.messages.push(ChatMessage::assistant(content));
+    }
+
+    /// Return the windowed slice of messages (most recent `max_messages`).
+    pub fn windowed(&self) -> &[ChatMessage] {
+        if self.messages.len() <= self.max_messages {
+            &self.messages[..]
+        } else {
+            &self.messages[self.messages.len() - self.max_messages..]
+        }
+    }
+
+    /// Return the number of conversation turns (user + assistant pairs).
+    pub fn turn_count(&self) -> usize {
+        self.messages.len() / 2
+    }
+
+    /// Clear all messages.
+    #[allow(dead_code)]
+    pub fn clear(&mut self) {
+        self.messages.clear();
+    }
+
+    /// Build the full message list with a system prompt prepended.
+    pub fn build_messages_with_system(&self, system_prompt: String) -> Vec<ChatMessage> {
+        let window = self.windowed();
+        let mut messages = Vec::with_capacity(1 + window.len());
+        messages.push(ChatMessage::system(system_prompt));
+        messages.extend(window.iter().cloned());
+        messages
+    }
+}
 
 /// Default maximum number of messages to send to the LLM.
 ///
@@ -58,7 +168,7 @@ impl PersistentState {
 /// - Performing post-turn reflection (for strategies with adaptive memory).
 /// - Providing `Any`-based downcasting for advanced operations.
 ///
-/// Currently we have four implementations:
+/// Currently we have five implementations:
 ///
 /// - **`SlidingWindowMemory`**: Dual-layer memory with sliding window,
 ///   long-term memory (auto-injected into system prompt), history event
@@ -79,6 +189,11 @@ impl PersistentState {
 ///   structured Markdown pages, YAML frontmatter, wikilinks, and
 ///   periodic lint. Compiles conversation knowledge into an
 ///   Obsidian-compatible wiki. Best for deep knowledge compilation.
+///
+/// - **`AceMemory`**: ACE (Agentic Context Engineering) memory with
+///   an evolving Playbook of structured sections and bullets. Uses a
+///   deterministic Curator to merge LLM-produced delta entries, preventing
+///   context collapse. Best for strategy accumulation and self-improving context.
 pub trait Memory: Send + Sync {
     /// Add a user message to memory.
     fn add_user_message(&mut self, content: &str);

@@ -34,6 +34,9 @@ pub const DEFAULT_SYSTEM_PROMPT: &str =
 /// - **Wiki**: LLM Wiki memory (Karpathy pattern) with structured
 ///   Markdown pages, wikilinks, and periodic lint. Best for deep
 ///   knowledge compilation into an Obsidian-compatible wiki.
+/// - **Ace**: ACE (Agentic Context Engineering) with evolving playbook,
+///   structured sections/bullets, and deterministic curation. Best for
+///   strategy accumulation and self-improving context.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryStrategy {
@@ -46,6 +49,8 @@ pub enum MemoryStrategy {
     Agentic,
     /// LLM Wiki — structured knowledge compilation with Markdown persistence.
     Wiki,
+    /// ACE (Agentic Context Engineering) — evolving playbook with deterministic curation.
+    Ace,
 }
 
 impl std::fmt::Display for MemoryStrategy {
@@ -55,6 +60,7 @@ impl std::fmt::Display for MemoryStrategy {
             Self::DynamicCheatsheet => write!(f, "dynamic_cheatsheet"),
             Self::Agentic => write!(f, "agentic"),
             Self::Wiki => write!(f, "wiki"),
+            Self::Ace => write!(f, "ace"),
         }
     }
 }

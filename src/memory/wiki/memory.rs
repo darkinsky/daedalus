@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::embedding::Embedding;
 use crate::llm::{ChatMessage, LlmApi};
-use crate::memory::{Memory, PersistentState, DEFAULT_MAX_MESSAGES};
+use crate::memory::{Memory, MessageBuffer, PersistentState, DEFAULT_MAX_MESSAGES};
 
 use super::compiler::WikiCompiler;
 use super::store::WikiStore;
@@ -45,8 +45,8 @@ struct WikiPersistentState {
 pub struct WikiMemory {
     /// The original system prompt (without wiki context injection).
     base_system_prompt: String,
-    /// All conversation messages (user + assistant), in chronological order.
-    messages: Vec<ChatMessage>,
+    /// Conversation message buffer with sliding window.
+    buffer: MessageBuffer,
     /// The wiki store (knowledge pages + metadata).
     store: WikiStore,
     /// Optional embedding provider for vector search.
@@ -54,8 +54,6 @@ pub struct WikiMemory {
     embedder: Option<Arc<dyn Embedding>>,
     /// Cached context from the most recent retrieval (injected into system prompt).
     cached_context: Option<String>,
-    /// Maximum number of messages to include in `build_messages()`.
-    max_messages: usize,
 }
 
 impl WikiMemory {
@@ -71,11 +69,10 @@ impl WikiMemory {
     ) -> Self {
         Self {
             base_system_prompt: system_prompt.to_string(),
-            messages: Vec::new(),
+            buffer: MessageBuffer::new(DEFAULT_MAX_MESSAGES),
             store,
             embedder,
             cached_context: None,
-            max_messages: DEFAULT_MAX_MESSAGES,
         }
     }
 
@@ -86,42 +83,28 @@ impl WikiMemory {
             None => self.base_system_prompt.clone(),
         }
     }
-
-    /// Get the windowed slice of messages to send to the LLM.
-    fn windowed_messages(&self) -> &[ChatMessage] {
-        if self.messages.len() <= self.max_messages {
-            &self.messages[..]
-        } else {
-            &self.messages[self.messages.len() - self.max_messages..]
-        }
-    }
 }
 
 impl Memory for WikiMemory {
     fn add_user_message(&mut self, content: &str) {
-        self.messages.push(ChatMessage::user(content));
+        self.buffer.add_user(content);
     }
 
     fn add_assistant_message(&mut self, content: &str) {
-        self.messages.push(ChatMessage::assistant(content));
+        self.buffer.add_assistant(content);
     }
 
     fn build_messages(&self) -> Vec<ChatMessage> {
-        let system_prompt = self.effective_system_prompt();
-        let window = self.windowed_messages();
-        let mut messages = Vec::with_capacity(1 + window.len());
-        messages.push(ChatMessage::system(system_prompt));
-        messages.extend(window.iter().cloned());
-        messages
+        self.buffer.build_messages_with_system(self.effective_system_prompt())
     }
 
     fn clear(&mut self) {
-        self.messages.clear();
+        self.buffer.clear();
         self.cached_context = None;
     }
 
     fn turn_count(&self) -> usize {
-        self.messages.len() / 2
+        self.buffer.turn_count()
     }
 
     fn strategy_name(&self) -> &str {

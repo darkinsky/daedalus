@@ -11,7 +11,7 @@ use crate::llm::{
 use crate::tools::ToolInfo;
 use crate::mcp::McpManager;
 use crate::memory::{
-    AgenticFactory, CheatsheetFactory, MemoryFactory, SlidingWindowFactory,
+    AceFactory, AgenticFactory, CheatsheetFactory, MemoryFactory, SlidingWindowFactory,
     WikiFactory,
 };
 use crate::prompt::PromptBuilder;
@@ -215,6 +215,12 @@ impl ChatAgent {
                         Box::new(factory)
                     }
                 }
+            }
+            MemoryStrategy::Ace => {
+                let factory = AceFactory::with_workspace(
+                    workspace.ace_playbook_path(),
+                );
+                Box::new(factory)
             }
         }
     }

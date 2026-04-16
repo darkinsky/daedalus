@@ -195,6 +195,11 @@ impl Workspace {
         self.root.join("memory/wiki")
     }
 
+    /// Path to the ACE Playbook persistence file.
+    pub fn ace_playbook_path(&self) -> PathBuf {
+        self.root.join("memory/ace/playbook.json")
+    }
+
     // ── Session paths ──
 
     /// Directory for session snapshots.
@@ -310,6 +315,7 @@ mod tests {
         assert_eq!(ws.agentic_notes_path(), PathBuf::from("/tmp/test_ws/memory/agentic/notes.json"));
         assert_eq!(ws.cheatsheet_path(), PathBuf::from("/tmp/test_ws/memory/cheatsheet.json"));
         assert_eq!(ws.wiki_dir(), PathBuf::from("/tmp/test_ws/memory/wiki"));
+        assert_eq!(ws.ace_playbook_path(), PathBuf::from("/tmp/test_ws/memory/ace/playbook.json"));
         assert_eq!(ws.sessions_dir(), PathBuf::from("/tmp/test_ws/sessions"));
         assert_eq!(ws.last_session_id_path(), PathBuf::from("/tmp/test_ws/sessions/last_session_id"));
         assert_eq!(ws.skills_dir(), PathBuf::from("/tmp/test_ws/skills"));

@@ -1,7 +1,7 @@
 # 运行时约束
 
 > 最后更新：2026-04-16
-> 来源：存量代码分析 + 代码审查改进 + 并行化迭代 + 记忆系统重构 + Skill 功能实现 + Workspace 系统实现 + 架构审查优化 + Bash 工具 + **四策略互斥记忆架构**
+> 来源：存量代码分析 + 代码审查改进 + 并行化迭代 + 记忆系统重构 + Skill 功能实现 + Workspace 系统实现 + 架构审查优化 + Bash 工具 + **五策略互斥记忆架构**
 > 置信度：高
 
 ## 硬编码常量
@@ -27,11 +27,11 @@
 | `EXCLUDED_TOOLS` | `["spawn_subagent", "spawn_team", "use_skill"]` | `src/subagent/runner.rs` | Subagent 工具集中永远排除的工具（防递归） |
 | `DEFAULT_TIMEOUT_SECS` (bash) | 30 | `src/tools/bash.rs:16` | Bash 工具默认命令超时时间（秒） |
 | `MAX_OUTPUT_BYTES` (bash) | 256 KB | `src/tools/bash.rs:19` | Bash 工具最大输出截断大小，防止无界内存使用 |
-| `CHARS_PER_TOKEN` | 4 | `src/memory/dynamic_cheatsheet/cheatsheet.rs:12` | Dynamic Cheatsheet token 预算的字符/token 比例 |
+| `CHARS_PER_TOKEN` | 4 | `src/memory/mod.rs` | 共享的 token 预算字符/token 比例（Playbook + DynamicCheatsheet 共用） |
 | `max_entries` (DC default) | 50 | `src/memory/dynamic_cheatsheet/config.rs` | Dynamic Cheatsheet 最大条目数 |
 | `max_token_budget` (DC default) | 2000 | `src/memory/dynamic_cheatsheet/config.rs` | DC 渲染为 Markdown 时的最大 token 预算 |
 | `min_reinforcement_for_retention` (DC default) | 1 | `src/memory/dynamic_cheatsheet/config.rs` | DC 淘汰时的最低强化次数阈值 |
-| `DEFAULT_MAX_MESSAGES` | 100 | `src/memory/mod.rs` | CheatsheetMemory、AgenticMemory 和 WikiMemory 的消息窗口大小，防止长对话 token 超限 |
+| `DEFAULT_MAX_MESSAGES` | 100 | `src/memory/mod.rs` | CheatsheetMemory、AgenticMemory、WikiMemory 和 AceMemory 的消息窗口大小，防止长对话 token 超限 |
 | `TOOL_OUTPUT_MAX_LINES` | 10 | `src/cli/render.rs` | 工具输出显示的最大行数，超过则截断 |
 | `TOOL_OUTPUT_HEAD_LINES` | 5 | `src/cli/render.rs` | 截断时保留的头部行数 |
 | `TOOL_OUTPUT_TAIL_LINES` | 3 | `src/cli/render.rs` | 截断时保留的尾部行数 |
@@ -40,6 +40,11 @@
 | `KEYWORD_MATCH_THRESHOLD` | 0.1 | `src/memory/wiki/retriever.rs` | Wiki 关键词匹配的最低分数阈值 |
 | `LINK_EXPANSION_SCORE` | 0.3 | `src/memory/wiki/retriever.rs` | Wiki wikilink 扩展页面的基础分数 |
 | `MAX_SEED_PAGES` | 3 | `src/memory/wiki/retriever.rs` | Wiki wikilink 扩展的种子页面数 |
+| `max_sections` (ACE default) | 10 | `src/memory/ace/config.rs` | ACE Playbook 最大 section 数 |
+| `max_bullets_per_section` (ACE default) | 15 | `src/memory/ace/config.rs` | ACE 每个 section 最大 bullet 数 |
+| `max_token_budget` (ACE default) | 4000 | `src/memory/ace/config.rs` | ACE Playbook 渲染为 Markdown 时的最大 token 预算 |
+| `min_reinforcement_for_retention` (ACE default) | 2 | `src/memory/ace/config.rs` | ACE 淘汰时的最低强化次数阈值 |
+| `CHARS_PER_TOKEN` | 4 | `src/memory/mod.rs` | 共享的 token 预算字符/token 比例（ACE + DC 共用） |
 
 ## 工具调用摘要截断约束
 
@@ -116,7 +121,7 @@
 1. 写入数据到 `<path>.tmp`
 2. 原子重命名 `<path>.tmp` → `<path>`
 
-这确保进程崩溃时目标文件不会处于部分写入状态。影响的文件：`long_term.json`、`history.jsonl`、`notes.json`（A-MEM）、`cheatsheet.json`（DC）、Wiki 的每个 `.md` 文件和 `_meta.json`。
+这确保进程崩溃时目标文件不会处于部分写入状态。影响的文件：`long_term.json`、`history.jsonl`、`notes.json`（A-MEM）、`cheatsheet.json`（DC）、`playbook.json`（ACE）、Wiki 的每个 `.md` 文件和 `_meta.json`。
 ## 优雅关闭约束
 
 > 📍 **代码位置**：`src/agent/chat.rs` + `src/agent/tool_router.rs`
@@ -181,6 +186,7 @@ Subagent 从三个来源加载，按优先级从低到高：
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-16 | 新增 ACE Memory 运行时常量（max_sections、max_bullets_per_section、max_token_budget、min_reinforcement_for_retention）；更新 CHARS_PER_TOKEN 位置为共享常量；更新 DEFAULT_MAX_MESSAGES 说明（新增 AceMemory）；更新原子写入影响文件列表（新增 playbook.json） | ACE Memory 实现 |
 | 2026-04-16 | 新增 Wiki Memory 运行时常量（DEFAULT_LINT_INTERVAL、DEFAULT_MAX_RETRIEVAL_PAGES、KEYWORD_MATCH_THRESHOLD、LINK_EXPANSION_SCORE、MAX_SEED_PAGES）；更新原子写入影响文件列表（新增 Wiki .md + _meta.json）；更新 DEFAULT_MAX_MESSAGES 说明（新增 WikiMemory） | Wiki Memory 实现 |
 | 2026-04-16 | 新增 DEFAULT_MAX_MESSAGES 常量（CheatsheetMemory/AgenticMemory 消息窗口） | 三策略互斥架构 |
 | 2026-04-15 | 新增 Dynamic Cheatsheet 运行时常量（CHARS_PER_TOKEN、max_entries、max_token_budget、min_reinforcement_for_retention）；更新原子写入影响文件列表（新增 cheatsheet.json） | Dynamic Cheatsheet 实现 |

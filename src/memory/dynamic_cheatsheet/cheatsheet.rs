@@ -4,12 +4,11 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::memory::persistence::MemoryPersistence;
+use crate::memory::strip_directive_prefix;
+use crate::memory::truncate_to_token_budget;
 
 use super::config::CheatsheetConfig;
 use super::entry::CheatsheetEntry;
-
-/// Approximate characters per token for budget estimation.
-const CHARS_PER_TOKEN: usize = 4;
 
 /// Dynamic Cheatsheet — a persistent, evolving memory of problem-solving insights.
 ///
@@ -107,18 +106,10 @@ impl DynamicCheatsheet {
         let body = sections.join("\n\n");
         let full = format!("## Dynamic Cheatsheet\n\n{}", body);
 
-        // Respect token budget (approximate).
-        let max_chars = self.config.max_token_budget * CHARS_PER_TOKEN;
-        if full.len() <= max_chars {
-            return Some(full);
-        }
-
-        // Truncate at a line boundary to avoid cutting mid-entry.
-        let truncated: String = full.chars().take(max_chars).collect();
-        let cut_point = truncated.rfind('\n').unwrap_or(truncated.len());
-        Some(format!(
-            "{}\n\n*(cheatsheet truncated for token budget)*",
-            &truncated[..cut_point]
+        Some(truncate_to_token_budget(
+            full,
+            self.config.max_token_budget,
+            "*(cheatsheet truncated for token budget)*",
         ))
     }
 
@@ -351,20 +342,6 @@ impl DynamicCheatsheet {
             remaining = self.entries.len(),
             "Dynamic Cheatsheet: evicted low-value entries"
         );
-    }
-}
-
-/// Strip a directive prefix (e.g., `NEW:`, `UPDATE:`) case-insensitively.
-///
-/// Used by `parse_reflection_response` to identify directive lines in the
-/// LLM's reflection output.
-fn strip_directive_prefix<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
-    if line.len() >= prefix.len()
-        && line[..prefix.len()].eq_ignore_ascii_case(prefix)
-    {
-        Some(&line[prefix.len()..])
-    } else {
-        None
     }
 }
 
