@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 use crate::llm::LlmConfig;
 use crate::workspace::Workspace;
 
-use super::agent_config::{AgentConfig, AgentSection};
+use super::agent_config::{AgentConfig, AgentSection, EmbeddingConfig, MemorySection};
 use super::logging::LogConfig;
 
 /// Top-level YAML configuration file structure.
@@ -29,6 +29,10 @@ struct DaedalusConfigFile {
     llm: LlmConfig,
     /// Agent-level configuration.
     agent: AgentSection,
+    /// Memory strategy configuration.
+    memory: MemorySection,
+    /// Embedding provider configuration (separate from memory).
+    embedding: EmbeddingConfig,
     /// Logging configuration.
     logging: LogConfig,
 }
@@ -41,6 +45,8 @@ struct DaedalusConfigFile {
 pub struct RawConfig {
     llm: LlmConfig,
     agent: AgentSection,
+    memory: MemorySection,
+    embedding: EmbeddingConfig,
 }
 
 impl RawConfig {
@@ -49,7 +55,7 @@ impl RawConfig {
     /// This should be called **after** tracing is initialized, because
     /// soul file loading emits tracing events.
     pub fn into_agent_config(self, workspace: &Workspace) -> AgentConfig {
-        AgentConfig::build(self.llm, self.agent, Some(workspace))
+        AgentConfig::build(self.llm, self.agent, self.memory, self.embedding, Some(workspace))
     }
 
     /// Override the model identifier (used by CLI `--model` flag).
@@ -84,6 +90,8 @@ pub fn load_from_workspace(workspace: &Workspace) -> Result<(RawConfig, LogConfi
     let raw_config = RawConfig {
         llm: file_config.llm,
         agent: file_config.agent,
+        memory: file_config.memory,
+        embedding: file_config.embedding,
     };
 
     let mut log_config = file_config.logging;

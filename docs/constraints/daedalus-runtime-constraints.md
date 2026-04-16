@@ -1,7 +1,7 @@
 # 运行时约束
 
-> 最后更新：2026-04-15
-> 来源：存量代码分析 + 代码审查改进 + 并行化迭代 + 记忆系统重构 + Skill 功能实现 + Workspace 系统实现 + 架构审查优化 + Bash 工具
+> 最后更新：2026-04-16
+> 来源：存量代码分析 + 代码审查改进 + 并行化迭代 + 记忆系统重构 + Skill 功能实现 + Workspace 系统实现 + 架构审查优化 + Bash 工具 + **三策略互斥记忆架构**
 > 置信度：高
 
 ## 硬编码常量
@@ -27,6 +27,11 @@
 | `EXCLUDED_TOOLS` | `["spawn_subagent", "spawn_team", "use_skill"]` | `src/subagent/runner.rs` | Subagent 工具集中永远排除的工具（防递归） |
 | `DEFAULT_TIMEOUT_SECS` (bash) | 30 | `src/tools/bash.rs:16` | Bash 工具默认命令超时时间（秒） |
 | `MAX_OUTPUT_BYTES` (bash) | 256 KB | `src/tools/bash.rs:19` | Bash 工具最大输出截断大小，防止无界内存使用 |
+| `CHARS_PER_TOKEN` | 4 | `src/memory/dynamic_cheatsheet/cheatsheet.rs:12` | Dynamic Cheatsheet token 预算的字符/token 比例 |
+| `max_entries` (DC default) | 50 | `src/memory/dynamic_cheatsheet/config.rs` | Dynamic Cheatsheet 最大条目数 |
+| `max_token_budget` (DC default) | 2000 | `src/memory/dynamic_cheatsheet/config.rs` | DC 渲染为 Markdown 时的最大 token 预算 |
+| `min_reinforcement_for_retention` (DC default) | 1 | `src/memory/dynamic_cheatsheet/config.rs` | DC 淘汰时的最低强化次数阈值 |
+| `DEFAULT_MAX_MESSAGES` | 100 | `src/memory/mod.rs` | CheatsheetMemory 和 AgenticMemory 的消息窗口大小，防止长对话 token 超限 |
 | `TOOL_OUTPUT_MAX_LINES` | 10 | `src/cli/render.rs` | 工具输出显示的最大行数，超过则截断 |
 | `TOOL_OUTPUT_HEAD_LINES` | 5 | `src/cli/render.rs` | 截断时保留的头部行数 |
 | `TOOL_OUTPUT_TAIL_LINES` | 3 | `src/cli/render.rs` | 截断时保留的尾部行数 |
@@ -102,12 +107,11 @@
 
 > 📍 **代码位置**：`src/memory/persistence.rs`
 
-所有记忆持久化操作使用 `atomic_write()` 工具函数，实现 write-to-temp-then-rename 模式：
+**原子写入**：所有记忆持久化操作使用 `atomic_write()` 工具函数，实现 write-to-temp-then-rename 模式：
 1. 写入数据到 `<path>.tmp`
 2. 原子重命名 `<path>.tmp` → `<path>`
 
-这确保进程崩溃时目标文件不会处于部分写入状态。影响的文件：`long_term.json`、`history.jsonl`、`notes.json`（A-MEM）。
-
+这确保进程崩溃时目标文件不会处于部分写入状态。影响的文件：`long_term.json`、`history.jsonl`、`notes.json`（A-MEM）、`cheatsheet.json`（DC）。
 ## 优雅关闭约束
 
 > 📍 **代码位置**：`src/agent/chat.rs` + `src/agent/tool_router.rs`
@@ -172,6 +176,8 @@ Subagent 从三个来源加载，按优先级从低到高：
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-16 | 新增 DEFAULT_MAX_MESSAGES 常量（CheatsheetMemory/AgenticMemory 消息窗口） | 三策略互斥架构 |
+| 2026-04-15 | 新增 Dynamic Cheatsheet 运行时常量（CHARS_PER_TOKEN、max_entries、max_token_budget、min_reinforcement_for_retention）；更新原子写入影响文件列表（新增 cheatsheet.json） | Dynamic Cheatsheet 实现 |
 | 2026-04-15 | 新增工具输出截断常量（TOOL_OUTPUT_MAX_LINES/HEAD_LINES/TAIL_LINES） | 代码质量审查优化 |
 | 2026-04-15 | 新增 Bash 工具运行时常量（DEFAULT_TIMEOUT_SECS、MAX_OUTPUT_BYTES） | Bash 工具实现 |
 | 2026-04-15 | 新增 Subagent 运行时常量和约束（加载优先级、执行隔离、防递归、Worktree、生命周期钩子） | Subagent 功能实现 |

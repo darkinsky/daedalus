@@ -10,7 +10,7 @@ mod agent_config;
 mod loader;
 pub(crate) mod logging;
 
-pub use agent_config::AgentConfig;
+pub use agent_config::{AgentConfig, EmbeddingConfig, MemoryStrategy};
 pub use loader::{load_from_workspace, RawConfig};
 pub use logging::init as init_logging;
 pub use logging::init_verbose as init_logging_verbose;

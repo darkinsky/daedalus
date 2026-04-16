@@ -47,12 +47,16 @@ graph TD
 
     Session --> Memory{{"dyn Memory<br/>(trait object)"}}
     Memory --> SlidingWindow[SlidingWindowMemory<br/>双层记忆引擎]
+    Memory --> CheatsheetMem[CheatsheetMemory<br/>DC 独立策略]
+    Memory --> AgenticMem[AgenticMemory<br/>A-MEM 独立策略]
     SlidingWindow --> LTM[LongTermMemory<br/>热数据层]
     SlidingWindow --> HistoryLog[HistoryLog<br/>冷数据层]
+    SlidingWindow --> DC[DynamicCheatsheet<br/>自适应记忆]
     SlidingWindow --> Persistence[MemoryPersistence<br/>磁盘持久化]
 
-    Memory --> AgenticMem[AgenticMemoryStore<br/>A-MEM 知识图谱]
-    AgenticMem --> EmbeddingTrait{{"dyn Embedding<br/>(向量嵌入)"}}
+    CheatsheetMem --> DC
+    AgenticMem --> AgenticStore[AgenticMemoryStore<br/>A-MEM 知识图谱]
+    AgenticStore --> EmbeddingTrait{{"dyn Embedding<br/>(向量嵌入)"}}
     EmbeddingTrait --> OpenAiEmbed[OpenAiEmbedding]
 
     McpManager --> McpClient1[McpClient #1<br/>stdio JSON-RPC]
@@ -88,7 +92,7 @@ graph TD
 | cli | REPL 交互、命令解析、终端渲染 | rustyline, crossterm, termimad | `src/cli/` | [cli](docs/services/cli/overview.md) |
 | llm | LLM Provider 抽象 + 双 Provider 实现 | genai, reqwest | `src/llm/` | [llm](docs/services/llm/overview.md) |
 | mcp | MCP 协议客户端 + 工具管理 | tokio, serde_json | `src/mcp/` | [mcp](docs/services/mcp/overview.md) |
-| memory | 会话记忆抽象 + 双层记忆引擎 + A-MEM 知识图谱 + 持久化 | serde, serde_json | `src/memory/` | [memory](docs/services/memory/overview.md) |
+| memory | 会话记忆抽象 + **三策略互斥**（SlidingWindow/CheatsheetMemory/AgenticMemory） + 双层记忆引擎 + Dynamic Cheatsheet + A-MEM 知识图谱 + 持久化 | serde, serde_json | `src/memory/` | [memory](docs/services/memory/overview.md) |
 | embedding | 文本向量嵌入抽象 + OpenAI 实现 | reqwest | `src/embedding/` | [memory](docs/services/memory/overview.md) |
 | prompt | 系统提示词动态组装 | — | `src/prompt/` | [prompt](docs/services/prompt/overview.md) |
 | session | 会话状态管理 | chrono, uuid | `src/agent/session.rs` | [agent](docs/services/agent/overview.md) |
@@ -168,7 +172,7 @@ main()
 
 1. **Trait 抽象优先**：核心接口（`AgentMode`、`LlmApi`、`Memory`）均定义为 trait，实现通过 trait object（`Box<dyn T>`）注入，支持运行时多态和未来扩展。Memory trait 通过 `as_any` downcast 支持策略特定功能访问。
 2. **依赖注入**：`ChatAgent` 通过构造函数接收 LLM provider 和 MemoryFactory，不硬编码任何具体实现。
-3. **单一职责**：每个模块/文件有明确的职责边界（如 `render.rs` 只管输出，`commands.rs` 只管解析）。
+3. **单一职责**：每个模块/文件有明确的职责边界（如 `render.rs` 只管输出，`commands.rs` 只管解析）。配置解析逻辑归属配置类型自身（如 `EmbeddingConfig::create_provider()`）。
 4. **优雅降级**：MCP 连接失败跳过该服务器、SOUL 文件读取失败仅 warn、日志 filter 解析失败回退默认值。
 5. **OpenAI JSON 作为中间格式**：工具定义使用 OpenAI function-calling JSON 作为 Provider 无关的中间表示，各 Provider 各自转换。
 6. **近因效应利用**：系统提示词中 Critical Reminders 放在最后，利用 LLM 的近因偏差确保硬规则最被重视。
@@ -178,5 +182,6 @@ main()
 10. **Skill 即工具（LLM 路由）**：Skill 不静态注入 system prompt（浪费 token），而是作为 `use_skill` 内置工具暴露给 LLM，由 LLM 根据 skill 描述自主决定何时调用。Skill 通过 `BuiltinTool` trait 适配器模式集成，ToolRouter 无需特殊分支。
 11. **Subagent 隔离执行**：Subagent 作为 `spawn_subagent` / `spawn_team` 内置工具暴露给 LLM。每次调用创建完全隔离的执行环境（独立 LLM provider、独立工具集、独立对话历史）。支持工具白名单/黑名单、模型选择、Git worktree 隔离、生命周期钩子、并行团队执行。内置 3 个只读 agent（explore、code-reviewer、plan），用户可通过 `.md` 文件覆盖或扩展。
 12. **Workspace 统一路径管理**：所有 Daedalus 产生/消费的文件（配置、记忆、日志、技能、子代理）通过 `Workspace` 获取路径。支持三级优先级：环境变量 > 项目级 `.daedalus/` > 全局 `~/.daedalus/`。Workspace 是纯路径管理器，不持有业务逻辑。
-12. **记忆持久化**：LongTermMemory（JSON）、HistoryLog（JSONL 追加写入）、AgenticMemoryStore（JSON）均支持磁盘持久化。通过 `MemoryPersistence` trait 统一接口，启动时自动加载、退出时自动保存。持久化使用原子写入（write-to-temp-then-rename）防止进程崩溃导致数据损坏。`Memory` trait 提供 `persist()` 方法，shutdown 时无需 downcast 到具体类型。
-13. **优雅关闭**：`agent.shutdown()` 依次执行记忆持久化和 MCP 子进程关闭，防止孤儿进程。
+12. **记忆持久化**：LongTermMemory（JSON）、HistoryLog（JSONL 追加写入）、AgenticMemoryStore（JSON）、DynamicCheatsheet（JSON）均支持磁盘持久化。通过 `MemoryPersistence` trait 统一接口，启动时自动加载、退出时自动保存。持久化使用原子写入（write-to-temp-then-rename）防止进程崩溃导致数据损坏。`Memory` trait 提供 `persist()` 方法，shutdown 时无需 downcast 到具体类型。
+13. **三策略互斥记忆**：用户通过 `memory.strategy` YAML 配置选择记忆策略（`sliding_window` | `dynamic_cheatsheet` | `agentic`）。每种策略都是独立的 `Memory` trait 实现，配有对应的 `MemoryFactory`。`ChatAgent::create_memory_factory()` 根据配置选择 factory，Agentic 策略在 embedding 创建失败时优雅降级到 sliding_window。
+14. **优雅关闭**：`agent.shutdown()` 依次执行记忆持久化和 MCP 子进程关闭，防止孤儿进程。

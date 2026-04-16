@@ -1,4 +1,5 @@
 pub mod agentic;
+pub mod dynamic_cheatsheet;
 pub mod persistence;
 pub mod sliding_window;
 
@@ -7,10 +8,20 @@ pub mod sliding_window;
 // used by future external consumers. Kept as pub re-exports for
 // convenience even if not all are currently referenced.
 pub use sliding_window::SlidingWindowFactory;
+pub use dynamic_cheatsheet::CheatsheetFactory;
+pub use agentic::AgenticFactory;
 
 use std::any::Any;
 
-use crate::llm::ChatMessage;
+use crate::llm::{ChatMessage, LlmApi};
+
+/// Default maximum number of messages to send to the LLM.
+///
+/// Shared by memory strategies that manage their own message list
+/// (`CheatsheetMemory`, `AgenticMemory`). Prevents unbounded token
+/// growth in long conversations — only the most recent messages
+/// within this window are included in `build_messages()`.
+pub(crate) const DEFAULT_MAX_MESSAGES: usize = 100;
 
 /// Opaque container for persistent memory state during session migration.
 ///
@@ -42,12 +53,25 @@ impl PersistentState {
 /// - Storing conversation messages (user inputs and assistant outputs).
 /// - Building the message list to send to the LLM on each request.
 /// - Reporting whether consolidation is needed (for strategies that support it).
+/// - Performing post-turn reflection (for strategies with adaptive memory).
 /// - Providing `Any`-based downcasting for advanced operations.
 ///
-/// Currently we have:
-/// - `SlidingWindowMemory`: Dual-layer memory with sliding window, long-term
-///   memory (auto-injected into system prompt), and history event log
-///   (searchable on demand). Supports automatic consolidation.
+/// Currently we have three implementations:
+///
+/// - **`SlidingWindowMemory`**: Dual-layer memory with sliding window,
+///   long-term memory (auto-injected into system prompt), history event
+///   log (searchable on demand), and optional Dynamic Cheatsheet.
+///   Supports automatic consolidation and post-turn reflection.
+///   Best for general use.
+///
+/// - **`CheatsheetMemory`**: Lightweight adaptive memory backed by a
+///   Dynamic Cheatsheet. Accumulates problem-solving insights via LLM
+///   reflection after each turn. Best for repetitive task patterns.
+///
+/// - **`AgenticMemory`**: Knowledge graph memory (A-MEM) with
+///   embedding-based retrieval and memory evolution. Stores each
+///   response as a memory note and pre-retrieves relevant context
+///   for the next turn. Best for long-term knowledge accumulation.
 pub trait Memory: Send + Sync {
     /// Add a user message to memory.
     fn add_user_message(&mut self, content: &str);
@@ -122,6 +146,28 @@ pub trait Memory: Send + Sync {
     /// * `workspace` - The workspace providing canonical file paths.
     fn persist(&self, _workspace: &crate::workspace::Workspace) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    /// Perform post-turn reflection to extract reusable insights.
+    ///
+    /// Called by the agent after each conversation turn. Memory strategies
+    /// with adaptive memory (e.g., Dynamic Cheatsheet) override this to
+    /// analyze the interaction and accumulate problem-solving knowledge.
+    ///
+    /// The default implementation is a no-op. Reflection failures should
+    /// be handled gracefully (logged, not propagated).
+    ///
+    /// # Arguments
+    /// * `user_input` - The user's message from this turn.
+    /// * `assistant_response` - The assistant's response from this turn.
+    /// * `llm` - The LLM provider for making reflection calls.
+    fn reflect_on_turn<'a>(
+        &'a mut self,
+        _user_input: &'a str,
+        _assistant_response: &'a str,
+        _llm: &'a dyn LlmApi,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async {})
     }
 
     /// Downcast to a concrete type for advanced operations.

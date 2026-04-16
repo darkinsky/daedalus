@@ -1,4 +1,5 @@
-use crate::llm::ChatMessage;
+use crate::llm::{ChatMessage, LlmApi};
+use crate::memory::dynamic_cheatsheet::DynamicCheatsheet;
 use crate::memory::persistence::MemoryPersistence;
 
 use super::config::SlidingWindowConfig;
@@ -6,6 +7,18 @@ use super::consolidation::ConsolidationResult;
 use super::history::HistoryEntry;
 use super::long_term::LongTermMemory;
 use crate::memory::{Memory, PersistentState};
+
+/// Aggregated persistent components that survive across sessions.
+///
+/// Grouping these together simplifies `take_persistent_state` /
+/// `restore_persistent_state` / `persist` — they all operate on
+/// a single struct instead of individual fields. This also makes
+/// adding new persistent components a one-line change.
+pub(crate) struct PersistentComponents {
+    pub(crate) long_term_memory: LongTermMemory,
+    pub(crate) history_log: Vec<HistoryEntry>,
+    pub(crate) cheatsheet: Option<DynamicCheatsheet>,
+}
 
 /// Sliding window memory with dual-layer consolidation.
 ///
@@ -34,10 +47,9 @@ pub struct SlidingWindowMemory {
     base_system_prompt: String,
     /// All conversation messages (user + assistant), in chronological order.
     messages: Vec<ChatMessage>,
-    /// Long-term memory — key facts injected into system prompt.
-    long_term_memory: LongTermMemory,
-    /// History event log — append-only, searched on demand.
-    history_log: Vec<HistoryEntry>,
+    /// Persistent components (long-term memory, history log, cheatsheet).
+    /// Grouped for clean migration and persistence.
+    persistent: PersistentComponents,
     /// Index of the first unconsolidated message in `messages`.
     /// All messages before this index have already been consolidated.
     consolidation_cursor: usize,
@@ -52,8 +64,11 @@ impl SlidingWindowMemory {
         Self {
             base_system_prompt: system_prompt.to_string(),
             messages: Vec::new(),
-            long_term_memory: LongTermMemory::default(),
-            history_log: Vec::new(),
+            persistent: PersistentComponents {
+                long_term_memory: LongTermMemory::default(),
+                history_log: Vec::new(),
+                cheatsheet: None,
+            },
             consolidation_cursor: 0,
             config,
         }
@@ -78,24 +93,41 @@ impl SlidingWindowMemory {
 
     /// Get a reference to the long-term memory.
     pub fn long_term_memory(&self) -> &LongTermMemory {
-        &self.long_term_memory
+        &self.persistent.long_term_memory
     }
 
     /// Get a mutable reference to the long-term memory.
     pub fn long_term_memory_mut(&mut self) -> &mut LongTermMemory {
-        &mut self.long_term_memory
+        &mut self.persistent.long_term_memory
+    }
+
+    // ── Dynamic Cheatsheet access ──
+
+    /// Get a reference to the dynamic cheatsheet (if enabled).
+    pub fn cheatsheet(&self) -> Option<&DynamicCheatsheet> {
+        self.persistent.cheatsheet.as_ref()
+    }
+
+    /// Get a mutable reference to the dynamic cheatsheet (if enabled).
+    pub fn cheatsheet_mut(&mut self) -> Option<&mut DynamicCheatsheet> {
+        self.persistent.cheatsheet.as_mut()
+    }
+
+    /// Enable the dynamic cheatsheet with the given instance.
+    pub fn set_cheatsheet(&mut self, cheatsheet: DynamicCheatsheet) {
+        self.persistent.cheatsheet = Some(cheatsheet);
     }
 
     // ── History log access ──
 
     /// Get all history entries.
     pub fn history_log(&self) -> &[HistoryEntry] {
-        &self.history_log
+        &self.persistent.history_log
     }
 
     /// Append a history entry to the log.
     pub fn append_history_entry(&mut self, entry: HistoryEntry) {
-        self.history_log.push(entry);
+        self.persistent.history_log.push(entry);
     }
 
     /// Search history entries by keyword (case-insensitive).
@@ -105,7 +137,7 @@ impl SlidingWindowMemory {
     /// when `None`, all matching entries are returned.
     pub fn search_history(&self, query: &str, limit: Option<usize>) -> Vec<&HistoryEntry> {
         let query_lower = query.to_lowercase();
-        let iter = self.history_log
+        let iter = self.persistent.history_log
             .iter()
             .filter(|entry| {
                 entry.summary.to_lowercase().contains(&query_lower)
@@ -148,15 +180,15 @@ impl SlidingWindowMemory {
     /// Apply a consolidation result: update long-term memory, append history
     /// entry, and advance the consolidation cursor.
     pub fn apply_consolidation(&mut self, result: ConsolidationResult, consolidated_up_to: usize) {
-        self.long_term_memory.replace_with(result.memory_update);
-        self.history_log.push(result.history_entry);
+        self.persistent.long_term_memory.replace_with(result.memory_update);
+        self.persistent.history_log.push(result.history_entry);
         self.consolidation_cursor = consolidated_up_to;
     }
 
     /// Apply a full archive consolidation (e.g., `/new` command).
     pub fn apply_full_archive(&mut self, result: ConsolidationResult) {
-        self.long_term_memory.replace_with(result.memory_update);
-        self.history_log.push(result.history_entry);
+        self.persistent.long_term_memory.replace_with(result.memory_update);
+        self.persistent.history_log.push(result.history_entry);
         self.messages.clear();
         self.consolidation_cursor = 0;
     }
@@ -173,8 +205,8 @@ impl SlidingWindowMemory {
         ltm_path: &std::path::Path,
         history_path: &std::path::Path,
     ) -> anyhow::Result<()> {
-        self.long_term_memory.save(ltm_path)?;
-        HistoryEntry::save_all(&self.history_log, history_path)?;
+        self.persistent.long_term_memory.save(ltm_path)?;
+        HistoryEntry::save_all(&self.persistent.history_log, history_path)?;
         tracing::info!("SlidingWindowMemory persisted to workspace");
         Ok(())
     }
@@ -189,11 +221,11 @@ impl SlidingWindowMemory {
         ltm_path: &std::path::Path,
         history_path: &std::path::Path,
     ) -> anyhow::Result<()> {
-        self.long_term_memory = LongTermMemory::load(ltm_path)?;
-        self.history_log = HistoryEntry::load_all(history_path)?;
+        self.persistent.long_term_memory = LongTermMemory::load(ltm_path)?;
+        self.persistent.history_log = HistoryEntry::load_all(history_path)?;
         tracing::info!(
-            ltm_sections = self.long_term_memory.section_count(),
-            history_entries = self.history_log.len(),
+            ltm_sections = self.persistent.long_term_memory.section_count(),
+            history_entries = self.persistent.history_log.len(),
             "SlidingWindowMemory loaded from workspace"
         );
         Ok(())
@@ -201,14 +233,22 @@ impl SlidingWindowMemory {
 
     // ── Internal helpers ──
 
-    /// Build the effective system prompt by injecting long-term memory.
+    /// Build the effective system prompt by injecting long-term memory
+    /// and dynamic cheatsheet.
     fn effective_system_prompt(&self) -> String {
-        match self.long_term_memory.to_markdown() {
-            Some(memory_md) => {
-                format!("{}\n\n{}", self.base_system_prompt, memory_md)
-            }
-            None => self.base_system_prompt.clone(),
+        let mut prompt = self.base_system_prompt.clone();
+
+        if let Some(memory_md) = self.persistent.long_term_memory.to_markdown() {
+            prompt = format!("{}\n\n{}", prompt, memory_md);
         }
+
+        if let Some(ref cs) = self.persistent.cheatsheet {
+            if let Some(cs_md) = cs.to_markdown() {
+                prompt = format!("{}\n\n{}", prompt, cs_md);
+            }
+        }
+
+        prompt
     }
 
     /// Get the windowed slice of messages to send to the LLM.
@@ -263,21 +303,22 @@ impl Memory for SlidingWindowMemory {
     }
 
     fn take_persistent_state(&mut self) -> Option<PersistentState> {
-        let ltm = std::mem::take(&mut self.long_term_memory);
-        let log = std::mem::take(&mut self.history_log);
-        Some(PersistentState::new((ltm, log)))
+        let components = PersistentComponents {
+            long_term_memory: std::mem::take(&mut self.persistent.long_term_memory),
+            history_log: std::mem::take(&mut self.persistent.history_log),
+            cheatsheet: self.persistent.cheatsheet.take(),
+        };
+        Some(PersistentState::new(components))
     }
 
     fn restore_persistent_state(&mut self, state: PersistentState) {
-        match state.downcast::<(LongTermMemory, Vec<HistoryEntry>)>() {
-            Ok((ltm, log)) => {
-                self.long_term_memory = ltm;
-                self.history_log = log;
+        match state.downcast::<PersistentComponents>() {
+            Ok(components) => {
+                self.persistent = components;
             }
             Err(_) => {
                 tracing::warn!(
-                    "Persistent state type mismatch — expected (LongTermMemory, Vec<HistoryEntry>), \
-                     state discarded"
+                    "Persistent state type mismatch, state discarded"
                 );
             }
         }
@@ -287,7 +328,27 @@ impl Memory for SlidingWindowMemory {
         self.save_to_workspace(
             &workspace.long_term_memory_path(),
             &workspace.history_log_path(),
-        )
+        )?;
+
+        // Persist dynamic cheatsheet if enabled.
+        if let Some(ref cs) = self.persistent.cheatsheet {
+            cs.save(&workspace.cheatsheet_path())?;
+        }
+
+        Ok(())
+    }
+
+    fn reflect_on_turn<'a>(
+        &'a mut self,
+        user_input: &'a str,
+        assistant_response: &'a str,
+        llm: &'a dyn LlmApi,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            if let Some(ref mut cheatsheet) = self.persistent.cheatsheet {
+                cheatsheet.reflect(user_input, assistant_response, llm).await;
+            }
+        })
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

@@ -1,7 +1,7 @@
 # Core — 核心入口、Workspace、配置、日志
 
-> 最后更新：2026-04-14
-> 来源：存量代码分析 + Workspace 系统实现 + 架构审查优化 + YAML 配置迁移 + 模块化重构
+> 最后更新：2026-04-16
+> 来源：存量代码分析 + Workspace 系统实现 + 架构审查优化 + YAML 配置迁移 + 模块化重构 + **三策略互斥记忆配置**
 
 ## 1. 模块概述
 
@@ -31,13 +31,15 @@ Workspace::resolve()
 ```text
 <workspace_root>/
 ├── config/
+│   ├── daedalus.yaml     # 主配置文件（llm/agent/memory/embedding/logging）
 │   ├── mcp.json          # MCP 服务器配置
 │   └── soul.md           # SOUL 人格文件
 ├── memory/
-│   ├── long_term.json    # LongTermMemory 持久化
-│   ├── history.jsonl     # HistoryLog 持久化（追加写入）
+│   ├── long_term.json    # LongTermMemory 持久化（sliding_window）
+│   ├── history.jsonl     # HistoryLog 持久化（sliding_window）
+│   ├── cheatsheet.json   # DynamicCheatsheet 持久化（sliding_window, dynamic_cheatsheet）
 │   └── agentic/
-│       └── notes.json    # A-MEM 知识图谱持久化
+│       └── notes.json    # A-MEM 知识图谱持久化（agentic）
 ├── sessions/
 │   └── last_session_id   # 上次会话 ID
 ├── skills/               # Skill 定义
@@ -92,14 +94,16 @@ src/config/
 ```
 
 `config.rs` 作为模块入口，使用 Rust 2024 edition 的文件+目录模块模式，re-export 公共类型：
-- `AgentConfig`、`DEFAULT_SYSTEM_PROMPT`（来自 `agent_config.rs`）
+- `AgentConfig`、`MemoryStrategy`、`EmbeddingConfig`、`DEFAULT_SYSTEM_PROMPT`（来自 `agent_config.rs`）
 - `LogConfig`、`LogGuard`、`init_logging`（来自 `logging.rs`）
 
 ### 关键类型
 
 - `const DEFAULT_SYSTEM_PROMPT` — 默认系统提示词的单一真实来源
-- `struct DaedalusConfigFile` — 顶层 YAML 文件结构（内部类型）
-- `struct AgentConfig` — Agent 配置聚合
+- `enum MemoryStrategy` — 记忆策略枚举（`sliding_window` | `dynamic_cheatsheet` | `agentic`）
+- `struct EmbeddingConfig` — Embedding provider 配置（顶层 YAML section，带 `create_provider()` 方法）
+- `struct DaedalusConfigFile` — 顶层 YAML 文件结构（内部类型，含 llm/agent/memory/embedding/logging 5 个 section）
+- `struct AgentConfig` — Agent 配置聚合（含 `memory_strategy` 和 `embedding` 字段）
 - `struct LogConfig` — 日志配置
 
 ### YAML 配置文件
@@ -122,13 +126,22 @@ agent:
   system_prompt: ""
   soul_file: "./SOUL.md"
 
+memory:
+  strategy: sliding_window  # sliding_window | dynamic_cheatsheet | agentic
+
+embedding:                   # Only used by agentic strategy
+  api_key: "sk-..."
+  api_base: "https://..."
+  model: "text-embedding-3-small"
+  dimensions: 1536
+
 logging:
   filter: "daedalus=debug"
   format: pretty
   rotation: daily
 ```
 
-所有字段都有合理的默认值，配置文件不存在时使用默认配置正常启动。`LlmConfig`、`VenusExtensions`、`ReasoningEffort` 等类型均实现了 `serde::Deserialize` 以支持 YAML 反序列化。
+所有字段都有合理的默认值，配置文件不存在时使用默认配置正常启动。`LlmConfig`、`VenusExtensions`、`ReasoningEffort`、`MemoryStrategy`、`EmbeddingConfig` 等类型均实现了 `serde::Deserialize` 以支持 YAML 反序列化。
 
 ### 双轨提示词机制
 
@@ -191,6 +204,7 @@ Soul 文件加载优先级：YAML 中 `agent.soul_file` 字段 > workspace `conf
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-16 | 新增 memory 和 embedding YAML 配置 section；新增 MemoryStrategy 枚举和 EmbeddingConfig 类型；更新关键类型列表和 re-export 列表 | 三策略互斥记忆架构 |
 | 2026-04-14 | 配置从环境变量迁移到 YAML 文件；config+logging 合并为 config/ 模块；session.rs 移入 agent/ 模块；更新所有代码位置和引用路径 | YAML 配置迁移 + 模块化重构 |
 | 2026-04-14 | 新增 Workspace 章节（三级优先级、目录结构、pre-logging 约束）；更新启动流程为 11 阶段；更新 config.rs 章节（workspace 回退、build() 重构、read_trimmed_file 辅助函数） | Workspace 系统实现 + 架构审查优化 |
 | 2026-04-08 | 初始创建 | 存量代码分析 Phase A |

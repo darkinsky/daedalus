@@ -184,6 +184,11 @@ impl Workspace {
         self.root.join("memory/agentic/notes.json")
     }
 
+    /// Path to the Dynamic Cheatsheet persistence file.
+    pub fn cheatsheet_path(&self) -> PathBuf {
+        self.root.join("memory/cheatsheet.json")
+    }
+
     // ── Session paths ──
 
     /// Directory for session snapshots.
@@ -296,6 +301,7 @@ mod tests {
         assert_eq!(ws.long_term_memory_path(), PathBuf::from("/tmp/test_ws/memory/long_term.json"));
         assert_eq!(ws.history_log_path(), PathBuf::from("/tmp/test_ws/memory/history.jsonl"));
         assert_eq!(ws.agentic_notes_path(), PathBuf::from("/tmp/test_ws/memory/agentic/notes.json"));
+        assert_eq!(ws.cheatsheet_path(), PathBuf::from("/tmp/test_ws/memory/cheatsheet.json"));
         assert_eq!(ws.sessions_dir(), PathBuf::from("/tmp/test_ws/sessions"));
         assert_eq!(ws.last_session_id_path(), PathBuf::from("/tmp/test_ws/sessions/last_session_id"));
         assert_eq!(ws.skills_dir(), PathBuf::from("/tmp/test_ws/skills"));

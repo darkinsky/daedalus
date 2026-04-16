@@ -3,14 +3,16 @@ use std::path::Path;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, MemoryStrategy};
 use crate::llm::{
     ChatMessage, ChatResponse, LlmApi, LlmConfig, ToolResponse, ToolRound,
     TokenUsage, format_messages_for_log,
 };
 use crate::tools::ToolInfo;
 use crate::mcp::McpManager;
-use crate::memory::{MemoryFactory, SlidingWindowFactory};
+use crate::memory::{
+    AgenticFactory, CheatsheetFactory, MemoryFactory, SlidingWindowFactory,
+};
 use crate::prompt::PromptBuilder;
 use crate::skill::SkillInfo;
 use crate::subagent::SubagentInfo;
@@ -138,20 +140,69 @@ impl ChatAgent {
     /// Create a new chat agent with workspace support.
     ///
     /// The workspace is used for:
-    /// - Loading persisted memory (LongTermMemory, HistoryLog) at startup
+    /// - Loading persisted memory at startup (strategy-dependent paths)
     /// - Saving memory state on shutdown
+    ///
+    /// The memory strategy is selected from `config.memory_strategy`.
     pub fn new_with_workspace(
         llm: Box<dyn LlmApi>,
         config: &AgentConfig,
         workspace: Workspace,
     ) -> Self {
-        let factory = SlidingWindowFactory::with_workspace(
-            workspace.long_term_memory_path(),
-            workspace.history_log_path(),
-        );
-        let mut agent = Self::with_memory_factory(llm, config, Box::new(factory));
+        let factory = Self::create_memory_factory(config, &workspace);
+        let mut agent = Self::with_memory_factory(llm, config, factory);
         agent.workspace = Some(workspace);
         agent
+    }
+
+    /// Create the appropriate memory factory based on the configured strategy.
+    ///
+    /// Each strategy has its own factory that knows how to load persisted
+    /// state from the workspace and create configured memory instances.
+    fn create_memory_factory(
+        config: &AgentConfig,
+        workspace: &Workspace,
+    ) -> Box<dyn MemoryFactory> {
+        match config.memory_strategy {
+            MemoryStrategy::SlidingWindow => Self::sliding_window_factory(workspace),
+            MemoryStrategy::DynamicCheatsheet => {
+                let factory = CheatsheetFactory::with_workspace(
+                    workspace.cheatsheet_path(),
+                );
+                Box::new(factory)
+            }
+            MemoryStrategy::Agentic => {
+                match config.embedding.create_provider() {
+                    Ok(embedder) => {
+                        let factory = AgenticFactory::with_workspace(
+                            workspace.agentic_notes_path(),
+                            embedder,
+                        );
+                        Box::new(factory)
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            "Failed to create embedding provider for agentic memory, \
+                             falling back to sliding_window"
+                        );
+                        Self::sliding_window_factory(workspace)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Create a sliding-window memory factory with workspace persistence.
+    ///
+    /// Extracted as a helper because this is also the fallback when the
+    /// agentic strategy fails to initialize its embedding provider.
+    fn sliding_window_factory(workspace: &Workspace) -> Box<dyn MemoryFactory> {
+        Box::new(SlidingWindowFactory::with_workspace_and_cheatsheet(
+            workspace.long_term_memory_path(),
+            workspace.history_log_path(),
+            workspace.cheatsheet_path(),
+        ))
     }
 
     /// Load skills from a directory and rebuild the system prompt.
@@ -548,6 +599,12 @@ impl AgentMode for ChatAgent {
             // For now, we log the event. The actual consolidation LLM call
             // will be implemented as a separate async task in a future iteration.
         }
+
+        // Trigger post-turn reflection (strategy-specific: DC insight
+        // extraction, A-MEM note storage + context pre-retrieval, etc.).
+        self.session.memory_mut().reflect_on_turn(
+            user_input, &response.content, &*self.llm,
+        ).await;
 
         Ok(response)
     }

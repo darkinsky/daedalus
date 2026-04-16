@@ -94,6 +94,7 @@ async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard
         "Workspace resolved"
     );
     tracing::info!("Using model: {}", agent_config.model());
+    tracing::info!("Using memory strategy: {}", agent_config.memory_strategy);
     if let Some(base_url) = agent_config.api_base() {
         tracing::info!("Using API base URL: {}", base_url);
     }

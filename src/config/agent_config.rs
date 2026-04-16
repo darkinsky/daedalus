@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 
+use crate::embedding::Embedding;
 use crate::llm::LlmConfig;
 use crate::workspace::Workspace;
 
@@ -13,7 +16,115 @@ pub const DEFAULT_SYSTEM_PROMPT: &str =
     "You are Daedalus, a helpful AI assistant. \
      Be concise and accurate in your responses.";
 
-// ── YAML section structure ──
+// ── Memory strategy selection ──
+
+/// Available memory strategies (mutually exclusive).
+///
+/// Users select one strategy via `memory.strategy` in the YAML config.
+/// Each strategy has its own strengths:
+///
+/// - **SlidingWindow** (default): Dual-layer memory with hot/cold data,
+///   consolidation, and optional cheatsheet. Best for general use.
+/// - **DynamicCheatsheet**: Lightweight adaptive memory that accumulates
+///   problem-solving insights via LLM reflection. Best for repetitive
+///   task patterns.
+/// - **Agentic**: Knowledge graph memory (A-MEM) with embedding-based
+///   retrieval and memory evolution. Best for long-term knowledge
+///   accumulation across sessions.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryStrategy {
+    /// Sliding window with dual-layer consolidation (default).
+    #[default]
+    SlidingWindow,
+    /// Dynamic Cheatsheet — adaptive insight accumulation.
+    DynamicCheatsheet,
+    /// Agentic Memory (A-MEM) — knowledge graph with embedding retrieval.
+    Agentic,
+}
+
+impl std::fmt::Display for MemoryStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SlidingWindow => write!(f, "sliding_window"),
+            Self::DynamicCheatsheet => write!(f, "dynamic_cheatsheet"),
+            Self::Agentic => write!(f, "agentic"),
+        }
+    }
+}
+
+// ── Embedding provider configuration ──
+
+/// Embedding provider configuration for strategies that need vector search.
+///
+/// This is a **top-level** config section (`embedding:` in YAML), separate
+/// from memory config, because embedding providers may be shared across
+/// multiple features in the future.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct EmbeddingConfig {
+    /// API key for the embedding provider.
+    /// Falls back to `OPENAI_API_KEY` env var if not set.
+    pub api_key: Option<String>,
+    /// Base URL for the embedding API.
+    /// Falls back to `OPENAI_BASE_URL` env var, then "https://api.openai.com/v1".
+    pub api_base: Option<String>,
+    /// Embedding model name (e.g., "text-embedding-3-small").
+    /// Falls back to `DAEDALUS_EMBEDDING_MODEL` env var, then "text-embedding-3-small".
+    pub model: Option<String>,
+    /// Embedding vector dimensions.
+    /// Falls back to `DAEDALUS_EMBEDDING_DIMENSIONS` env var, then 1536.
+    pub dimensions: Option<usize>,
+}
+
+impl EmbeddingConfig {
+    /// Create an embedding provider from this configuration.
+    ///
+    /// Resolves each field with fallback to environment variables:
+    /// - `api_key` → `OPENAI_API_KEY`
+    /// - `api_base` → `OPENAI_BASE_URL` → `"https://api.openai.com/v1"`
+    /// - `model` → `DAEDALUS_EMBEDDING_MODEL` → `"text-embedding-3-small"`
+    /// - `dimensions` → `DAEDALUS_EMBEDDING_DIMENSIONS` → `1536`
+    pub fn create_provider(&self) -> Result<Arc<dyn Embedding>> {
+        use crate::embedding::OpenAiEmbedding;
+
+        let api_key = self.api_key.clone()
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+            .ok_or_else(|| anyhow::anyhow!(
+                "Embedding provider requires an API key. \
+                 Set `embedding.api_key` in config or OPENAI_API_KEY env var."
+            ))?;
+
+        let api_base = self.api_base.clone()
+            .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
+            .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+
+        let model = self.model.clone()
+            .or_else(|| std::env::var("DAEDALUS_EMBEDDING_MODEL").ok())
+            .unwrap_or_else(|| "text-embedding-3-small".to_string());
+
+        let dimensions = self.dimensions
+            .or_else(|| {
+                std::env::var("DAEDALUS_EMBEDDING_DIMENSIONS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+            })
+            .unwrap_or(1536);
+
+        let embedder = OpenAiEmbedding::new(&api_key, &api_base, &model, dimensions);
+        Ok(Arc::new(embedder))
+    }
+}
+
+// ── YAML section structures ──
+
+/// Memory section in the YAML config file.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default)]
+pub(super) struct MemorySection {
+    /// Which memory strategy to use.
+    pub strategy: MemoryStrategy,
+}
 
 /// Agent section in the YAML config file.
 ///
@@ -47,6 +158,10 @@ pub struct AgentConfig {
     pub agent_name: Option<String>,
     /// Loaded soul content (read from SOUL.md file at startup).
     pub soul: Option<String>,
+    /// Selected memory strategy.
+    pub memory_strategy: MemoryStrategy,
+    /// Embedding provider configuration (used by agentic memory).
+    pub embedding: EmbeddingConfig,
 }
 
 impl AgentConfig {
@@ -58,6 +173,8 @@ impl AgentConfig {
     pub(super) fn build(
         llm: LlmConfig,
         agent: AgentSection,
+        memory: MemorySection,
+        embedding: EmbeddingConfig,
         workspace: Option<&Workspace>,
     ) -> Self {
         // Detect whether the user explicitly set a custom system prompt
@@ -79,6 +196,8 @@ impl AgentConfig {
             is_custom_prompt,
             agent_name,
             soul,
+            memory_strategy: memory.strategy,
+            embedding,
         }
     }
 
@@ -91,13 +210,15 @@ impl AgentConfig {
         struct StandaloneConfig {
             llm: LlmConfig,
             agent: AgentSection,
+            memory: MemorySection,
+            embedding: EmbeddingConfig,
         }
 
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file: {}", path))?;
         let file_config: StandaloneConfig = serde_yaml::from_str(&content)
             .with_context(|| format!("Failed to parse config file: {}", path))?;
-        Ok(Self::build(file_config.llm, file_config.agent, None))
+        Ok(Self::build(file_config.llm, file_config.agent, file_config.memory, file_config.embedding, None))
     }
 
     /// Load soul content from the configured path or workspace fallback.
