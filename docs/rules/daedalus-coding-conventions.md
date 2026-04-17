@@ -24,6 +24,9 @@
 16. **循环变量与事件值保持同基数**：当循环变量用于发射事件或日志时，循环变量的基数应与事件语义一致，避免 `+1` 偏移。例如事件中 `round` 是 1-based，则循环应使用 `for round_number in 1..=max` 而非 `for round in 0..max` + `round + 1`。
 17. **未使用的 re-export 及时清理**：`#[allow(unused_imports)]` 不应堆积。如果 re-export 的类型当前没有外部消费者，应移除 re-export 而非用 `#[allow(unused_imports)]` 压制警告。保留的 re-export 应有注释说明保留原因。
 18. **UTF-8 安全截断必须使用共享函数**：所有字符串截断操作必须使用 UTF-8 安全的截断函数（如 `truncate_chars()`），禁止使用 `&s[..N]` 按字节截断——多字节字符（中文、emoji）会导致 panic。截断函数应定义在共享位置供全项目复用。
+19. **嵌套 `if let` 链改为循环遍历**：当需要遍历祖先目录（如 `parent().parent().parent()`）时，使用 `for` 循环 + `dir = d.parent()` 迭代，而非多层嵌套 `if let Some(parent)`。这降低圈复杂度且易于扩展遍历深度。
+20. **重复渲染逻辑提取为纯函数**：当同一个数据结构需要在多个地方渲染（如 stdout 和 stderr）时，提取格式化逻辑为返回 `Vec<String>` 的纯函数，让调用者自行决定输出目标。例如 `format_tool_event_lines()` 返回格式化行，`tool_event()` 输出到 stdout，`build_text_stderr_callback()` 输出到 stderr。
+21. **仅测试使用的 re-export 用 `#[cfg(test)]` 条件编译**：当子模块的内部类型仅被测试代码引用时，使用 `#[cfg(test)] pub(crate) use` 而非无条件的 `pub use`，避免非测试编译时产生 unused import warnings。
 
 ## 魔法常量提取
 1. **硬编码列表提取为常量**：当多个字符串在代码中以列表形式出现时，提取为命名常量。例如 `IGNORED_DIRS: &[&str] = &["node_modules", "target", "__pycache__", ".git"]`。
@@ -104,6 +107,7 @@
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-17 | 新增：嵌套 if let 链改为循环遍历、重复渲染逻辑提取为纯函数、仅测试使用的 re-export 用 cfg(test) 条件编译三条规则 | 对标 Claude Code 工具实现 + 代码设计审查优化 |
 | 2026-04-17 | 新增：God Object 拆分用跨文件 impl 扩展规则、Feature-complete 但未集成的模块用 #[allow(dead_code)] 规则 | MemPalace 架构审查优化 |
 | 2026-04-15 | 新增：组合模式不用 Base 后缀、循环变量同基数、未使用 re-export 及时清理、UTF-8 安全截断共享函数四条规则 | 代码质量审查优化 |
 | 2026-04-14 | 新增：模块组织规范中的就近原则、同领域合并、Rust 2024 edition 模块模式规则 | 模块化重构 |

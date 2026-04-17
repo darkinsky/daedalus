@@ -6,8 +6,7 @@ use async_trait::async_trait;
 use super::registry::SubagentRegistry;
 use super::runner::SubagentRunner;
 use super::SubagentResult;
-use crate::agent::{ToolEvent, ToolEventCallback};
-use crate::tools::BuiltinTool;
+use crate::tools::{BuiltinTool, ToolEvent, ToolEventCallback};
 
 /// The tool name used for LLM-routed subagent spawn.
 const SUBAGENT_TOOL_NAME: &str = "spawn_subagent";

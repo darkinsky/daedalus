@@ -27,6 +27,9 @@
 | `EXCLUDED_TOOLS` | `["spawn_subagent", "spawn_team", "use_skill"]` | `src/subagent/runner.rs` | Subagent 工具集中永远排除的工具（防递归） |
 | `DEFAULT_TIMEOUT_SECS` (bash) | 30 | `src/tools/bash.rs:16` | Bash 工具默认命令超时时间（秒） |
 | `MAX_OUTPUT_BYTES` (bash) | 256 KB | `src/tools/bash.rs:19` | Bash 工具最大输出截断大小，防止无界内存使用 |
+| `DEFAULT_MAX_RESULTS` (grep) | 100 | `src/tools/grep_search.rs` | grep_search 默认最大返回匹配行数 |
+| `MAX_OUTPUT_BYTES` (grep) | 128 KB | `src/tools/grep_search.rs` | grep_search 最大输出字节数，防止无界内存使用 |
+| `RG_TIMEOUT` | 30s | `src/tools/grep_search.rs` | grep_search 的 rg 子进程执行超时 |
 | `CHARS_PER_TOKEN` | 4 | `src/memory/mod.rs` | 共享的 token 预算字符/token 比例（Playbook + DynamicCheatsheet 共用） |
 | `max_entries` (DC default) | 50 | `src/memory/dynamic_cheatsheet/config.rs` | Dynamic Cheatsheet 最大条目数 |
 | `max_token_budget` (DC default) | 2000 | `src/memory/dynamic_cheatsheet/config.rs` | DC 渲染为 Markdown 时的最大 token 预算 |
@@ -193,6 +196,7 @@ Subagent 从三个来源加载，按优先级从低到高：
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-17 | 新增 grep_search 运行时常量（DEFAULT_MAX_RESULTS、MAX_OUTPUT_BYTES、RG_TIMEOUT） | 对标 Claude Code 工具实现 |
 | 2026-04-17 | 新增 MemPalace Memory 运行时常量（retrieval_limit、similarity_threshold、closet_threshold、chroma_url、bm25_weight、vector_weight、dedup_threshold）；更新 DEFAULT_MAX_MESSAGES 说明（新增 MemPalaceMemory）；更新原子写入影响文件列表 | MemPalace Memory 实现 |
 | 2026-04-16 | 新增 ACE Memory 运行时常量（max_sections、max_bullets_per_section、max_token_budget、min_reinforcement_for_retention）；更新 CHARS_PER_TOKEN 位置为共享常量；更新 DEFAULT_MAX_MESSAGES 说明（新增 AceMemory）；更新原子写入影响文件列表（新增 playbook.json） | ACE Memory 实现 |
 | 2026-04-16 | 新增 Wiki Memory 运行时常量（DEFAULT_LINT_INTERVAL、DEFAULT_MAX_RETRIEVAL_PAGES、KEYWORD_MATCH_THRESHOLD、LINK_EXPANSION_SCORE、MAX_SEED_PAGES）；更新原子写入影响文件列表（新增 Wiki .md + _meta.json）；更新 DEFAULT_MAX_MESSAGES 说明（新增 WikiMemory） | Wiki Memory 实现 |

@@ -185,7 +185,7 @@ impl ToolRouter {
     ///
     /// Called by the REPL before each chat call to bind the callback
     /// to the current spinner. The callback is cleared after the call.
-    pub fn set_subagent_event_callback(&self, callback: Option<crate::agent::ToolEventCallback>) {
+    pub fn set_subagent_event_callback(&self, callback: Option<crate::tools::ToolEventCallback>) {
         if let Ok(mut guard) = self.subagent_event_callback.write() {
             *guard = callback;
         }

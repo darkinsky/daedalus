@@ -18,3 +18,6 @@ Thumbs.db
 
 # Config files
 .daedalus
+
+# Bundled binaries
+/bin/

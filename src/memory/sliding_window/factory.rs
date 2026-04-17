@@ -36,6 +36,7 @@ impl SlidingWindowFactory {
     ///
     /// When set, newly created memories will automatically load
     /// persisted state from these paths.
+    #[allow(dead_code)]
     pub fn with_workspace(
         ltm_path: PathBuf,
         history_path: PathBuf,

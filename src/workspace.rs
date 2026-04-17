@@ -171,6 +171,21 @@ impl Workspace {
 
     // ── Memory paths ──
 
+    /// Generic memory path for a given strategy sub-path.
+    ///
+    /// Allows memory strategies to construct their own paths without
+    /// requiring a dedicated accessor method on `Workspace` for each one.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let path = workspace.memory_path("custom_strategy/data.json");
+    /// // => <workspace_root>/memory/custom_strategy/data.json
+    /// ```
+    #[allow(dead_code)]
+    pub fn memory_path(&self, sub_path: &str) -> PathBuf {
+        self.root.join("memory").join(sub_path)
+    }
+
     /// Path to the LongTermMemory persistence file.
     pub fn long_term_memory_path(&self) -> PathBuf {
         self.root.join("memory/long_term.json")
@@ -209,6 +224,7 @@ impl Workspace {
     // ── Session paths ──
 
     /// Directory for session snapshots.
+    #[allow(dead_code)]
     pub fn sessions_dir(&self) -> PathBuf {
         self.root.join("sessions")
     }
@@ -257,11 +273,13 @@ impl Workspace {
     }
 
     /// Check if long-term memory data exists in this workspace.
+    #[allow(dead_code)]
     pub fn has_long_term_memory(&self) -> bool {
         self.long_term_memory_path().exists()
     }
 
     /// Check if history log data exists in this workspace.
+    #[allow(dead_code)]
     pub fn has_history_log(&self) -> bool {
         self.history_log_path().exists()
     }

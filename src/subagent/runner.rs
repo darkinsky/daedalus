@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::agent::{ToolEvent, ToolEventCallback};
+use crate::tools::{ToolEvent, ToolEventCallback};
 use crate::llm::{self, LlmApi, LlmConfig, TokenUsage, ToolRound};
 use crate::tools::BuiltinToolRegistry;
 

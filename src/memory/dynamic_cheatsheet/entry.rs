@@ -37,6 +37,7 @@ impl CheatsheetEntry {
     }
 
     /// Reinforce this entry (increment count and update timestamp).
+    #[allow(dead_code)]
     pub fn reinforce(&mut self) {
         self.reinforcement_count += 1;
         self.updated_at = Local::now();

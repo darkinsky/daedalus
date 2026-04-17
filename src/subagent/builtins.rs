@@ -21,7 +21,7 @@ pub fn builtin_agents() -> Vec<SubagentDefinition> {
 }
 
 /// Standard read-only tool whitelist shared by all built-in subagents.
-const READ_ONLY_TOOLS: &[&str] = &["read_file", "list_directory", "search_files", "get_file_info"];
+const READ_ONLY_TOOLS: &[&str] = &["read_file", "list_directory", "search_files", "grep_search", "get_file_info"];
 
 /// Create a read-only built-in subagent with standard defaults.
 ///

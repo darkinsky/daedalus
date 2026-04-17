@@ -24,7 +24,6 @@ pub fn get_required_string(args: &serde_json::Value, key: &str) -> Result<String
 }
 
 /// Extract an optional string parameter from JSON arguments.
-#[allow(dead_code)]
 pub fn get_optional_string(args: &serde_json::Value, key: &str) -> Option<String> {
     args.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
 }

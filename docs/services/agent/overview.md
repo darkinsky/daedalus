@@ -80,6 +80,10 @@ pub trait AgentMode: AgentMetadata + Send + Sync {
 | `prompt_override` | `Option<String>` | 自定义覆盖提示词 |
 | `agent_name` / `soul` | `Option<String>` | 个性化配置 |
 
+### 记忆工厂选择
+
+记忆策略工厂的创建逻辑已从 `ChatAgent` 提取到 `memory::create_memory_factory()` 独立函数（`src/memory/mod.rs`）。`ChatAgent::new_with_workspace()` 委托调用该函数，不再直接引用 6 个具体 Factory 类型。这使 `ChatAgent` 从 722 行降到 620 行，符合单一职责原则。[置信度：高]
+
 ### MemoryFactory 设计
 
 ```rust
@@ -175,16 +179,46 @@ tool_call → ToolRouter.execute()
 
 内置工具通过 `BuiltinTool` trait 定义，与 MCP 工具使用相同的 OpenAI function-calling JSON 格式，对 LLM 完全透明。
 
-当前内置工具：
+当前内置工具（9 个，对标 Claude Code 核心工具集）：
 
 | 工具名 | 功能 | 关键参数 |
 |--------|------|--------|
 | `read_file` | 读取文件内容，支持行号和分页 | `path`, `offset?`, `limit?` |
 | `write_file` | 写入文件（自动创建父目录） | `path`, `content` |
+| `edit_file` | 精确搜索替换编辑（search-and-replace） | `path`, `old_string`, `new_string` |
+| `multi_edit` | 单文件批量编辑（原子操作，失败自动回滚） | `path`, `edits[]` |
 | `list_directory` | 列出目录内容，支持递归 | `path`, `recursive?`, `max_entries?` |
 | `search_files` | 按文件名模式搜索 | `path`, `pattern`, `max_results?` |
+| `grep_search` | 文件内容正则/字面量搜索（内置 ripgrep 引擎） | `pattern`, `path?`, `include_pattern?`, `use_regex?`, `case_sensitive?` |
 | `get_file_info` | 获取文件/目录元数据 | `path` |
 | `bash` | 执行 bash 命令，返回 stdout/stderr | `command`, `working_directory?`, `timeout_secs?` |
+
+### 工具演进：对标 Claude Code
+
+工具集的设计目标是对标 Claude Code 的核心工具能力。Phase 1-2 新增了 3 个关键工具：
+
+| Phase | 新增工具 | 对标 Claude Code | 设计要点 |
+|-------|---------|-----------------|----------|
+| Phase 1 | `grep_search` | GrepSearch | 内置 ripgrep 二进制，不依赖系统安装 |
+| Phase 1 | `edit_file` | Edit/Write | 精确 search-and-replace，防误操作（精确匹配、消歧） |
+| Phase 2 | `multi_edit` | MultiEdit | 单文件多处编辑，原子操作，失败自动回滚 |
+
+### grep_search 实现方案演进
+
+`grep_search` 经历了三次方案迭代：
+
+| 方案 | 描述 | 结果 |
+|------|------|------|
+| 方案 A：ripgrep library crates | 引入 `grep-searcher`/`grep-regex`/`ignore` 底层库 | 编译错误（`MatchLine` 未实现 `Debug`） |
+| 方案 B：`ripgrep` crate | 直接依赖 `ripgrep = "15.1.0"` | 失败——ripgrep 是纯 binary crate，无 lib target |
+| 方案 C：内置 rg 二进制 ✅ | 下载 rg 二进制到 `bin/rg`，通过子进程调用 | 成功——零 crate 依赖，性能等同原生 rg |
+
+**rg 二进制发现优先级**（通过 `once_cell::Lazy` 缓存，只解析一次）：
+1. `<exe_dir>/bin/rg` 及祖先目录（循环遍历最多 3 层）
+2. `<cwd>/bin/rg`（开发时从项目根目录运行）
+3. 系统 PATH 上的 `rg`（兜底）
+
+**部署说明**：`bin/` 在 `.gitignore` 中，需要在 CI/CD 或首次部署时下载 rg 二进制。
 
 ---
 
@@ -404,6 +438,14 @@ Subagent 的工具集中**永远不包含** `spawn_subagent`、`spawn_team`、`u
 - 无 subagent 加载成功 → 不注册 `spawn_subagent` 工具
 - 内置 subagent 始终可用（即使无 `.md` 文件）
 
+### ToolEvent 归属
+
+> 📍 **代码位置**：`src/tools/mod.rs`（canonical 定义），`src/agent/mod.rs`（re-export）
+
+`ToolEvent` 和 `ToolEventCallback` 的 canonical 定义在 `tools/mod.rs` 中（而非 `agent/mod.rs`），因为它们属于工具执行层的概念。`agent/mod.rs` 通过 `pub use crate::tools::{ToolEvent, ToolEventCallback}` re-export 保持向后兼容。
+
+这一迁移消除了 `subagent/` → `agent/` 的反向依赖，使依赖图变为严格单向。
+
 ---
 
 ### 应用启动流程
@@ -437,6 +479,7 @@ main()
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-17 | 内置工具表格新增 `edit_file`、`multi_edit`、`grep_search` 三个工具；新增工具演进章节（对标 Claude Code）和 grep_search 方案演进；新增 ToolEvent 归属章节（迁移到 tools 模块）；新增记忆工厂选择章节（提取到 memory 模块） | 对标 Claude Code 工具实现 + 架构审查优化 |
 | 2026-04-15 | 更新 AgentMode trait 定义为 supertrait 分离模式（AgentMetadata + AgentMode）；新增应用启动流程章节（bootstrap/build_agent）；工具调用循环 round 改为 1-based | 代码质量审查优化 |
 | 2026-04-15 | 内置工具表格新增 `bash` 工具（shell 命令执行） | Bash 工具实现 |
 | 2026-04-15 | 新增 Subagent 系统章节（隔离执行、Agent Teams、ToolEvent 透传、Worktree 隔离、内置 agent） | Subagent 功能实现 |

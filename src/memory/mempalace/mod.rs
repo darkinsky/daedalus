@@ -18,8 +18,6 @@ mod dialect;
 mod query_sanitizer;
 mod stopwords;
 
-pub use config::MemPalaceConfig;
 pub use factory::MemPalaceFactory;
-pub use memory::MemPalaceMemory;
-pub use palace::{HallType, Palace};
-pub use store::MemPalaceStore;
+// Internal types — accessible via `super::` within the module, not re-exported.
+// MemPalaceConfig, MemPalaceMemory, HallType, Palace, MemPalaceStore are used only within this submodule.

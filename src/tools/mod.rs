@@ -1,13 +1,81 @@
 pub mod bash;
+mod edit_file;
 mod fs_utils;
 mod get_file_info;
+mod grep_search;
 mod list_directory;
+mod multi_edit;
 mod read_file;
 mod search_files;
 mod write_file;
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use async_trait::async_trait;
+
+// ── Tool execution events ──
+
+/// Events emitted during tool execution, allowing the CLI layer
+/// to display real-time progress of the tool-calling loop.
+///
+/// Defined in `tools` (not `agent`) so that both `agent` and `subagent`
+/// can depend on it without creating a circular dependency.
+#[derive(Debug, Clone)]
+pub enum ToolEvent {
+    /// A new tool-calling round has started.
+    RoundStart {
+        /// 1-based round number.
+        round: usize,
+    },
+    /// A tool call is about to be executed.
+    ToolCallStart {
+        /// The tool name being called.
+        tool_name: String,
+        /// Which source handles this tool ("built-in" or MCP server name).
+        source: String,
+    },
+    /// A tool call has completed.
+    ToolCallComplete {
+        /// The tool name that was called.
+        tool_name: String,
+        /// Whether the call succeeded.
+        success: bool,
+        /// Full result content (used for both CLI display and stream-json consumers).
+        result_content: String,
+    },
+    /// All tool calls in a round have completed.
+    RoundComplete {
+        /// Number of tool calls executed in this round.
+        tool_count: usize,
+    },
+    /// A subagent has started execution.
+    SubagentStart {
+        /// The subagent name.
+        agent_name: String,
+        /// The task description (truncated).
+        task_preview: String,
+    },
+    /// A subagent has completed execution.
+    SubagentComplete {
+        /// The subagent name.
+        agent_name: String,
+        /// Whether the execution succeeded.
+        success: bool,
+        /// Number of tool rounds the subagent executed.
+        tool_rounds: usize,
+        /// Brief result summary (truncated).
+        result_preview: String,
+    },
+}
+
+/// Callback type for receiving tool execution events.
+///
+/// The callback is wrapped in `Arc` so it can be shared across async boundaries.
+/// It takes a `ToolEvent` and renders it to the terminal (or ignores it).
+pub type ToolEventCallback = Arc<dyn Fn(ToolEvent) + Send + Sync>;
+
+// ── Tool metadata ──
 
 /// A tool description for CLI display, prompt building, and tool routing.
 ///
@@ -68,8 +136,11 @@ impl BuiltinToolRegistry {
         let tools: Vec<Box<dyn BuiltinTool>> = vec![
             Box::new(read_file::ReadFileTool),
             Box::new(write_file::WriteFileTool),
+            Box::new(edit_file::EditFileTool),
+            Box::new(multi_edit::MultiEditTool),
             Box::new(list_directory::ListDirectoryTool),
             Box::new(search_files::SearchFilesTool),
+            Box::new(grep_search::GrepSearchTool),
             Box::new(get_file_info::GetFileInfoTool),
             Box::new(bash::BashTool),
         ];

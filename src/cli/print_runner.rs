@@ -20,7 +20,7 @@ use super::output_format::{
     StreamEvent, ResultPayload, UsageSummary,
     emit_stream_event, emit_json_result,
 };
-use super::render::{truncate_chars, format_truncated_output};
+use super::render::format_tool_event_lines;
 
 /// Read the prompt from stdin (used when `-p -` is passed).
 pub fn read_stdin_prompt() -> Result<String> {
@@ -251,92 +251,13 @@ fn build_stream_json_callback() -> ToolEventCallback {
 ///
 /// Used in `text` output mode so tool progress doesn't pollute stdout
 /// (which is reserved for the final response, suitable for piping).
+///
+/// Reuses `format_tool_event_lines()` from `render.rs` to avoid
+/// duplicating the ToolEvent rendering logic.
 fn build_text_stderr_callback() -> ToolEventCallback {
     Arc::new(move |event: ToolEvent| {
-        match event {
-            ToolEvent::RoundStart { round } => {
-                eprintln!(
-                    "  🔧 {}",
-                    format!("Tool round {}", round)
-                        .with(Color::Cyan)
-                );
-            }
-            ToolEvent::ToolCallStart { tool_name, source } => {
-                eprintln!(
-                    "  {}  {} {}",
-                    "▸".with(Color::Yellow),
-                    tool_name.with(Color::White),
-                    format!("({})", source).with(Color::DarkGrey),
-                );
-            }
-            ToolEvent::ToolCallComplete { tool_name, success, result_content } => {
-                let (icon, color) = if success {
-                    ("✓", Color::Green)
-                } else {
-                    ("✗", Color::Red)
-                };
-                if success {
-                    let lines: Vec<&str> = result_content.lines().collect();
-                    let line_count = lines.len();
-                    // Header: ✓ tool_name (N lines)
-                    eprintln!(
-                        "    {} {}",
-                        icon.with(color),
-                        format!("{} ({} lines)", tool_name, line_count).with(Color::DarkGrey),
-                    );
-                    // Render output with smart truncation (reuses shared logic from render.rs)
-                    for formatted_line in format_truncated_output(&lines) {
-                        eprintln!(
-                            "    {}  {}",
-                            "│".with(Color::DarkGrey),
-                            formatted_line.with(Color::DarkGrey),
-                        );
-                    }
-                } else {
-                    let first_line = result_content.lines().next().unwrap_or("");
-                    eprintln!(
-                        "    {} {}{}",
-                        icon.with(color),
-                        format!("{}: ", tool_name).with(color),
-                        first_line.with(Color::DarkGrey),
-                    );
-                }
-            }
-            ToolEvent::RoundComplete { tool_count } => {
-                eprintln!(
-                    "  {}",
-                    format!("  {} tool call(s) completed", tool_count)
-                        .with(Color::DarkGrey),
-                );
-                eprintln!();
-            }
-            ToolEvent::SubagentStart { agent_name, task_preview } => {
-                eprintln!();
-                eprintln!(
-                    "  🤖 {}",
-                    format!("Subagent '{}' started — {}", agent_name, task_preview)
-                        .with(Color::Magenta),
-                );
-            }
-            ToolEvent::SubagentComplete { agent_name, success, tool_rounds, result_preview } => {
-                let (icon, color) = if success {
-                    ("✓", Color::Green)
-                } else {
-                    ("✗", Color::Red)
-                };
-                eprintln!(
-                    "  {} {} {}",
-                    icon.with(color),
-                    format!("Subagent '{}' completed", agent_name).with(color),
-                    format!("({} tool rounds)", tool_rounds).with(Color::DarkGrey),
-                );
-                if !result_preview.is_empty() {
-                    // UTF-8 safe truncation
-                    let preview = truncate_chars(&result_preview, 120);
-                    eprintln!("    {}", preview.with(Color::DarkGrey));
-                }
-                eprintln!();
-            }
+        for line in format_tool_event_lines(&event) {
+            eprintln!("{}", line);
         }
     })
 }

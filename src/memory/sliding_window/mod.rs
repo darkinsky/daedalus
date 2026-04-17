@@ -8,9 +8,17 @@ mod memory;
 #[cfg(test)]
 mod tests;
 
-pub use config::SlidingWindowConfig;
-pub use consolidation::ConsolidationResult;
 pub use factory::SlidingWindowFactory;
-pub use history::HistoryEntry;
-pub use long_term::LongTermMemory;
-pub use memory::SlidingWindowMemory;
+
+// Re-exports for test use only. These types are internal implementation details
+// accessed by the integration tests in `tests.rs` via `crate::memory::sliding_window::*`.
+#[cfg(test)]
+pub(crate) use config::SlidingWindowConfig;
+#[cfg(test)]
+pub(crate) use consolidation::ConsolidationResult;
+#[cfg(test)]
+pub(crate) use history::HistoryEntry;
+#[cfg(test)]
+pub(crate) use long_term::LongTermMemory;
+#[cfg(test)]
+pub(crate) use memory::SlidingWindowMemory;

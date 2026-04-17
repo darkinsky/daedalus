@@ -5,6 +5,5 @@ mod prompts;
 mod store;
 
 pub use factory::AgenticFactory;
-pub use memory::AgenticMemory;
-pub use note::MemoryNote;
-pub use store::AgenticMemoryStore;
+// Internal types — accessible via `super::` within the module, not re-exported.
+// AgenticMemory, MemoryNote, AgenticMemoryStore are used only within this submodule.

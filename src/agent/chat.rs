@@ -3,17 +3,14 @@ use std::path::Path;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::config::{AgentConfig, MemoryStrategy};
+use crate::config::AgentConfig;
 use crate::llm::{
     ChatMessage, ChatResponse, LlmApi, LlmConfig, ToolResponse, ToolRound,
     TokenUsage, format_messages_for_log,
 };
 use crate::tools::ToolInfo;
 use crate::mcp::McpManager;
-use crate::memory::{
-    AceFactory, AgenticFactory, CheatsheetFactory, MemPalaceFactory, MemoryFactory,
-    SlidingWindowFactory, WikiFactory,
-};
+use crate::memory::{MemoryFactory, SlidingWindowFactory};
 use crate::prompt::PromptBuilder;
 use crate::skill::SkillInfo;
 use crate::subagent::SubagentInfo;
@@ -145,118 +142,20 @@ impl ChatAgent {
     /// - Saving memory state on shutdown
     ///
     /// The memory strategy is selected from `config.memory_strategy`.
+    /// Factory creation is delegated to `memory::create_memory_factory`.
     pub fn new_with_workspace(
         llm: Box<dyn LlmApi>,
         config: &AgentConfig,
         workspace: Workspace,
     ) -> Self {
-        let factory = Self::create_memory_factory(config, &workspace);
+        let factory = crate::memory::create_memory_factory(
+            &config.memory_strategy,
+            &config.embedding,
+            &workspace,
+        );
         let mut agent = Self::with_memory_factory(llm, config, factory);
         agent.workspace = Some(workspace);
         agent
-    }
-
-    /// Create the appropriate memory factory based on the configured strategy.
-    ///
-    /// Each strategy has its own factory that knows how to load persisted
-    /// state from the workspace and create configured memory instances.
-    fn create_memory_factory(
-        config: &AgentConfig,
-        workspace: &Workspace,
-    ) -> Box<dyn MemoryFactory> {
-        match config.memory_strategy {
-            MemoryStrategy::SlidingWindow => Self::sliding_window_factory(workspace),
-            MemoryStrategy::DynamicCheatsheet => {
-                let factory = CheatsheetFactory::with_workspace(
-                    workspace.cheatsheet_path(),
-                );
-                Box::new(factory)
-            }
-            MemoryStrategy::Agentic => {
-                match config.embedding.create_provider() {
-                    Ok(embedder) => {
-                        let factory = AgenticFactory::with_workspace(
-                            workspace.agentic_notes_path(),
-                            embedder,
-                        );
-                        Box::new(factory)
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            error = %e,
-                            "Failed to create embedding provider for agentic memory, \
-                             falling back to sliding_window"
-                        );
-                        Self::sliding_window_factory(workspace)
-                    }
-                }
-            }
-            MemoryStrategy::Wiki => {
-                match config.embedding.create_provider() {
-                    Ok(embedder) => {
-                        tracing::info!(
-                            "Wiki memory initialized with embedding provider (enhanced retrieval)"
-                        );
-                        let factory = WikiFactory::with_workspace(
-                            workspace.wiki_dir(),
-                            embedder,
-                        );
-                        Box::new(factory)
-                    }
-                    Err(e) => {
-                        tracing::info!(
-                            error = %e,
-                            "No embedding provider configured for wiki memory, \
-                             using keyword-only retrieval mode"
-                        );
-                        let factory = WikiFactory::with_workspace_only(
-                            workspace.wiki_dir(),
-                        );
-                        Box::new(factory)
-                    }
-                }
-            }
-            MemoryStrategy::Ace => {
-                let factory = AceFactory::with_workspace(
-                    workspace.ace_playbook_path(),
-                );
-                Box::new(factory)
-            }
-            MemoryStrategy::MemPalace => {
-                match config.embedding.create_provider() {
-                    Ok(embedder) => {
-                        tracing::info!(
-                            "MemPalace memory initialized with embedding provider and ChromaDB"
-                        );
-                        let factory = MemPalaceFactory::with_workspace(
-                            workspace.mempalace_dir(),
-                            embedder,
-                        );
-                        Box::new(factory)
-                    }
-                    Err(e) => {
-                        panic!(
-                            "MemPalace memory requires embedding configuration. \
-                             Failed to create embedding provider: {}. \
-                             Please configure `embedding` section in daedalus.yaml.",
-                            e
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    /// Create a sliding-window memory factory with workspace persistence.
-    ///
-    /// Extracted as a helper because this is also the fallback when the
-    /// agentic strategy fails to initialize its embedding provider.
-    fn sliding_window_factory(workspace: &Workspace) -> Box<dyn MemoryFactory> {
-        Box::new(SlidingWindowFactory::with_workspace_and_cheatsheet(
-            workspace.long_term_memory_path(),
-            workspace.history_log_path(),
-            workspace.cheatsheet_path(),
-        ))
     }
 
     /// Load skills from a directory and rebuild the system prompt.

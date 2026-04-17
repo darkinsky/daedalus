@@ -8,7 +8,6 @@ pub use tool_router::ToolFilter;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use std::sync::Arc;
 
 use crate::llm::ChatResponse;
 use crate::tools::ToolInfo;
@@ -16,63 +15,11 @@ use crate::mcp::McpManager;
 use crate::skill::SkillInfo;
 use crate::subagent::SubagentInfo;
 
-// ── Tool execution events (for CLI progress display) ──
-
-/// Events emitted during tool execution, allowing the CLI layer
-/// to display real-time progress of the tool-calling loop.
-#[derive(Debug, Clone)]
-pub enum ToolEvent {
-    /// A new tool-calling round has started.
-    RoundStart {
-        /// 1-based round number.
-        round: usize,
-    },
-    /// A tool call is about to be executed.
-    ToolCallStart {
-        /// The tool name being called.
-        tool_name: String,
-        /// Which source handles this tool ("built-in" or MCP server name).
-        source: String,
-    },
-    /// A tool call has completed.
-    ToolCallComplete {
-        /// The tool name that was called.
-        tool_name: String,
-        /// Whether the call succeeded.
-        success: bool,
-        /// Full result content (used for both CLI display and stream-json consumers).
-        result_content: String,
-    },
-    /// All tool calls in a round have completed.
-    RoundComplete {
-        /// Number of tool calls executed in this round.
-        tool_count: usize,
-    },
-    /// A subagent has started execution.
-    SubagentStart {
-        /// The subagent name.
-        agent_name: String,
-        /// The task description (truncated).
-        task_preview: String,
-    },
-    /// A subagent has completed execution.
-    SubagentComplete {
-        /// The subagent name.
-        agent_name: String,
-        /// Whether the execution succeeded.
-        success: bool,
-        /// Number of tool rounds the subagent executed.
-        tool_rounds: usize,
-        /// Brief result summary (truncated).
-        result_preview: String,
-    },
-}
-
-/// Callback type for receiving tool execution events.
-///
-/// The callback is wrapped in `Arc` so it can be shared across async boundaries.
-/// It takes a `ToolEvent` and renders it to the terminal (or ignores it).
-pub type ToolEventCallback = Arc<dyn Fn(ToolEvent) + Send + Sync>;
+// Re-export ToolEvent and ToolEventCallback from tools module.
+// These types are defined in `tools` (the shared infrastructure layer) so that
+// both `agent` and `subagent` can depend on them without circular imports.
+// Re-exported here for backward compatibility with existing `use crate::agent::ToolEvent` paths.
+pub use crate::tools::{ToolEvent, ToolEventCallback};
 
 // ── Agent metadata trait (read-only introspection) ──
 

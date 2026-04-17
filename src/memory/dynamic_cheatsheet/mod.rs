@@ -6,7 +6,6 @@ mod memory;
 pub(crate) mod prompts;
 
 pub use cheatsheet::DynamicCheatsheet;
-pub use config::CheatsheetConfig;
-pub use entry::CheatsheetEntry;
 pub use factory::CheatsheetFactory;
-pub use memory::CheatsheetMemory;
+// Internal types — accessible via `super::` within the module, not re-exported.
+// CheatsheetConfig, CheatsheetEntry, CheatsheetMemory are used only within this submodule.

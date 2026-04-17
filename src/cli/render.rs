@@ -377,44 +377,35 @@ pub fn agents_list(agent: &dyn AgentMetadata) {
     println!();
 }
 
-// ── Tool output rendering ──
-
-/// Render tool output lines with smart truncation (head + tail) to stdout.
-///
-/// Delegates to `format_truncated_output` for the truncation logic,
-/// then prints each line with dim styling and a vertical bar prefix.
-fn render_tool_output(lines: &[&str]) {
-    for formatted_line in format_truncated_output(lines) {
-        println!(
-            "    {}  {}",
-            "│".with(Color::DarkGrey),
-            formatted_line.with(Color::DarkGrey),
-        );
-    }
-}
-
 // ── Tool execution events ──
 
-/// Render a tool execution event to the terminal.
+/// Format a tool execution event into styled lines for terminal display.
 ///
-/// Called in real-time during the tool-calling loop to show progress.
-pub fn tool_event(event: &ToolEvent) {
+/// Returns a `Vec<String>` of pre-formatted lines (with ANSI color codes).
+/// Callers can output these to stdout (`println!`) or stderr (`eprintln!`)
+/// depending on the output mode.
+///
+/// This eliminates the ~180 lines of duplicated ToolEvent rendering logic
+/// that previously existed in both `render::tool_event()` and
+/// `print_runner::build_text_stderr_callback()`.
+pub(super) fn format_tool_event_lines(event: &ToolEvent) -> Vec<String> {
+    let mut lines = Vec::new();
     match event {
         ToolEvent::RoundStart { round } => {
-            println!(
+            lines.push(format!(
                 "  🔧 {}",
                 format!("Tool round {}", round)
                     .with(Color::Cyan)
                     .attribute(Attribute::Bold),
-            );
+            ));
         }
         ToolEvent::ToolCallStart { tool_name, source } => {
-            println!(
+            lines.push(format!(
                 "  {}  {} {}",
                 "▸".with(Color::Yellow),
                 tool_name.as_str().with(Color::White).attribute(Attribute::Bold),
                 format!("({})", source).with(Color::DarkGrey),
-            );
+            ));
         }
         ToolEvent::ToolCallComplete { tool_name, success, result_content } => {
             let (icon, color) = if *success {
@@ -423,51 +414,54 @@ pub fn tool_event(event: &ToolEvent) {
                 ("✗", Color::Red)
             };
             if *success {
-                let lines: Vec<&str> = result_content.lines().collect();
-                let line_count = lines.len();
-                // Header: ✓ tool_name (N lines)
-                println!(
+                let content_lines: Vec<&str> = result_content.lines().collect();
+                let line_count = content_lines.len();
+                lines.push(format!(
                     "    {} {}",
                     icon.with(color),
                     format!("{} ({} lines)", tool_name, line_count).with(Color::DarkGrey),
-                );
+                ));
                 // Render output with smart truncation
-                render_tool_output(&lines);
+                for formatted_line in format_truncated_output(&content_lines) {
+                    lines.push(format!(
+                        "    {}  {}",
+                        "│".with(Color::DarkGrey),
+                        formatted_line.with(Color::DarkGrey),
+                    ));
+                }
             } else {
-                // Error: show inline preview
                 let first_line = result_content.lines().next().unwrap_or("");
-                println!(
+                lines.push(format!(
                     "    {} {}{}",
                     icon.with(color),
                     format!("{}: ", tool_name).with(color),
                     first_line.with(Color::DarkGrey),
-                );
+                ));
             }
         }
         ToolEvent::RoundComplete { tool_count } => {
-            println!(
+            lines.push(format!(
                 "  {}",
                 format!("  {} tool call(s) completed", tool_count).with(Color::DarkGrey),
-            );
-            println!();
+            ));
+            lines.push(String::new());
         }
         ToolEvent::SubagentStart { agent_name, task_preview } => {
-            println!();
-            println!(
+            lines.push(String::new());
+            lines.push(format!(
                 "  {} {} {}",
                 "\u{1F916}".to_string(),
                 format!("Subagent '{}' started", agent_name)
                     .with(Color::Magenta)
                     .attribute(Attribute::Bold),
                 "—".with(Color::DarkGrey),
-            );
-            // Show truncated task preview (UTF-8 safe)
+            ));
             let preview = truncate_chars(task_preview, 100);
-            println!(
+            lines.push(format!(
                 "    {}",
                 preview.with(Color::DarkGrey),
-            );
-            println!();
+            ));
+            lines.push(String::new());
         }
         ToolEvent::SubagentComplete { agent_name, success, tool_rounds, result_preview } => {
             let (icon, color) = if *success {
@@ -475,22 +469,31 @@ pub fn tool_event(event: &ToolEvent) {
             } else {
                 ("✗", Color::Red)
             };
-            println!(
+            lines.push(format!(
                 "  {} {} {}",
                 icon.with(color),
                 format!("Subagent '{}' completed", agent_name).with(color),
                 format!("({} tool rounds)", tool_rounds).with(Color::DarkGrey),
-            );
-            // Show brief result preview (UTF-8 safe)
+            ));
             let preview = truncate_chars(result_preview, 120);
             if !preview.is_empty() {
-                println!(
+                lines.push(format!(
                     "    {}",
                     preview.with(Color::DarkGrey),
-                );
+                ));
             }
-            println!();
+            lines.push(String::new());
         }
+    }
+    lines
+}
+
+/// Render a tool execution event to stdout (interactive REPL mode).
+///
+/// Called in real-time during the tool-calling loop to show progress.
+pub fn tool_event(event: &ToolEvent) {
+    for line in format_tool_event_lines(event) {
+        println!("{}", line);
     }
 }
 
