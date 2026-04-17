@@ -1,17 +1,18 @@
-# Memory — 五策略互斥记忆系统
+# Memory — 六策略互斥记忆系统
 
-> 最后更新：2026-04-16
-> 来源：存量代码分析 + 记忆系统重构 + 代码质量审查 + A-MEM 实现 + Workspace 持久化优化 + Dynamic Cheatsheet 实现 + 三策略互斥架构 + Wiki Memory 实现 + **ACE Memory 实现**
+> 最后更新：2026-04-17
+> 来源：存量代码分析 + 记忆系统重构 + 代码质量审查 + A-MEM 实现 + Workspace 持久化优化 + Dynamic Cheatsheet 实现 + 三策略互斥架构 + Wiki Memory 实现 + ACE Memory 实现 + **MemPalace Memory 实现**
 
 ## 1. 模块概述
 
-Memory 模块定义了会话记忆的统一接口（`Memory` trait）和五种**互斥**的记忆策略，用户通过 YAML 配置选择：
+Memory 模块定义了会话记忆的统一接口（`Memory` trait）和六种**互斥**的记忆策略，用户通过 YAML 配置选择：
 
 - **`SlidingWindowMemory`**（默认）：双层记忆架构，热数据层 + 冷数据层 + 滑动窗口 + 自动整合 + 可选 Dynamic Cheatsheet
 - **`CheatsheetMemory`**：独立的 Dynamic Cheatsheet 策略，轻量级自适应记忆，每轮对话后 LLM 反思提取可复用洞察
 - **`AgenticMemory`**：独立的 A-MEM 知识图谱策略，embedding 向量检索 + 记忆演化 + 上下文预缓存
 - **`WikiMemory`**：LLM Wiki 策略（Karpathy 模式），将对话知识编译为结构化 Markdown Wiki，支持 wikilinks 互联 + 可选 embedding 检索
 - **`AceMemory`**：ACE（Agentic Context Engineering）策略，层次化 Playbook（Section→Bullet），LLM 产出增量 delta entries + 确定性 Curator 合并，防止上下文坍塌
+- **`MemPalaceMemory`**：MemPalace（记忆宫殿）策略，空间化记忆组织（Wings→Rooms→Halls/Drawers/Closets），ChromaDB 向量检索 + BM25 混合排序 + 知识图谱 SPO 三元组 + 跨项目 Tunnel 连接 + AAAK 压缩方言
 
 ### 策略选择配置
 
@@ -629,6 +630,11 @@ pub struct ConsolidationResult {
 | WikiMeta | JSON | `memory/wiki/_meta.json` | wiki |
 | WikiIndex | Markdown | `memory/wiki/_index.md` | wiki (auto-generated) |
 | Playbook (ACE) | JSON | `memory/ace/playbook.json` | ace |
+| Palace structure | JSON | `memory/mempalace/palace.json` | mempalace |
+| Drawers | JSONL | `memory/mempalace/drawers.jsonl` | mempalace |
+| Closets | JSON | `memory/mempalace/closets.json` | mempalace |
+| Identity | TXT | `memory/mempalace/identity.txt` | mempalace |
+| Hall entries | ChromaDB | `<chroma_url>/<prefix>_halls` | mempalace |
 
 **原子写入**：所有写入操作使用 `atomic_write()` 工具函数（write-to-temp-then-rename 模式），防止进程崩溃导致数据损坏。Wiki 策略的每个 `.md` 文件和 `_meta.json`、ACE 策略的 `playbook.json` 均使用原子写入。
 
@@ -655,6 +661,7 @@ pub fn search_history(&self, query: &str, limit: Option<usize>) -> Vec<&HistoryE
 - `Agentic` → `AgenticFactory::with_workspace()` (需要 `EmbeddingConfig::create_provider()`)
 - `Wiki` → `WikiFactory::with_workspace()` (有 embedding) 或 `WikiFactory::with_workspace_only()` (无 embedding)
 - `Ace` → `AceFactory::with_workspace()`
+- `MemPalace` → `MemPalaceFactory::with_workspace()` (需要 `EmbeddingConfig::create_provider()`)
 
 `sliding_window_factory()` 辅助方法被 `SlidingWindow` 分支和 `Agentic` fallback 分支共用，消除重复。
 
@@ -824,7 +831,175 @@ NO_CHANGES
 
 ### 共享常量
 
-`DEFAULT_MAX_MESSAGES = 100`（定义在 `memory/mod.rs`，`pub(crate)`）：`CheatsheetMemory`、`AgenticMemory`、`WikiMemory` 和 `AceMemory` 共享的消息窗口大小，防止长对话 token 超限。`SlidingWindowMemory` 有自己的 `SlidingWindowConfig.max_messages`。
+`DEFAULT_MAX_MESSAGES = 100`（定义在 `memory/mod.rs`，`pub(crate)`）：`CheatsheetMemory`、`AgenticMemory`、`WikiMemory`、`AceMemory` 和 `MemPalaceMemory` 共享的消息窗口大小，防止长对话 token 超限。`SlidingWindowMemory` 有自己的 `SlidingWindowConfig.max_messages`。
+
+## 8. MemPalace Memory — 空间化记忆宫殿引擎
+
+> 📍 **代码位置**：`src/memory/mempalace/`
+> 📄 **参考实现**：[MemPalace/mempalace](https://github.com/MemPalace/mempalace)（Python 原版）
+> ✅ **状态**：已集成为独立记忆策略（`memory.strategy: mempalace`）
+
+### 设计动机
+
+MemPalace 基于古典的"记忆宫殿"（Method of Loci）技术——将记忆组织到一个可导航的空间层次结构中。与其他策略相比，MemPalace 的核心差异在于**空间化组织**：记忆不是扁平列表或知识图谱，而是按 Wings（项目/人物）→ Rooms（主题）→ Halls/Drawers/Closets 的层次结构组织，并通过 Tunnels 实现跨项目知识发现。
+
+| 维度 | A-MEM | Wiki | ACE | **MemPalace** |
+|------|:---:|:---:|:---:|:---:|
+| 知识结构 | 知识图谱 | 层次化 Wiki | Section→Bullet | **Wings→Rooms→Halls/Drawers/Closets** |
+| 知识关联 | 向量相似度 | wikilinks | 无 | **Tunnels（被动+主动）+ KG 三元组** |
+| 向量检索 | 必须 | 可选 | 无 | **必须（ChromaDB）** |
+| 混合排序 | 无 | 关键词+向量 | 无 | **BM25 + 向量 + 空间过滤** |
+| 知识图谱 | 无 | 无 | 无 | **SPO 三元组 + 时间有效性** |
+| 压缩格式 | 无 | 无 | 无 | **AAAK 方言** |
+| 持久化格式 | JSON | Markdown+JSON | JSON | **JSON + JSONL + ChromaDB** |
+| LLM 调用/轮 | 3 | 1-2 | 1 | **1（分类）+ 可选（Closet 生成）** |
+
+### 100% 功能复刻
+
+本实现 100% 复刻了 Python 原版 MemPalace 的全部功能：
+
+- ✅ 空间层次结构（Palace → Wings → Rooms → Halls/Drawers/Closets）
+- ✅ 五种 Hall 类型（Facts, Events, Discoveries, Preferences, Advice）
+- ✅ ChromaDB 向量存储 + BM25 混合排序
+- ✅ 知识图谱 SPO 三元组（含时间有效性 valid_from/valid_to）
+- ✅ 被动 Tunnels（同名 Room 自动连接跨 Wing）+ 主动 Tunnels（Agent 创建）
+- ✅ Agent 日记（DiaryEntry）
+- ✅ L0 Identity + L1 Essential Story 唤醒机制
+- ✅ AAAK 压缩方言
+- ✅ 实体检测 + 查询清洗 + 文本降噪 + 近似去重
+- ✅ Write-Ahead Log (WAL) 审计追踪
+- ✅ Closet 压缩摘要（当 Drawer 数量超过阈值时自动生成）
+
+### 核心工作流
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant MP as MemPalaceMemory
+    participant Classifier as LLM Classifier
+    participant Store as MemPalaceStore
+    participant Retriever as Retriever (ChromaDB)
+    participant Palace
+
+    User->>MP: add_user_message()
+    MP->>MP: build_messages() (inject L0/L1 + cached context)
+    Note over MP: LLM responds...
+
+    MP->>MP: reflect_on_turn()
+    MP->>MP: normalize_and_dedup(input, response)
+    MP->>Classifier: classify_turn(input, response, wings, rooms)
+    Classifier-->>MP: ClassificationResult (wing/room/hall/memory/triples)
+
+    MP->>Store: store_classified_turn() → DrawerEntry
+    MP->>Retriever: store_in_chroma() → HallEntry
+    MP->>Palace: add_triple() (KG triples)
+
+    alt drawer_count >= closet_threshold
+        MP->>MP: generate_closet() via LLM
+        MP->>Store: add_closet(ClosetEntry)
+    end
+
+    MP->>Retriever: pre_retrieve_context(query)
+    Note over Retriever: 6-signal retrieval
+    Retriever-->>MP: cached_context (for next turn)
+```
+
+### 模块结构（19 个文件，拆分后）
+
+```
+src/memory/mempalace/
+├── mod.rs              # 模块入口，re-export
+├── palace.rs           # Palace struct + Wing/Room/Tunnel/Entry 数据模型（空间结构）
+├── knowledge_graph.rs  # KG 查询：query_entity, query_relationship, timeline, kg_stats, seed
+├── graph.rs            # BFS 图遍历：traverse, find_tunnels, graph_stats
+├── diary.rs            # Agent 日记：diary_write, diary_read
+├── identity.rs         # L0/L1 身份：set_identity, wake_up, generate_l1_essential
+├── memory.rs           # MemPalaceMemory — Memory trait 实现 + reflect_on_turn 编排
+├── store.rs            # MemPalaceStore — 持久化层（palace.json + drawers.jsonl + closets.json）
+├── retriever.rs        # Retriever — ChromaDB + BM25 混合排序 + 6 信号检索
+├── classifier.rs       # LLM 分类器（Wing/Room/Hall 路由 + KG 三元组提取）
+├── config.rs           # MemPalaceConfig — 全部配置项
+├── prompts.rs          # LLM prompt 模板（classifier + closet + entity + diary + wake-up）
+├── normalize.rs        # 文本降噪（strip_noise + chunk_text）
+├── dedup.rs            # 近似去重（Jaccard 相似度）
+├── entity_detector.rs  # 正则实体检测（proper noun extraction）
+├── dialect.rs          # AAAK 压缩方言编码器
+├── query_sanitizer.rs  # 查询清洗（长查询截断 + 引号剥离）
+├── stopwords.rs        # 共享停用词表（dialect + entity_detector 共用）
+├── wal.rs              # Write-Ahead Log 审计追踪
+└── factory.rs          # MemPalaceFactory — MemoryFactory 实现
+```
+
+**God Object 拆分**：原始 `palace.rs` 是 1416 行的 God Object，承担 7 个职责。重构后拆分为 6 个文件：`palace.rs`（核心空间结构）、`knowledge_graph.rs`（KG 查询）、`graph.rs`（图遍历）、`diary.rs`（日记）、`identity.rs`（身份）。Palace struct 的字段从 `pub` 改为 `pub(super)`，通过方法暴露操作接口。
+
+### 六信号检索引擎
+
+`Retriever::retrieve_context()` 融合六种检索信号：
+
+| # | 信号 | 来源 | 说明 |
+|---|------|------|------|
+| 1 | Embedding 向量检索 | ChromaDB | 余弦相似度，支持 Wing/Room 空间过滤 |
+| 2 | BM25 混合排序 | 本地计算 | Okapi-BM25 关键词评分 + 向量评分加权融合 |
+| 3 | 关键词搜索 | Drawer 全文 | 大小写不敏感子串匹配 |
+| 4 | 知识图谱遍历 | Palace KG | 精确匹配实体名，返回相关三元组 |
+| 5 | Tunnel 遍历 | Palace Tunnels | 被动 Tunnel（同名 Room）+ 主动 Tunnel（Agent 创建） |
+| 6 | Closet 摘要 | Store | 当前 Wing/Room 的压缩摘要 |
+
+**BM25 混合排序**：使用 Okapi-BM25 公式（k1=1.5, b=0.75），IDF 使用 Lucene 平滑公式。向量相似度和 BM25 分数通过可配置权重（默认 vector=0.6, bm25=0.4）加权融合。
+
+### MemPalaceConfig 配置
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `retrieval_limit` | 5 | 每次检索返回的最大 Hall 条目数 |
+| `similarity_threshold` | 0.3 | Embedding 检索的最低相似度阈值 |
+| `closet_threshold` | 20 | 触发 Closet 摘要生成的 Drawer 数量阈值 |
+| `chroma_url` | `http://localhost:8000` | ChromaDB 服务器 URL |
+| `collection_prefix` | `mempalace` | ChromaDB 集合名前缀 |
+| `bm25_weight` | 0.4 | BM25 在混合排序中的权重 |
+| `vector_weight` | 0.6 | 向量相似度在混合排序中的权重 |
+| `dedup_threshold` | 0.15 | Jaccard 去重的距离阈值（越小越严格） |
+
+### 持久化层
+
+| 数据 | 格式 | 路径 | 说明 |
+|------|------|------|------|
+| Palace 结构 | JSON | `memory/mempalace/palace.json` | Wings, Rooms, Tunnels, KG, Entities, Diary |
+| Drawer 条目 | JSONL | `memory/mempalace/drawers.jsonl` | 追加式原始对话记录 |
+| Closet 摘要 | JSON | `memory/mempalace/closets.json` | 压缩摘要 |
+| L0 Identity | TXT | `memory/mempalace/identity.txt` | 身份文本 |
+| Hall 条目 | ChromaDB | `<chroma_url>/<prefix>_halls` | 向量化分类记忆片段 |
+
+### reflect_on_turn 编排（重构后）
+
+`reflect_on_turn` 原为 ~100 行的单体方法，重构后拆分为 7 个独立的私有方法：
+
+| 步骤 | 方法 | 说明 |
+|------|------|------|
+| 1 | `ensure_chroma()` | 确保 ChromaDB 集合存在 |
+| 2 | `normalize_and_dedup()` | 文本降噪 + Jaccard 近似去重 |
+| 3 | `classify_turn()` | LLM 分类（Wing/Room/Hall + KG 三元组） |
+| 4 | `store_classified_turn()` | 存储 DrawerEntry + 更新 Room 计数 |
+| 5 | `store_in_chroma()` | 存储 HallEntry 到 ChromaDB |
+| 6 | `maybe_generate_closet()` | 阈值检查 + LLM 生成 Closet 摘要 |
+| 7 | `pre_retrieve_context()` | 预检索上下文供下一轮使用 |
+
+### 与其他策略的对比
+
+| 维度 | SlidingWindow | DynamicCheatsheet | Agentic | Wiki | ACE | **MemPalace** |
+|------|:---:|:---:|:---:|:---:|:---:|:---:|
+| 知识结构 | 热/冷双层 | 扁平条目 | 知识图谱 | 层次化 Wiki | Section→Bullet | **空间层次 + KG** |
+| 更新方式 | 整合压缩 | LLM 指令 | 三阶段 | LLM 编译 | delta+Curator | **LLM 分类路由** |
+| Embedding | 无 | 无 | 必须 | 可选 | 无 | **必须（ChromaDB）** |
+| LLM 调用/轮 | 0 | 1 | 3 | 1-2 | 1 | **1-2** |
+| 持久化 | JSON+JSONL | JSON | JSON | Markdown+JSON | JSON | **JSON+JSONL+ChromaDB** |
+| 适用场景 | 通用对话 | 重复任务 | 长期积累 | 深度编译 | 策略积累 | **多项目空间化记忆** |
+
+### 测试覆盖
+
+34 个单元测试覆盖：文本降噪、近似去重（精确/非重复/空集）、查询清洗（短查询/长查询/引号剥离）、AAAK 方言压缩（基础/实体/token 计数/压缩统计）、实体检测（候选提取/元数据/停用词过滤/歧义名）、ChromaDB 过滤器构建（双条件/单条件/无条件）、查询结果解析（空/正常）等场景。
+
+[置信度：高]
 
 ### 共享工具函数
 
@@ -840,7 +1015,7 @@ NO_CHANGES
 
 ### 测试覆盖
 
-212+ 个单元测试覆盖：无限模式、窗口内/超窗口/边界条件、pending 消息、清除、长期记忆注入、历史搜索（大小写、关键词、限制）、整合触发/应用、持久化迁移、Dynamic Cheatsheet（条目创建/强化/更新、Markdown 渲染/截断、反思解析/应用、淘汰策略/阈值淘汰）、ACE（Playbook 数据模型、Curator 确定性合并、Reflector 响应解析、delta 去重/淘汰/混合操作）等场景。
+246+ 个单元测试覆盖：无限模式、窗口内/超窗口/边界条件、pending 消息、清除、长期记忆注入、历史搜索（大小写、关键词、限制）、整合触发/应用、持久化迁移、Dynamic Cheatsheet（条目创建/强化/更新、Markdown 渲染/截断、反思解析/应用、淘汰策略/阈值淘汰）、ACE（Playbook 数据模型、Curator 确定性合并、Reflector 响应解析、delta 去重/淘汰/混合操作）、MemPalace（文本降噪、近似去重、查询清洗、AAAK 方言压缩、实体检测、ChromaDB 过滤器、查询结果解析）等场景。
 
 ## 4. 支撑类型
 
@@ -880,6 +1055,7 @@ NO_CHANGES
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-17 | 新增 MemPalace Memory 章节（空间化记忆宫殿、Wings→Rooms→Halls/Drawers/Closets、ChromaDB + BM25 混合排序、KG SPO 三元组、Tunnels、AAAK 方言、God Object 拆分、reflect_on_turn 编排重构、六信号检索）；更新模块概述为六策略互斥架构；更新持久化表格和工厂构造；更新测试覆盖数 | MemPalace Memory 实现 + 架构审查优化 |
 | 2026-04-16 | 新增 ACE Memory 章节（Agentic Context Engineering、Playbook 层次化数据模型、Reflector/Curator 分离、确定性合并引擎、DeltaEntry IR、两阶段淘汰）；更新模块概述为五策略互斥架构；更新策略选择流程图（新增 ACE 分支）；更新持久化表格和工厂构造；新增共享工具函数表格（strip_directive_prefix、MessageBuffer、truncate_to_token_budget、CHARS_PER_TOKEN）；更新测试覆盖数 | ACE Memory 实现 + 代码质量审查优化 |
 | 2026-04-16 | 新增 Wiki Memory 章节（Karpathy LLM Wiki 模式、三层架构、Compile/Query/Lint 工作流、模块结构、双模式检索、Markdown 持久化、策略对比）；更新模块概述为四策略互斥架构；更新策略选择流程图（新增 Wiki 分支）；更新持久化表格和工厂构造 | Wiki Memory 实现 |
 | 2026-04-16 | 重写模块概述为三策略互斥架构；新增策略选择配置和流程图；更新 A-MEM 状态为已集成；新增 AgenticMemory 独立实现章节（预缓存模式、消息窗口）；新增 CheatsheetMemory 独立实现和 factory；更新 DC 集成方式（双模式 + 共享反思机制）；更新工厂构造（create_memory_factory 策略选择）；新增共享常量章节；更新持久化表格（策略归属列）；更新模块结构（新增 memory.rs + factory.rs） | 三策略互斥架构 + 代码质量审查 |

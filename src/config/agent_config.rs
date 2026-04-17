@@ -37,6 +37,10 @@ pub const DEFAULT_SYSTEM_PROMPT: &str =
 /// - **Ace**: ACE (Agentic Context Engineering) with evolving playbook,
 ///   structured sections/bullets, and deterministic curation. Best for
 ///   strategy accumulation and self-improving context.
+/// - **MemPalace**: Memory Palace (Method of Loci) with spatial organization
+///   into Wings/Rooms/Halls, ChromaDB vector storage, knowledge graph,
+///   and cross-wing tunnels. Requires embedding config and ChromaDB.
+///   Best for cross-project/cross-person long-term memory navigation.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryStrategy {
@@ -51,6 +55,8 @@ pub enum MemoryStrategy {
     Wiki,
     /// ACE (Agentic Context Engineering) — evolving playbook with deterministic curation.
     Ace,
+    /// Memory Palace — spatial memory with ChromaDB, knowledge graph, and tunnels.
+    MemPalace,
 }
 
 impl std::fmt::Display for MemoryStrategy {
@@ -61,6 +67,7 @@ impl std::fmt::Display for MemoryStrategy {
             Self::Agentic => write!(f, "agentic"),
             Self::Wiki => write!(f, "wiki"),
             Self::Ace => write!(f, "ace"),
+            Self::MemPalace => write!(f, "mempalace"),
         }
     }
 }

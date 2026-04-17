@@ -11,8 +11,8 @@ use crate::llm::{
 use crate::tools::ToolInfo;
 use crate::mcp::McpManager;
 use crate::memory::{
-    AceFactory, AgenticFactory, CheatsheetFactory, MemoryFactory, SlidingWindowFactory,
-    WikiFactory,
+    AceFactory, AgenticFactory, CheatsheetFactory, MemPalaceFactory, MemoryFactory,
+    SlidingWindowFactory, WikiFactory,
 };
 use crate::prompt::PromptBuilder;
 use crate::skill::SkillInfo;
@@ -221,6 +221,28 @@ impl ChatAgent {
                     workspace.ace_playbook_path(),
                 );
                 Box::new(factory)
+            }
+            MemoryStrategy::MemPalace => {
+                match config.embedding.create_provider() {
+                    Ok(embedder) => {
+                        tracing::info!(
+                            "MemPalace memory initialized with embedding provider and ChromaDB"
+                        );
+                        let factory = MemPalaceFactory::with_workspace(
+                            workspace.mempalace_dir(),
+                            embedder,
+                        );
+                        Box::new(factory)
+                    }
+                    Err(e) => {
+                        panic!(
+                            "MemPalace memory requires embedding configuration. \
+                             Failed to create embedding provider: {}. \
+                             Please configure `embedding` section in daedalus.yaml.",
+                            e
+                        );
+                    }
+                }
             }
         }
     }

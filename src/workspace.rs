@@ -124,6 +124,7 @@ impl Workspace {
             "memory",
             "memory/agentic",
             "memory/wiki",
+            "memory/mempalace",
             "sessions",
             "skills",
             "agents",
@@ -198,6 +199,11 @@ impl Workspace {
     /// Path to the ACE Playbook persistence file.
     pub fn ace_playbook_path(&self) -> PathBuf {
         self.root.join("memory/ace/playbook.json")
+    }
+
+    /// Path to the MemPalace memory directory.
+    pub fn mempalace_dir(&self) -> PathBuf {
+        self.root.join("memory/mempalace")
     }
 
     // ── Session paths ──
@@ -292,6 +298,7 @@ mod tests {
         assert!(dir.join("memory").is_dir());
         assert!(dir.join("memory/agentic").is_dir());
         assert!(dir.join("memory/wiki").is_dir());
+        assert!(dir.join("memory/mempalace").is_dir());
         assert!(dir.join("sessions").is_dir());
         assert!(dir.join("skills").is_dir());
         assert!(dir.join("agents").is_dir());
@@ -316,6 +323,7 @@ mod tests {
         assert_eq!(ws.cheatsheet_path(), PathBuf::from("/tmp/test_ws/memory/cheatsheet.json"));
         assert_eq!(ws.wiki_dir(), PathBuf::from("/tmp/test_ws/memory/wiki"));
         assert_eq!(ws.ace_playbook_path(), PathBuf::from("/tmp/test_ws/memory/ace/playbook.json"));
+        assert_eq!(ws.mempalace_dir(), PathBuf::from("/tmp/test_ws/memory/mempalace"));
         assert_eq!(ws.sessions_dir(), PathBuf::from("/tmp/test_ws/sessions"));
         assert_eq!(ws.last_session_id_path(), PathBuf::from("/tmp/test_ws/sessions/last_session_id"));
         assert_eq!(ws.skills_dir(), PathBuf::from("/tmp/test_ws/skills"));

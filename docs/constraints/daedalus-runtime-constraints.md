@@ -1,7 +1,7 @@
 # 运行时约束
 
-> 最后更新：2026-04-16
-> 来源：存量代码分析 + 代码审查改进 + 并行化迭代 + 记忆系统重构 + Skill 功能实现 + Workspace 系统实现 + 架构审查优化 + Bash 工具 + **五策略互斥记忆架构**
+> 最后更新：2026-04-17
+> 来源：存量代码分析 + 代码审查改进 + 并行化迭代 + 记忆系统重构 + Skill 功能实现 + Workspace 系统实现 + 架构审查优化 + Bash 工具 + **六策略互斥记忆架构** + **MemPalace Memory**
 > 置信度：高
 
 ## 硬编码常量
@@ -31,7 +31,7 @@
 | `max_entries` (DC default) | 50 | `src/memory/dynamic_cheatsheet/config.rs` | Dynamic Cheatsheet 最大条目数 |
 | `max_token_budget` (DC default) | 2000 | `src/memory/dynamic_cheatsheet/config.rs` | DC 渲染为 Markdown 时的最大 token 预算 |
 | `min_reinforcement_for_retention` (DC default) | 1 | `src/memory/dynamic_cheatsheet/config.rs` | DC 淘汰时的最低强化次数阈值 |
-| `DEFAULT_MAX_MESSAGES` | 100 | `src/memory/mod.rs` | CheatsheetMemory、AgenticMemory、WikiMemory 和 AceMemory 的消息窗口大小，防止长对话 token 超限 |
+| `DEFAULT_MAX_MESSAGES` | 100 | `src/memory/mod.rs` | CheatsheetMemory、AgenticMemory、WikiMemory、AceMemory 和 MemPalaceMemory 的消息窗口大小，防止长对话 token 超限 |
 | `TOOL_OUTPUT_MAX_LINES` | 10 | `src/cli/render.rs` | 工具输出显示的最大行数，超过则截断 |
 | `TOOL_OUTPUT_HEAD_LINES` | 5 | `src/cli/render.rs` | 截断时保留的头部行数 |
 | `TOOL_OUTPUT_TAIL_LINES` | 3 | `src/cli/render.rs` | 截断时保留的尾部行数 |
@@ -45,6 +45,13 @@
 | `max_token_budget` (ACE default) | 4000 | `src/memory/ace/config.rs` | ACE Playbook 渲染为 Markdown 时的最大 token 预算 |
 | `min_reinforcement_for_retention` (ACE default) | 2 | `src/memory/ace/config.rs` | ACE 淘汰时的最低强化次数阈值 |
 | `CHARS_PER_TOKEN` | 4 | `src/memory/mod.rs` | 共享的 token 预算字符/token 比例（ACE + DC 共用） |
+| `retrieval_limit` (MemPalace default) | 5 | `src/memory/mempalace/config.rs` | MemPalace 每次检索返回的最大 Hall 条目数 |
+| `similarity_threshold` (MemPalace default) | 0.3 | `src/memory/mempalace/config.rs` | MemPalace Embedding 检索的最低相似度阈值 |
+| `closet_threshold` (MemPalace default) | 20 | `src/memory/mempalace/config.rs` | MemPalace 触发 Closet 摘要生成的 Drawer 数量阈值 |
+| `chroma_url` (MemPalace default) | `http://localhost:8000` | `src/memory/mempalace/config.rs` | MemPalace ChromaDB 服务器 URL |
+| `bm25_weight` (MemPalace default) | 0.4 | `src/memory/mempalace/config.rs` | MemPalace BM25 在混合排序中的权重 |
+| `vector_weight` (MemPalace default) | 0.6 | `src/memory/mempalace/config.rs` | MemPalace 向量相似度在混合排序中的权重 |
+| `dedup_threshold` (MemPalace default) | 0.15 | `src/memory/mempalace/config.rs` | MemPalace Jaccard 去重的距离阈值 |
 
 ## 工具调用摘要截断约束
 
@@ -121,7 +128,7 @@
 1. 写入数据到 `<path>.tmp`
 2. 原子重命名 `<path>.tmp` → `<path>`
 
-这确保进程崩溃时目标文件不会处于部分写入状态。影响的文件：`long_term.json`、`history.jsonl`、`notes.json`（A-MEM）、`cheatsheet.json`（DC）、`playbook.json`（ACE）、Wiki 的每个 `.md` 文件和 `_meta.json`。
+这确保进程崩溃时目标文件不会处于部分写入状态。影响的文件：`long_term.json`、`history.jsonl`、`notes.json`（A-MEM）、`cheatsheet.json`（DC）、`playbook.json`（ACE）、Wiki 的每个 `.md` 文件和 `_meta.json`、MemPalace 的 `palace.json`、`drawers.jsonl`、`closets.json`、`identity.txt`。
 ## 优雅关闭约束
 
 > 📍 **代码位置**：`src/agent/chat.rs` + `src/agent/tool_router.rs`
@@ -186,6 +193,7 @@ Subagent 从三个来源加载，按优先级从低到高：
 *变更历史*
 | 日期 | 变更 | 来源 |
 |------|------|------|
+| 2026-04-17 | 新增 MemPalace Memory 运行时常量（retrieval_limit、similarity_threshold、closet_threshold、chroma_url、bm25_weight、vector_weight、dedup_threshold）；更新 DEFAULT_MAX_MESSAGES 说明（新增 MemPalaceMemory）；更新原子写入影响文件列表 | MemPalace Memory 实现 |
 | 2026-04-16 | 新增 ACE Memory 运行时常量（max_sections、max_bullets_per_section、max_token_budget、min_reinforcement_for_retention）；更新 CHARS_PER_TOKEN 位置为共享常量；更新 DEFAULT_MAX_MESSAGES 说明（新增 AceMemory）；更新原子写入影响文件列表（新增 playbook.json） | ACE Memory 实现 |
 | 2026-04-16 | 新增 Wiki Memory 运行时常量（DEFAULT_LINT_INTERVAL、DEFAULT_MAX_RETRIEVAL_PAGES、KEYWORD_MATCH_THRESHOLD、LINK_EXPANSION_SCORE、MAX_SEED_PAGES）；更新原子写入影响文件列表（新增 Wiki .md + _meta.json）；更新 DEFAULT_MAX_MESSAGES 说明（新增 WikiMemory） | Wiki Memory 实现 |
 | 2026-04-16 | 新增 DEFAULT_MAX_MESSAGES 常量（CheatsheetMemory/AgenticMemory 消息窗口） | 三策略互斥架构 |

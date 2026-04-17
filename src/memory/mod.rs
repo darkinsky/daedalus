@@ -1,6 +1,7 @@
 pub mod ace;
 pub mod agentic;
 pub mod dynamic_cheatsheet;
+pub mod mempalace;
 pub mod persistence;
 pub mod sliding_window;
 pub mod wiki;
@@ -13,6 +14,7 @@ pub use ace::AceFactory;
 pub use sliding_window::SlidingWindowFactory;
 pub use dynamic_cheatsheet::CheatsheetFactory;
 pub use agentic::AgenticFactory;
+pub use mempalace::MemPalaceFactory;
 pub use wiki::WikiFactory;
 
 use std::any::Any;
@@ -194,6 +196,12 @@ impl PersistentState {
 ///   an evolving Playbook of structured sections and bullets. Uses a
 ///   deterministic Curator to merge LLM-produced delta entries, preventing
 ///   context collapse. Best for strategy accumulation and self-improving context.
+///
+/// - **`MemPalaceMemory`**: Memory Palace (Method of Loci) with spatial
+///   organization into Wings/Rooms/Halls, ChromaDB vector storage,
+///   knowledge graph triples, and cross-wing tunnels. Stores everything
+///   verbatim and makes it findable. Best for cross-project/cross-person
+///   long-term memory navigation.
 pub trait Memory: Send + Sync {
     /// Add a user message to memory.
     fn add_user_message(&mut self, content: &str);
