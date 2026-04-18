@@ -440,9 +440,8 @@ pub fn create_memory_factory(
 /// This is the default factory and also the fallback when other strategies
 /// fail to initialize (e.g., missing embedding provider).
 fn sliding_window_factory(workspace: &crate::workspace::Workspace) -> Box<dyn MemoryFactory> {
-    Box::new(SlidingWindowFactory::with_workspace_and_cheatsheet(
+    Box::new(SlidingWindowFactory::with_workspace(
         workspace.long_term_memory_path(),
         workspace.history_log_path(),
-        workspace.cheatsheet_path(),
     ))
 }

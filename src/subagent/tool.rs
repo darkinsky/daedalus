@@ -89,7 +89,7 @@ impl SubagentToolContext {
     }
 
     /// Emit a `SubagentComplete` event based on the execution result.
-    fn emit_complete(&self, agent_name: &str, result: &Result<SubagentResult>) {
+    fn emit_complete(&self, agent_name: &str, result: &Result<SubagentResult>, elapsed_ms: u64) {
         if let Some(ref cb) = self.read_callback() {
             match result {
                 Ok(r) => {
@@ -98,6 +98,8 @@ impl SubagentToolContext {
                         success: true,
                         tool_rounds: r.tool_rounds,
                         result_preview: truncate_chars(&r.content, 120),
+                        usage: r.usage.clone(),
+                        elapsed_ms,
                     });
                 }
                 Err(e) => {
@@ -106,6 +108,8 @@ impl SubagentToolContext {
                         success: false,
                         tool_rounds: 0,
                         result_preview: format!("Error: {}", e),
+                        usage: None,
+                        elapsed_ms,
                     });
                 }
             }
@@ -326,9 +330,11 @@ impl BuiltinTool for SubagentTool {
 
         // Execute the subagent task (pass through the event callback)
         let callback = self.ctx.read_callback();
+        let subagent_start = std::time::Instant::now();
         let result = self.ctx.runner.run(definition, task, callback.as_ref()).await;
+        let subagent_elapsed_ms = subagent_start.elapsed().as_millis() as u64;
 
-        self.ctx.emit_complete(agent_name, &result);
+        self.ctx.emit_complete(agent_name, &result, subagent_elapsed_ms);
 
         let result = result?;
         Ok(format_result(&result))
@@ -438,9 +444,11 @@ impl BuiltinTool for TeamTool {
 
         // Execute all tasks in parallel
         let callback = self.ctx.read_callback();
+        let team_start = std::time::Instant::now();
         let results = self.ctx.runner.run_team(
             &tasks, &self.ctx.registry, callback.as_ref(),
         ).await;
+        let team_elapsed_ms = team_start.elapsed().as_millis() as u64;
 
         // Format combined results
         let mut output_parts = Vec::new();
@@ -473,7 +481,7 @@ impl BuiltinTool for TeamTool {
                     ));
                 }
             }
-            self.ctx.emit_complete(&team_agent_name, result);
+            self.ctx.emit_complete(&team_agent_name, result, team_elapsed_ms);
         }
 
         Ok(output_parts.join("\n"))

@@ -7,7 +7,8 @@ use rustyline::error::ReadlineError;
 use rustyline::{CompletionType, Config, EditMode, Editor};
 
 use crate::agent::AgentMode;
-use crate::tools::ToolEventCallback;
+use crate::llm::TokenUsage;
+use crate::tools::{ToolEvent, ToolEventCallback};
 use super::commands::{self, Command};
 use super::completer::SlashCommandHelper;
 use super::cost::SessionCost;
@@ -42,6 +43,24 @@ fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &mut Sessio
     Ok(false)
 }
 
+/// Statistics collected for a single subagent during a turn.
+#[derive(Debug, Clone)]
+struct SubagentStats {
+    agent_name: String,
+    success: bool,
+    tool_rounds: usize,
+    usage: Option<TokenUsage>,
+    elapsed_ms: u64,
+}
+
+/// Collector for subagent statistics during a single turn.
+///
+/// Shared between the tool event callback and the REPL handler via `Arc<Mutex<_>>`.
+#[derive(Debug, Default)]
+struct TurnStatsCollector {
+    subagents: Vec<SubagentStats>,
+}
+
 /// Build the tool event callback that renders tool progress to the terminal.
 ///
 /// The callback clears the spinner before printing tool events, then
@@ -51,10 +70,38 @@ fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &mut Sessio
 /// tags (e.g. `[1.2]`) emitted on `ToolCallStart` match the tags emitted
 /// on the corresponding `ToolCallComplete`, even when several tools run
 /// in parallel within a single round.
-fn build_tool_event_callback(spinner: &Arc<indicatif::ProgressBar>) -> ToolEventCallback {
+///
+/// The `stats_collector` captures subagent completion events so the REPL
+/// can display a combined turn summary at the end.
+fn build_tool_event_callback(
+    spinner: &Arc<indicatif::ProgressBar>,
+    stats_collector: &Arc<Mutex<TurnStatsCollector>>,
+) -> ToolEventCallback {
     let spinner = Arc::clone(spinner);
     let formatter = Arc::new(Mutex::new(ToolEventFormatter::new()));
+    let collector = Arc::clone(stats_collector);
     Arc::new(move |event| {
+        // Capture subagent completion stats before rendering
+        if let ToolEvent::SubagentComplete {
+            ref agent_name,
+            success,
+            tool_rounds,
+            ref usage,
+            elapsed_ms,
+            ..
+        } = event
+        {
+            if let Ok(mut stats) = collector.lock() {
+                stats.subagents.push(SubagentStats {
+                    agent_name: agent_name.clone(),
+                    success,
+                    tool_rounds,
+                    usage: usage.clone(),
+                    elapsed_ms,
+                });
+            }
+        }
+
         // Pause the spinner so tool output is not interleaved
         spinner.finish_and_clear();
         let rendered = {
@@ -65,11 +112,11 @@ fn build_tool_event_callback(spinner: &Arc<indicatif::ProgressBar>) -> ToolEvent
             println!("{}", line);
         }
         // Restart spinner for the next LLM round
-        spinner.set_message("Thinking…");
+        spinner.reset_elapsed();
+        spinner.set_message("Thinking\u{2026}");
         spinner.enable_steady_tick(std::time::Duration::from_millis(80));
     })
 }
-
 /// Send user input to the agent and render the response.
 async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &mut SessionCost) {
     tracing::debug!("User input: {}", input);
@@ -78,8 +125,11 @@ async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &mut SessionC
     let spinner = Arc::new(render::spinner());
     let start = Instant::now();
 
+    // Collector for subagent statistics
+    let stats_collector = Arc::new(Mutex::new(TurnStatsCollector::default()));
+
     // Build tool event callback for real-time tool progress display
-    let tool_callback = build_tool_event_callback(&spinner);
+    let tool_callback = build_tool_event_callback(&spinner, &stats_collector);
 
     // Set the subagent event callback so subagent tool events are also rendered
     agent.set_subagent_event_callback(Some(Arc::clone(&tool_callback)));
@@ -104,7 +154,37 @@ async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &mut SessionC
             // Track token usage for the session
             cost.add_usage(result.usage.as_ref());
 
-            render::response_footer(result.usage.as_ref(), elapsed);
+            // Collect subagent stats and render turn summary
+            let subagent_stats = stats_collector
+                .lock()
+                .map(|s| s.subagents.clone())
+                .unwrap_or_default();
+
+            if subagent_stats.is_empty() {
+                // No subagents — simple footer
+                render::response_footer(result.usage.as_ref(), elapsed);
+            } else {
+                // Has subagents — render detailed turn summary
+                render::turn_summary(
+                    result.usage.as_ref(),
+                    elapsed,
+                    &subagent_stats
+                        .iter()
+                        .map(|s| render::SubagentUsageSummary {
+                            agent_name: s.agent_name.clone(),
+                            success: s.success,
+                            tool_rounds: s.tool_rounds,
+                            usage: s.usage.clone(),
+                            elapsed_secs: s.elapsed_ms as f64 / 1000.0,
+                        })
+                        .collect::<Vec<_>>(),
+                );
+
+                // Also add subagent token usage to session cost
+                for s in &subagent_stats {
+                    cost.add_subagent_usage(s.usage.as_ref());
+                }
+            }
             println!();
         }
         Err(e) => {

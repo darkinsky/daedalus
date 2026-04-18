@@ -221,25 +221,31 @@ fn build_stream_json_callback() -> ToolEventCallback {
                     input: Some(arguments),
                 }
             }
-            ToolEvent::ToolCallComplete { tool_name, success, result_content } => {
+            ToolEvent::ToolCallComplete { tool_name, success, result_content, elapsed_ms: _ } => {
                 StreamEvent::ToolResult {
                     tool: tool_name,
                     content: result_content,
                     success,
                 }
             }
-            ToolEvent::RoundComplete { tool_count } => {
+            ToolEvent::RoundComplete { tool_count, elapsed_ms: _ } => {
                 StreamEvent::ToolRoundComplete { tool_count }
             }
             ToolEvent::SubagentStart { agent_name, task_preview } => {
                 StreamEvent::SubagentStart { agent_name, task_preview }
             }
-            ToolEvent::SubagentComplete { agent_name, success, tool_rounds, result_preview } => {
+            ToolEvent::SubagentComplete { agent_name, success, tool_rounds, result_preview, .. } => {
                 StreamEvent::SubagentComplete {
                     agent_name,
                     success,
                     tool_rounds,
                     result_preview,
+                }
+            }
+            ToolEvent::LlmResponse { round: _, reasoning, content, usage: _, elapsed_ms: _ } => {
+                StreamEvent::Assistant {
+                    content,
+                    reasoning,
                 }
             }
         };

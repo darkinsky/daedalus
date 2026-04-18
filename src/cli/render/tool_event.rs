@@ -6,6 +6,7 @@
 
 use std::collections::VecDeque;
 
+use chrono::Local;
 use crossterm::style::{Attribute, Color, Stylize};
 
 use crate::tools::{truncate_chars, ToolEvent};
@@ -53,10 +54,13 @@ impl ToolEventFormatter {
             ToolEvent::ToolCallStart { tool_name, source, arguments } => {
                 self.format_call_start(tool_name, source, arguments)
             }
-            ToolEvent::ToolCallComplete { tool_name, success, result_content } => {
-                self.format_call_complete(tool_name, *success, result_content)
+            ToolEvent::ToolCallComplete { tool_name, success, result_content, elapsed_ms } => {
+                self.format_call_complete(tool_name, *success, result_content, *elapsed_ms)
             }
-            ToolEvent::RoundComplete { tool_count } => Self::format_round_complete(*tool_count),
+            ToolEvent::RoundComplete { tool_count, elapsed_ms } => Self::format_round_complete(*tool_count, *elapsed_ms),
+            ToolEvent::LlmResponse { round, reasoning, content, usage, elapsed_ms } => {
+                self.format_llm_response(*round, reasoning.as_deref(), content, usage.as_ref(), *elapsed_ms)
+            }
             ToolEvent::SubagentStart { agent_name, task_preview } => {
                 Self::format_subagent_start(agent_name, task_preview)
             }
@@ -65,11 +69,15 @@ impl ToolEventFormatter {
                 success,
                 tool_rounds,
                 result_preview,
+                usage,
+                elapsed_ms,
             } => Self::format_subagent_complete(
                 agent_name,
                 *success,
                 *tool_rounds,
                 result_preview,
+                usage.as_ref(),
+                *elapsed_ms,
             ),
         }
     }
@@ -83,15 +91,111 @@ impl ToolEventFormatter {
         }
     }
 
+    fn format_llm_response(
+        &self,
+        round: usize,
+        reasoning: Option<&str>,
+        content: &str,
+        usage: Option<&crate::llm::TokenUsage>,
+        elapsed_ms: u64,
+    ) -> Vec<String> {
+        let mut lines = Vec::new();
+        let ts = Local::now().format("%H:%M:%S");
+        let elapsed_str = format_elapsed(elapsed_ms);
+
+        // Show reasoning/thinking if present
+        if let Some(r) = reasoning {
+            if !r.is_empty() {
+                lines.push(String::new());
+                lines.push(format!(
+                    "  {} {} {}",
+                    "💭".to_string(),
+                    format!("Thinking (round {})", round)
+                        .with(Color::DarkGrey)
+                        .attribute(Attribute::Italic),
+                    format!("[{} | {}]", ts, elapsed_str).with(Color::DarkGrey),
+                ));
+                // Show up to 8 lines of reasoning, truncated
+                let reasoning_lines: Vec<&str> = r.lines().collect();
+                let show_count = reasoning_lines.len().min(8);
+                for line in &reasoning_lines[..show_count] {
+                    lines.push(format!(
+                        "  {}  {}",
+                        "┊".with(Color::DarkGrey),
+                        truncate_chars(line, 120).with(Color::DarkGrey),
+                    ));
+                }
+                if reasoning_lines.len() > 8 {
+                    lines.push(format!(
+                        "  {}  {}",
+                        "┊".with(Color::DarkGrey),
+                        format!("... ({} more lines)", reasoning_lines.len() - 8)
+                            .with(Color::DarkGrey),
+                    ));
+                }
+            }
+        }
+
+        // Show content if non-empty (intermediate LLM text)
+        if !content.is_empty() {
+            lines.push(format!(
+                "  {} {}",
+                "📝".to_string(),
+                format!("LLM output (round {})", round)
+                    .with(Color::White)
+                    .attribute(Attribute::Italic),
+            ));
+            let content_lines: Vec<&str> = content.lines().collect();
+            let show_count = content_lines.len().min(4);
+            for line in &content_lines[..show_count] {
+                lines.push(format!(
+                    "  {}  {}",
+                    "│".with(Color::DarkGrey),
+                    truncate_chars(line, 120).with(Color::Grey),
+                ));
+            }
+            if content_lines.len() > 4 {
+                lines.push(format!(
+                    "  {}  {}",
+                    "│".with(Color::DarkGrey),
+                    format!("... ({} more lines)", content_lines.len() - 4)
+                        .with(Color::DarkGrey),
+                ));
+            }
+        }
+
+        // Show per-round token usage and LLM elapsed time
+        {
+            let mut parts = Vec::new();
+            if let Some(u) = usage {
+                if let Some(pt) = u.prompt_tokens {
+                    parts.push(format!("{}↑", pt));
+                }
+                if let Some(ct) = u.completion_tokens {
+                    parts.push(format!("{}↓", ct));
+                }
+            }
+            parts.push(format!("llm {}", elapsed_str));
+            lines.push(format!(
+                "  {}",
+                format!("  {}", parts.join(" · ")).with(Color::DarkGrey),
+            ));
+        }
+
+        lines
+    }
+
     fn format_round_start(&mut self, round: usize) -> Vec<String> {
         self.round = round;
         self.next_index = 0;
         self.pending_tags.clear();
+        let ts = Local::now().format("%H:%M:%S");
         vec![format!(
-            "  🔧 {}",
+            "  🔧 {} {}",
             format!("Tool round {}", round)
                 .with(Color::Cyan)
                 .attribute(Attribute::Bold),
+            format!("[{}]", ts).with(Color::DarkGrey),
         )]
     }
 
@@ -125,12 +229,14 @@ impl ToolEventFormatter {
         tool_name: &str,
         success: bool,
         result_content: &str,
+        elapsed_ms: u64,
     ) -> Vec<String> {
         let (icon, color) = if success { ("✓", Color::Green) } else { ("✗", Color::Red) };
         let tag_prefix = self.pending_tags
             .pop_front()
             .map(|t| format!("{} ", t))
             .unwrap_or_default();
+        let elapsed_str = format_elapsed(elapsed_ms);
         let mut lines = Vec::new();
         if success {
             let content_lines: Vec<&str> = result_content.lines().collect();
@@ -139,7 +245,7 @@ impl ToolEventFormatter {
                 "    {} {}{}",
                 icon.with(color),
                 tag_prefix.as_str().with(color).attribute(Attribute::Bold),
-                format!("{} ({} lines)", tool_name, line_count).with(Color::DarkGrey),
+                format!("{} ({} lines, {})", tool_name, line_count, elapsed_str).with(Color::DarkGrey),
             ));
             for formatted_line in format_truncated_output(&content_lines) {
                 lines.push(format!(
@@ -151,21 +257,24 @@ impl ToolEventFormatter {
         } else {
             let first_line = result_content.lines().next().unwrap_or("");
             lines.push(format!(
-                "    {} {}{}{}",
+                "    {} {}{}{} {}",
                 icon.with(color),
                 tag_prefix.as_str().with(color).attribute(Attribute::Bold),
                 format!("{}: ", tool_name).with(color),
                 first_line.with(Color::DarkGrey),
+                format!("({})", elapsed_str).with(Color::DarkGrey),
             ));
         }
         lines
     }
 
-    fn format_round_complete(tool_count: usize) -> Vec<String> {
+    fn format_round_complete(tool_count: usize, elapsed_ms: u64) -> Vec<String> {
+        let ts = Local::now().format("%H:%M:%S");
+        let elapsed_str = format_elapsed(elapsed_ms);
         vec![
             format!(
                 "  {}",
-                format!("  {} tool call(s) completed", tool_count).with(Color::DarkGrey),
+                format!("  {} tool call(s) completed in {} [{}]", tool_count, elapsed_str, ts).with(Color::DarkGrey),
             ),
             String::new(),
         ]
@@ -193,13 +302,38 @@ impl ToolEventFormatter {
         success: bool,
         tool_rounds: usize,
         result_preview: &str,
+        usage: Option<&crate::llm::TokenUsage>,
+        elapsed_ms: u64,
     ) -> Vec<String> {
         let (icon, color) = if success { ("✓", Color::Green) } else { ("✗", Color::Red) };
+        let elapsed_str = format_elapsed(elapsed_ms);
+
+        // Build token info string
+        let token_info = if let Some(u) = usage {
+            let mut parts = Vec::new();
+            if let Some(pt) = u.prompt_tokens {
+                parts.push(format!("{}↑", pt));
+            }
+            if let Some(ct) = u.completion_tokens {
+                parts.push(format!("{}↓", ct));
+            }
+            if let Some(tt) = u.total_tokens {
+                parts.push(format!("{}total", tt));
+            }
+            if parts.is_empty() {
+                String::new()
+            } else {
+                format!(", {}", parts.join(" · "))
+            }
+        } else {
+            String::new()
+        };
+
         let mut lines = vec![format!(
             "  {} {} {}",
             icon.with(color),
             format!("Subagent '{}' completed", agent_name).with(color),
-            format!("({} tool rounds)", tool_rounds).with(Color::DarkGrey),
+            format!("({} tool rounds, {}{})", tool_rounds, elapsed_str, token_info).with(Color::DarkGrey),
         )];
         let preview = truncate_chars(result_preview, 120);
         if !preview.is_empty() {
@@ -207,6 +341,18 @@ impl ToolEventFormatter {
         }
         lines.push(String::new());
         lines
+    }
+}
+
+/// Format elapsed milliseconds into a human-readable string.
+///
+/// - < 1000ms → "123ms"
+/// - >= 1000ms → "1.2s"
+fn format_elapsed(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{}ms", ms)
+    } else {
+        format!("{:.1}s", ms as f64 / 1000.0)
     }
 }
 

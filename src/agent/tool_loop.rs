@@ -30,6 +30,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
+use std::time::Instant;
 
 use crate::llm::{
     ChatMessage, ChatResponse, LlmApi, TokenUsage, ToolCall, ToolResponse, ToolRound,
@@ -125,9 +126,11 @@ pub async fn run_tool_loop(
         // Human-facing round number (1-based) for logs / events.
         let round_number = round_idx + 1;
 
+        let llm_start = Instant::now();
         let response = llm
             .chat_with_tools(messages, tools, &tool_history, None)
             .await?;
+        let llm_elapsed_ms = llm_start.elapsed().as_millis() as u64;
 
         if let Some(hook) = on_llm_response {
             hook(&response);
@@ -153,6 +156,16 @@ pub async fn run_tool_loop(
                 tool_history,
             });
         }
+
+        // Emit intermediate LLM response so the CLI can display
+        // reasoning/content in real time during tool-calling rounds.
+        emit(on_event, ToolEvent::LlmResponse {
+            round: round_number,
+            reasoning: response.reasoning_content.clone(),
+            content: response.content.clone(),
+            usage: response.usage.clone(),
+            elapsed_ms: llm_elapsed_ms,
+        });
 
         if cfg.track_reasoning && response.reasoning_content.is_some() {
             last_reasoning = response.reasoning_content;
@@ -234,11 +247,14 @@ pub async fn run_tool_loop(
 ///
 /// Emits `ToolCallStart` events before each dispatch, `ToolCallComplete`
 /// events after each returns, and a final `RoundComplete` event.
+/// Each tool call and the overall round are timed for observability.
 async fn execute_round(
     executor: &dyn ToolExecutor,
     tool_calls: &[ToolCall],
     on_event: Option<&ToolEventCallback>,
 ) -> Vec<ToolResponse> {
+    let round_start = Instant::now();
+
     // Start events (fire before dispatch so the UI can render spinners
     // before any async work happens).
     for tc in tool_calls {
@@ -253,24 +269,37 @@ async fn execute_round(
     }
 
     // Parallel dispatch: all calls in a round run concurrently.
-    let futures = tool_calls.iter().map(|tc| executor.execute(tc));
-    let responses: Vec<ToolResponse> = futures::future::join_all(futures).await;
+    // Each call is individually timed.
+    let futures = tool_calls.iter().map(|tc| async {
+        let start = Instant::now();
+        let resp = executor.execute(tc).await;
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        (resp, elapsed_ms)
+    });
+    let timed_results: Vec<(ToolResponse, u64)> = futures::future::join_all(futures).await;
+
+    let mut responses = Vec::with_capacity(timed_results.len());
 
     // Completion events, in the same order the calls arrived.
-    for (tc, resp) in tool_calls.iter().zip(responses.iter()) {
+    for (tc, (resp, elapsed_ms)) in tool_calls.iter().zip(timed_results.into_iter()) {
         emit(
             on_event,
             ToolEvent::ToolCallComplete {
                 tool_name: tc.function_name.clone(),
                 success: resp.success,
                 result_content: resp.content.clone(),
+                elapsed_ms,
             },
         );
+        responses.push(resp);
     }
+
+    let round_elapsed_ms = round_start.elapsed().as_millis() as u64;
     emit(
         on_event,
         ToolEvent::RoundComplete {
             tool_count: responses.len(),
+            elapsed_ms: round_elapsed_ms,
         },
     );
 

@@ -54,11 +54,31 @@ pub enum ToolEvent {
         success: bool,
         /// Full result content (used for both CLI display and stream-json consumers).
         result_content: String,
+        /// Wall-clock time the tool call took, in milliseconds.
+        elapsed_ms: u64,
     },
     /// All tool calls in a round have completed.
     RoundComplete {
         /// Number of tool calls executed in this round.
         tool_count: usize,
+        /// Wall-clock time the entire round took (parallel execution), in milliseconds.
+        elapsed_ms: u64,
+    },
+    /// Intermediate LLM response during tool-calling rounds.
+    ///
+    /// Emitted after each LLM call that produces tool calls, so the CLI
+    /// can display the model's reasoning and any partial content in real time.
+    LlmResponse {
+        /// The round number (1-based) this response belongs to.
+        round: usize,
+        /// Optional reasoning/thinking content from the model.
+        reasoning: Option<String>,
+        /// The text content of the response (may be empty if only tool calls).
+        content: String,
+        /// Token usage for this individual round.
+        usage: Option<crate::llm::TokenUsage>,
+        /// Wall-clock time the LLM call took, in milliseconds.
+        elapsed_ms: u64,
     },
     /// A subagent has started execution.
     SubagentStart {
@@ -77,6 +97,10 @@ pub enum ToolEvent {
         tool_rounds: usize,
         /// Brief result summary (truncated).
         result_preview: String,
+        /// Token usage statistics for this subagent (accumulated across all rounds).
+        usage: Option<crate::llm::TokenUsage>,
+        /// Wall-clock time the subagent took, in milliseconds.
+        elapsed_ms: u64,
     },
 }
 
