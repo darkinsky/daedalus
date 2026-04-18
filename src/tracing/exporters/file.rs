@@ -446,11 +446,21 @@ fn serialize_span_yaml(out: &mut String, span: &Span, all_spans: &[Span], indent
             ..
         } => {
             out.push_str(&format!("{}model: {}\n", detail_pad, model));
-            out.push_str(&format!(
-                "{}input_messages: {}\n",
-                detail_pad,
-                input_messages.len()
-            ));
+            if flags.llm_input && !input_messages.is_empty() {
+                out.push_str(&format!("{}input_messages: ({} messages)\n", detail_pad, input_messages.len()));
+                for (i, msg) in input_messages.iter().enumerate() {
+                    out.push_str(&format!("{}  [{}] role={}, len={}\n", detail_pad, i, msg.role, msg.content_len));
+                    // content_preview already contains full content when llm_input is true
+                    // (truncation was applied at span creation time in context.rs)
+                    out.push_str(&format!("{}      content: \"{}\"\n", detail_pad, maybe_truncate(&msg.content_preview, 200, flags.llm_input)));
+                }
+            } else {
+                out.push_str(&format!(
+                    "{}input_messages: {}\n",
+                    detail_pad,
+                    input_messages.len()
+                ));
+            }
             if let Some(content) = output_content {
                 out.push_str(&format!(
                     "{}output: \"{}\"\n",
