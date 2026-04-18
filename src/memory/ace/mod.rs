@@ -1,4 +1,4 @@
-mod config;
+pub(crate) mod config;
 mod curator;
 mod factory;
 mod memory;

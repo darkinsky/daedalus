@@ -1,5 +1,5 @@
 mod cheatsheet;
-mod config;
+pub(crate) mod config;
 mod entry;
 mod factory;
 mod memory;

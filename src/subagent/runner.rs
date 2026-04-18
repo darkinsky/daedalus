@@ -276,6 +276,7 @@ impl SubagentRunner {
             &cfg,
             None,
             tracing_hook, // Pass tracing hook to subagent's tool loop
+            None,         // No tool pipeline for subagents (uses direct execution)
         ).await?;
 
         let tool_rounds = tool_history.len();

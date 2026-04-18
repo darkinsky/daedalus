@@ -6,6 +6,7 @@ pub(crate) mod tool_router;
 
 pub use chat::ChatAgent;
 pub(crate) use session::Session;
+pub(crate) use session::SharedMemory;
 pub use tool_router::ToolFilter;
 
 use anyhow::Result;

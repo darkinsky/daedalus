@@ -52,6 +52,7 @@ impl SlidingWindowFactory {
     ///
     /// When set, newly created memories will automatically load
     /// persisted state from these paths, including the dynamic cheatsheet.
+    #[allow(dead_code)]
     pub fn with_workspace_and_cheatsheet(
         ltm_path: PathBuf,
         history_path: PathBuf,

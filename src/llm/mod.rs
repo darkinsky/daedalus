@@ -79,7 +79,17 @@ pub trait LlmApi: Send + Sync {
 /// - **GenAiProvider** (default): Uses the `genai` crate's adapter system.
 ///   Supports standard OpenAI, Anthropic, Gemini, and compatible APIs.
 ///   Also handles `reasoning_effort` natively via genai.
-pub fn create_provider(config: LlmConfig) -> Result<Box<dyn LlmApi>> {
+pub fn create_provider(mut config: LlmConfig) -> Result<Box<dyn LlmApi>> {
+    // Resolve API key with env var fallback (avoids forcing plaintext in YAML)
+    if config.api_key.is_empty() {
+        config.api_key = std::env::var("DAEDALUS_API_KEY")
+            .or_else(|_| std::env::var("OPENAI_API_KEY"))
+            .map_err(|_| anyhow::anyhow!(
+                "LLM API key not configured. Set `llm.api_key` in daedalus.yaml, \
+                 or DAEDALUS_API_KEY / OPENAI_API_KEY environment variable."
+            ))?;
+    }
+
     let needs_venus = config.venus.thinking_enabled.is_some()
         || config.venus.thinking_tokens.is_some();
 

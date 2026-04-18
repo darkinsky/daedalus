@@ -21,6 +21,7 @@ use crate::workspace::Workspace;
 use super::agent_config::{AgentConfig, AgentSection, EmbeddingConfig, MemorySection};
 use super::logging::LogConfig;
 use crate::agent_tracing::TracingConfig;
+use crate::middleware::config::MiddlewareConfig;
 
 /// Top-level YAML configuration file structure.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -38,6 +39,8 @@ struct DaedalusConfigFile {
     logging: LogConfig,
     /// Tracing/observability configuration.
     tracing: TracingConfig,
+    /// Middleware pipeline configuration.
+    middleware: MiddlewareConfig,
 }
 
 /// Intermediate configuration state between YAML parsing and AgentConfig construction.
@@ -52,6 +55,8 @@ pub struct RawConfig {
     embedding: EmbeddingConfig,
     /// Tracing configuration (exposed for bootstrap to initialize TracingManager).
     pub tracing: TracingConfig,
+    /// Middleware pipeline configuration.
+    pub middleware: MiddlewareConfig,
 }
 
 impl RawConfig {
@@ -98,15 +103,24 @@ pub fn load_from_workspace(workspace: &Workspace) -> Result<(RawConfig, LogConfi
         memory: file_config.memory,
         embedding: file_config.embedding,
         tracing: file_config.tracing,
+        middleware: file_config.middleware,
     };
 
     let mut log_config = file_config.logging;
-    // If no explicit log dir is set, use workspace logs directory
-    if log_config.log_dir.is_none() {
+    // Only set default log_dir if the user did NOT explicitly configure
+    // the logging section at all (i.e., it's the complete default).
+    // If the user wrote `logging:` with `log_dir: ~` (null), they want
+    // stderr-only mode — we respect that.
+    if log_config.log_dir.is_none() && !workspace.has_config_file() {
+        // No config file at all → use workspace logs directory
         log_config.log_dir = Some(
             workspace.logs_dir().to_string_lossy().into_owned()
         );
     }
+    // When a config file exists but log_dir is None, the user either:
+    // - didn't write a logging section (serde default = None → stderr only)
+    // - explicitly wrote log_dir: ~ (null → stderr only)
+    // Both cases mean "stderr only" — we don't override.
 
     Ok((raw_config, log_config))
 }

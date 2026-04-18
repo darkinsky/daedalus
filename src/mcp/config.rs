@@ -82,24 +82,6 @@ impl McpConfig {
         Ok(None)
     }
 
-    /// Load MCP configuration from the default config path or env var.
-    ///
-    /// Checks in order:
-    /// 1. `DAEDALUS_MCP_CONFIG` environment variable
-    /// 2. `./mcp.json` in the current directory
-    /// 3. `~/.config/daedalus/mcp.json`
-    #[allow(dead_code)]
-    pub fn load() -> Result<Self> {
-        if let Some(config) = Self::try_common_paths()? {
-            return Ok(config);
-        }
-        if let Some(config) = Self::try_legacy_home_path()? {
-            return Ok(config);
-        }
-        tracing::debug!("No MCP config found, running without MCP servers");
-        Ok(Self::default())
-    }
-
     /// Load MCP configuration with workspace support.
     ///
     /// Checks in order:

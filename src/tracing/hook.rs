@@ -86,6 +86,14 @@ impl TracingHook {
         &self.ctx
     }
 
+    /// Get a clone of the underlying Arc<TraceContext>.
+    ///
+    /// Used by `CoreTurnHandler` to set the shared tracing hook for
+    /// subagent nested span creation.
+    pub fn context_arc(&self) -> Arc<TraceContext> {
+        Arc::clone(&self.ctx)
+    }
+
     /// Record that an LLM call is about to start.
     ///
     /// Returns a span guard that should be finished after the response arrives.

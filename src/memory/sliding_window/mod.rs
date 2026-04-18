@@ -1,4 +1,4 @@
-mod config;
+pub(crate) mod config;
 mod consolidation;
 mod factory;
 mod history;

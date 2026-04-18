@@ -138,11 +138,32 @@ impl EmbeddingConfig {
 // ── YAML section structures ──
 
 /// Memory section in the YAML config file.
+///
+/// Includes strategy selection and per-strategy configuration sub-sections.
+/// Each sub-section uses `#[serde(default)]` so unconfigured strategies
+/// fall back to their built-in defaults.
+///
+/// ```yaml
+/// memory:
+///   strategy: mempalace
+///   mempalace:
+///     chroma_url: "http://chroma.prod:8000"
+///   sliding_window:
+///     consolidation_threshold: 200
+/// ```
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
-pub(super) struct MemorySection {
+pub struct MemorySection {
     /// Which memory strategy to use.
     pub strategy: MemoryStrategy,
+    /// Sliding window specific configuration.
+    pub sliding_window: crate::memory::sliding_window::config::SlidingWindowConfig,
+    /// ACE (Agentic Context Engineering) specific configuration.
+    pub ace: crate::memory::ace::config::AceConfig,
+    /// Dynamic Cheatsheet specific configuration.
+    pub dynamic_cheatsheet: crate::memory::dynamic_cheatsheet::config::CheatsheetConfig,
+    /// Memory Palace specific configuration.
+    pub mempalace: crate::memory::mempalace::config::MemPalaceConfig,
 }
 
 /// Agent section in the YAML config file.
@@ -179,6 +200,10 @@ pub struct AgentConfig {
     pub soul: Option<String>,
     /// Selected memory strategy.
     pub memory_strategy: MemoryStrategy,
+    /// Full memory configuration (strategy + per-strategy sub-configs).
+    /// The sub-configs are available for factory initialization.
+    #[allow(dead_code)]
+    pub memory_config: MemorySection,
     /// Embedding provider configuration (used by agentic memory).
     pub embedding: EmbeddingConfig,
 }
@@ -215,7 +240,8 @@ impl AgentConfig {
             is_custom_prompt,
             agent_name,
             soul,
-            memory_strategy: memory.strategy,
+            memory_strategy: memory.strategy.clone(),
+            memory_config: memory,
             embedding,
         }
     }

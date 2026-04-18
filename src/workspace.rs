@@ -122,6 +122,7 @@ impl Workspace {
         let dirs = [
             "config",
             "memory",
+            "memory/ace",
             "memory/agentic",
             "memory/wiki",
             "memory/mempalace",
@@ -129,6 +130,7 @@ impl Workspace {
             "skills",
             "agents",
             "logs",
+            "traces",
         ];
         for d in &dirs {
             std::fs::create_dir_all(root.join(d))
@@ -255,6 +257,13 @@ impl Workspace {
         self.root.join("logs")
     }
 
+    // ── Traces path ──
+
+    /// Directory for trace output files (tracing subsystem).
+    pub fn traces_dir(&self) -> PathBuf {
+        self.root.join("traces")
+    }
+
     // ── Convenience checks ──
 
     /// Check if the main configuration file exists in this workspace.
@@ -327,6 +336,7 @@ mod tests {
 
         assert!(dir.join("config").is_dir());
         assert!(dir.join("memory").is_dir());
+        assert!(dir.join("memory/ace").is_dir());
         assert!(dir.join("memory/agentic").is_dir());
         assert!(dir.join("memory/wiki").is_dir());
         assert!(dir.join("memory/mempalace").is_dir());
@@ -334,6 +344,7 @@ mod tests {
         assert!(dir.join("skills").is_dir());
         assert!(dir.join("agents").is_dir());
         assert!(dir.join("logs").is_dir());
+        assert!(dir.join("traces").is_dir());
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -360,6 +371,7 @@ mod tests {
         assert_eq!(ws.skills_dir(), PathBuf::from("/tmp/test_ws/skills"));
         assert_eq!(ws.agents_dir(), PathBuf::from("/tmp/test_ws/agents"));
         assert_eq!(ws.logs_dir(), PathBuf::from("/tmp/test_ws/logs"));
+        assert_eq!(ws.traces_dir(), PathBuf::from("/tmp/test_ws/traces"));
     }
 
     #[test]

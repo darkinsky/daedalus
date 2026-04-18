@@ -13,8 +13,10 @@ pub const NORMALIZE_VERSION: u32 = 2;
 /// Configuration for the MemPalace memory strategy.
 ///
 /// Mirrors the original MemPalace config.py with all configuration options.
+/// Can be deserialized from YAML configuration files.
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
 pub struct MemPalaceConfig {
     /// Maximum number of hall entries to retrieve per query.
     pub retrieval_limit: usize,

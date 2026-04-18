@@ -1,5 +1,6 @@
 /// Configuration for the sliding window memory with consolidation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
 #[allow(dead_code)]
 pub struct SlidingWindowConfig {
     /// Maximum number of messages in the hot-data window sent to the LLM.

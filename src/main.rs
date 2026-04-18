@@ -5,6 +5,7 @@ mod embedding;
 mod llm;
 mod mcp;
 mod memory;
+mod middleware;
 mod prompt;
 mod skill;
 mod subagent;
@@ -76,6 +77,9 @@ async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard
     // Extract tracing config before consuming raw_config
     let tracing_config = raw_config.tracing.clone();
 
+    // Extract middleware config before consuming raw_config
+    let middleware_config = raw_config.middleware.clone();
+
     // Apply CLI overrides to the raw config before building AgentConfig
     apply_cli_overrides(&args, &mut raw_config);
 
@@ -89,6 +93,9 @@ async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard
 
     // Phase 2: Build AgentConfig (now tracing is available for soul file loading)
     let mut agent_config = raw_config.into_agent_config(&workspace);
+
+    // Validate middleware configuration (emits warnings for common mistakes)
+    middleware_config.validate();
 
     // Pre-initialize blocking resources outside hot async paths.
     // `find_rg_binary()` runs `std::process::Command` which would block
@@ -117,7 +124,7 @@ async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard
     }
 
     // Build the agent with all extensions
-    let agent = build_agent(&args, &workspace, &agent_config, tracing_manager).await?;
+    let agent = build_agent(&args, &workspace, &agent_config, tracing_manager, middleware_config).await?;
 
     Ok((agent, args, _log_guard))
 }
@@ -128,6 +135,7 @@ async fn build_agent(
     workspace: &workspace::Workspace,
     agent_config: &config::AgentConfig,
     tracing_manager: Arc<agent_tracing::TracingManager>,
+    middleware_config: middleware::config::MiddlewareConfig,
 ) -> Result<agent::ChatAgent> {
     let skip_extensions = args.bare;
 
@@ -145,6 +153,7 @@ async fn build_agent(
     // Build the chat agent with workspace-aware memory persistence
     let mut agent = agent::ChatAgent::new_with_workspace(provider, agent_config, workspace.clone());
     agent.set_tracing_manager(tracing_manager);
+    agent.set_middleware_config(middleware_config);
     if let Some(manager) = mcp_manager {
         agent.attach_mcp(manager);
     }
@@ -282,7 +291,7 @@ async fn init_tracing_manager(
                 let output_dir = path
                     .as_ref()
                     .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|| workspace.root().join("traces"));
+                    .unwrap_or_else(|| workspace.traces_dir());
                 let collector = agent_tracing::exporters::file::FileCollector::new(
                     output_dir,
                     format.clone(),

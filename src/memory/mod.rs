@@ -111,6 +111,7 @@ impl MessageBuffer {
     }
 
     /// Return the number of conversation turns (user + assistant pairs).
+    #[allow(dead_code)]
     pub fn turn_count(&self) -> usize {
         self.messages.len() / 2
     }
@@ -234,11 +235,13 @@ pub trait Memory: Send + Sync {
     /// Check whether consolidation should be triggered.
     ///
     /// Memory strategies that don't support consolidation return `false`.
+    #[allow(dead_code)]
     fn should_consolidate(&self) -> bool {
         false
     }
 
     /// Return the number of conversation turns (user + assistant pairs) stored.
+    #[allow(dead_code)]
     fn turn_count(&self) -> usize;
 
     /// Return the memory strategy name (e.g., "sliding_window").
