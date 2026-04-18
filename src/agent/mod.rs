@@ -1,4 +1,5 @@
 mod chat;
+pub(crate) mod duplicate_detector;
 mod session;
 pub(crate) mod tool_router;
 

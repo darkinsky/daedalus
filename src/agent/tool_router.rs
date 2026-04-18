@@ -159,13 +159,15 @@ impl ToolRouter {
             }
 
             // Register the TeamTool for parallel multi-agent execution
-            if let Some(team_tool) = crate::subagent::tool::build_team_tool(
-                &registry,
-                Arc::clone(&runner),
-                Arc::clone(&self.subagent_event_callback),
-            ) {
-                self.builtin.register_tool(team_tool);
-            }
+            // NOTE: `spawn_team` is temporarily disabled. Keep the code here
+            // so it can be re-enabled by uncommenting this block.
+            // if let Some(team_tool) = crate::subagent::tool::build_team_tool(
+            //     &registry,
+            //     Arc::clone(&runner),
+            //     Arc::clone(&self.subagent_event_callback),
+            // ) {
+            //     self.builtin.register_tool(team_tool);
+            // }
             self.subagents = registry;
             tracing::info!(
                 subagents = actual_count,

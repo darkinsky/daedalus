@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+use crate::agent::duplicate_detector::{annotate_responses, DuplicateAction, DuplicateDetector};
 use crate::tools::{ToolEvent, ToolEventCallback};
 use crate::llm::{self, LlmApi, LlmConfig, TokenUsage, ToolRound};
 use crate::tools::BuiltinToolRegistry;
@@ -7,7 +8,7 @@ use crate::tools::BuiltinToolRegistry;
 use super::{IsolationMode, SubagentDefinition, SubagentResult, TeamTask};
 
 /// Maximum tool-calling rounds for subagents (default, can be overridden per-agent).
-const DEFAULT_MAX_TOOL_ROUNDS: usize = 10;
+const DEFAULT_MAX_TOOL_ROUNDS: usize = 50;
 
 /// Tool names that are never available to subagents (prevents recursion and misuse).
 const EXCLUDED_TOOLS: &[&str] = &["spawn_subagent", "spawn_team", "use_skill"];
@@ -225,6 +226,7 @@ impl SubagentRunner {
     ) -> Result<SubagentResult> {
         let mut tool_history: Vec<ToolRound> = Vec::new();
         let mut total_usage = TokenUsage::default();
+        let mut duplicate_detector = DuplicateDetector::new();
 
         for round in 0..max_rounds {
             let response = llm
@@ -253,11 +255,56 @@ impl SubagentRunner {
             }
 
             // Execute one round of tool calls and collect results
-            let tool_round = Self::execute_tool_round(
-                definition, builtin, response.tool_calls, round + 1, on_tool_event,
+            let tool_calls = response.tool_calls;
+            let mut responses = Self::execute_tool_round_inner(
+                definition, builtin, &tool_calls, round + 1, on_tool_event,
             ).await;
 
-            tool_history.push(tool_round);
+            // Duplicate-call guard: warn on streaks of WARN_THRESHOLD,
+            // hard-stop on streaks of STOP_THRESHOLD.
+            match duplicate_detector.record_round(&tool_calls) {
+                DuplicateAction::Warn(warnings) => {
+                    for w in &warnings {
+                        tracing::warn!(
+                            agent = %definition.name,
+                            tool = %w.tool_name,
+                            streak = w.count,
+                            round = round + 1,
+                            "Subagent repeated identical tool call"
+                        );
+                    }
+                    annotate_responses(&tool_calls, &mut responses, &warnings);
+                }
+                DuplicateAction::Stop(w) => {
+                    tracing::error!(
+                        agent = %definition.name,
+                        tool = %w.tool_name,
+                        streak = w.count,
+                        round = round + 1,
+                        "Subagent force-stopped due to duplicate tool calls"
+                    );
+                    tool_history.push(ToolRound {
+                        calls: tool_calls,
+                        responses,
+                    });
+                    return Ok(SubagentResult {
+                        agent_name: definition.name.clone(),
+                        content: format!(
+                            "[Subagent '{}' stopped: {}]",
+                            definition.name,
+                            w.stop_message()
+                        ),
+                        usage: Some(total_usage),
+                        tool_rounds: tool_history.len(),
+                    });
+                }
+                DuplicateAction::Ok => {}
+            }
+
+            tool_history.push(ToolRound {
+                calls: tool_calls,
+                responses,
+            });
         }
 
         // Exceeded max rounds — return what we have
@@ -283,14 +330,15 @@ impl SubagentRunner {
 
     /// Execute a single round of tool calls in parallel and emit progress events.
     ///
-    /// Accepts `tool_calls` by value to avoid cloning when building the `ToolRound`.
-    async fn execute_tool_round(
+    /// Splits out the execution so the outer loop can inspect the calls for
+    /// duplicate detection before building the final `ToolRound`.
+    async fn execute_tool_round_inner(
         definition: &SubagentDefinition,
         builtin: &BuiltinToolRegistry,
-        tool_calls: Vec<crate::llm::ToolCall>,
+        tool_calls: &[crate::llm::ToolCall],
         round_number: usize,
         on_tool_event: Option<&ToolEventCallback>,
-    ) -> ToolRound {
+    ) -> Vec<crate::llm::ToolResponse> {
         tracing::info!(
             agent = %definition.name,
             round = round_number,
@@ -302,10 +350,11 @@ impl SubagentRunner {
         Self::emit_event(on_tool_event, ToolEvent::RoundStart { round: round_number });
 
         // Emit tool call start events
-        for tc in &tool_calls {
+        for tc in tool_calls {
             Self::emit_event(on_tool_event, ToolEvent::ToolCallStart {
                 tool_name: tc.function_name.clone(),
                 source: format!("subagent:{}", definition.name),
+                arguments: tc.arguments.clone(),
             });
         }
 
@@ -344,10 +393,7 @@ impl SubagentRunner {
             tool_count: responses.len(),
         });
 
-        ToolRound {
-            calls: tool_calls,
-            responses,
-        }
+        responses
     }
 
     /// Emit a tool event to the optional callback.

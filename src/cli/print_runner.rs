@@ -214,11 +214,11 @@ fn build_stream_json_callback() -> ToolEventCallback {
             ToolEvent::RoundStart { round } => {
                 StreamEvent::ToolRoundStart { round }
             }
-            ToolEvent::ToolCallStart { tool_name, source } => {
+            ToolEvent::ToolCallStart { tool_name, source, arguments } => {
                 StreamEvent::ToolUse {
                     tool: tool_name,
                     source,
-                    input: None,
+                    input: Some(arguments),
                 }
             }
             ToolEvent::ToolCallComplete { tool_name, success, result_content } => {

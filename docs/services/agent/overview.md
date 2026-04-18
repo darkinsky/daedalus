@@ -105,12 +105,13 @@ type MemoryFactory = Box<dyn Fn(&str) -> Box<dyn Memory> + Send + Sync>;
         → 发送所有 ToolCallComplete 事件
         → 发送 RoundComplete 事件
         → 收集 ToolResponse → tool_history.push()
-        → 继续循环（最多 MAX_TOOL_ROUNDS = 10 轮）
+        → 继续循环（最多 MAX_TOOL_ROUNDS = 100 轮）
     NO  → 返回最终文本响应（累计 token usage）
 ```
 
 **关键约束**：
-- `MAX_TOOL_ROUNDS = 10` — 防止 LLM 无限循环调用工具
+- `MAX_TOOL_ROUNDS = 100` — 防止 LLM 无限循环调用工具
+- 另外有「连续重复调用守卫」：同一工具 + 相同参数连续 3 轮警告（5 轮强制终止，见 `src/agent/duplicate_detector.rs`）
 - Token usage 跨轮次累加
 - Reasoning content 从中间轮次保留到最终响应
 - 工具调用是**并行执行**的（`futures::future::join_all`），总耗时 = max(各工具耗时)

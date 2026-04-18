@@ -19,12 +19,13 @@ use crate::workspace::Workspace;
 use super::Session;
 
 use super::{AgentMetadata, AgentMode, ToolEvent, ToolEventCallback};
+use super::duplicate_detector::{annotate_responses, DuplicateAction, DuplicateDetector};
 use super::tool_router::ToolRouter;
 
 /// Maximum number of tool-calling rounds per user message.
 ///
 /// This prevents infinite loops if the LLM keeps requesting tool calls.
-const DEFAULT_MAX_TOOL_ROUNDS: usize = 10;
+const DEFAULT_MAX_TOOL_ROUNDS: usize = 100;
 
 /// Truncate a string at a UTF-8 character boundary.
 ///
@@ -364,6 +365,7 @@ impl ChatAgent {
             Self::emit_event(on_tool_event, ToolEvent::ToolCallStart {
                 tool_name: tc.function_name.clone(),
                 source: source.to_string(),
+                arguments: tc.arguments.clone(),
             });
         }
     }
@@ -409,6 +411,7 @@ impl ChatAgent {
         let mut tool_history: Vec<ToolRound> = Vec::new();
         let mut total_usage = TokenUsage::default();
         let mut last_reasoning_content: Option<String> = None;
+        let mut duplicate_detector = DuplicateDetector::new();
 
         for round_number in 1..=self.max_tool_rounds {
             let response = self.llm.chat_with_tools(
@@ -445,7 +448,41 @@ impl ChatAgent {
 
             // Emit start events and execute all tool calls in parallel
             self.emit_tool_start_events(&response.tool_calls, on_tool_event);
-            let responses = self.execute_tool_round(&response.tool_calls, on_tool_event).await;
+            let mut responses = self.execute_tool_round(&response.tool_calls, on_tool_event).await;
+
+            // Check for consecutive duplicate tool calls and react accordingly:
+            //   - Warn (>=3 in a row): append a note to the matching tool response
+            //     so the LLM sees it in the next turn.
+            //   - Stop (>=5 in a row): abort the loop to prevent a non-productive spin.
+            let duplicate_action = duplicate_detector.record_round(&response.tool_calls);
+            match &duplicate_action {
+                DuplicateAction::Warn(warnings) => {
+                    for w in warnings {
+                        tracing::warn!(
+                            tool = %w.tool_name,
+                            streak = w.count,
+                            round = round_number,
+                            "Lead agent repeated identical tool call"
+                        );
+                    }
+                    annotate_responses(&response.tool_calls, &mut responses, warnings);
+                }
+                DuplicateAction::Stop(w) => {
+                    tracing::error!(
+                        tool = %w.tool_name,
+                        streak = w.count,
+                        round = round_number,
+                        "Lead agent force-stopped due to duplicate tool calls"
+                    );
+                    // Keep the round in history so the trace is complete.
+                    tool_history.push(ToolRound {
+                        calls: response.tool_calls,
+                        responses,
+                    });
+                    anyhow::bail!("{}", w.stop_message());
+                }
+                DuplicateAction::Ok => {}
+            }
 
             tool_history.push(ToolRound {
                 calls: response.tool_calls,

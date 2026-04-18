@@ -12,6 +12,11 @@ use crate::tools::{BuiltinTool, ToolEvent, ToolEventCallback};
 const SUBAGENT_TOOL_NAME: &str = "spawn_subagent";
 
 /// The tool name used for parallel multi-agent team execution.
+///
+/// NOTE: `spawn_team` is currently disabled at the ToolRouter registration
+/// layer. The definition is kept so it can be re-enabled without restoring
+/// the implementation.
+#[allow(dead_code)]
 const TEAM_TOOL_NAME: &str = "spawn_team";
 
 /// Shared container for a tool event callback that can be set at runtime.
@@ -131,6 +136,10 @@ pub fn build_subagent_tool(
 ///
 /// Returns `None` if fewer than 2 subagents are loaded (teams need
 /// at least 2 agents to be useful).
+///
+/// NOTE: Currently disabled — no call site references this function.
+/// Kept for future re-enablement.
+#[allow(dead_code)]
 pub fn build_team_tool(
     registry: &Arc<SubagentRegistry>,
     runner: Arc<SubagentRunner>,
@@ -330,6 +339,7 @@ impl BuiltinTool for SubagentTool {
 /// This enables "Agent Teams" — the LLM can assign different tasks to
 /// different subagents and have them all execute concurrently. Results
 /// are collected and returned as a combined summary.
+#[allow(dead_code)]
 pub struct TeamTool {
     ctx: SubagentToolContext,
 }

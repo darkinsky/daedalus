@@ -34,6 +34,12 @@ pub enum ToolEvent {
         tool_name: String,
         /// Which source handles this tool ("built-in" or MCP server name).
         source: String,
+        /// Arguments passed to the tool (raw JSON as sent by the LLM).
+        ///
+        /// Used by the CLI renderer to produce a human-readable one-line
+        /// summary (e.g. "read_file  src/foo.rs:100-200", "bash  $ cargo build")
+        /// and by `stream-json` consumers that want to inspect inputs.
+        arguments: serde_json::Value,
     },
     /// A tool call has completed.
     ToolCallComplete {

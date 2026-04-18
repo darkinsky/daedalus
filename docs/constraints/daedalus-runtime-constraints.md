@@ -8,7 +8,7 @@
 
 | 常量 | 值 | 位置 | 说明 |
 |------|-----|------|------|
-| `MAX_TOOL_ROUNDS` | 10 | `src/agent/chat.rs:25` | 每条用户消息的最大工具调用轮次，防止 LLM 无限循环 |
+| `MAX_TOOL_ROUNDS` | 100 | `src/agent/chat.rs:28` | 每条用户消息的最大工具调用轮次，防止 LLM 无限循环 |
 | `MCP_REQUEST_TIMEOUT` | 30s | `src/mcp/client.rs:13` | MCP 普通请求超时 |
 | `MCP_INIT_TIMEOUT` | 60s | `src/mcp/client.rs:16` | MCP 初始化握手超时（服务器可能需要启动时间） |
 | `DEFAULT_AGENT_NAME` | "Daedalus" | `src/prompt/sections/role.rs:4` | 默认 Agent 名称 |
@@ -23,7 +23,9 @@
 | `SKILL_TOOL_NAME` | "use_skill" | `src/skill/registry.rs` | LLM 调用 skill 时使用的工具名 |
 | `SUBAGENT_TOOL_NAME` | "spawn_subagent" | `src/subagent/tool.rs` | LLM 调用单个 subagent 时使用的工具名 |
 | `TEAM_TOOL_NAME` | "spawn_team" | `src/subagent/tool.rs` | LLM 调用并行多 agent 时使用的工具名 |
-| `DEFAULT_MAX_TOOL_ROUNDS` (subagent) | 10 | `src/subagent/runner.rs` | Subagent 默认最大工具调用轮数（可通过 `maxTurns` 覆盖） |
+| `DEFAULT_MAX_TOOL_ROUNDS` (subagent) | 50 | `src/subagent/runner.rs` | Subagent 默认最大工具调用轮数（可通过 `maxTurns` 覆盖） |
+| `WARN_THRESHOLD` (duplicate-call guard) | 3 | `src/agent/duplicate_detector.rs` | 同一工具 + 相同参数连续被调用 3 轮起，向下一轮的 tool_response 附加一次警告，提示 LLM 换思路 |
+| `STOP_THRESHOLD` (duplicate-call guard) | 5 | `src/agent/duplicate_detector.rs` | 同一工具 + 相同参数连续被调用 5 轮，强制终止当前工具调用循环（Lead 侧报错返回，Subagent 侧以截断结果返回） |
 | `EXCLUDED_TOOLS` | `["spawn_subagent", "spawn_team", "use_skill"]` | `src/subagent/runner.rs` | Subagent 工具集中永远排除的工具（防递归） |
 | `DEFAULT_TIMEOUT_SECS` (bash) | 30 | `src/tools/bash.rs:16` | Bash 工具默认命令超时时间（秒） |
 | `MAX_OUTPUT_BYTES` (bash) | 256 KB | `src/tools/bash.rs:19` | Bash 工具最大输出截断大小，防止无界内存使用 |
