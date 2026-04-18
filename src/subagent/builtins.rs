@@ -78,7 +78,7 @@ Organize your findings as:
 - **Key Files**: List of relevant files with brief descriptions
 - **Details**: Deeper analysis with code snippets if needed
 - **Suggestions**: Next steps or related areas to explore",
-        8,
+        30,
     )
 }
 
@@ -116,7 +116,7 @@ For each issue found:
 ```
 
 End with a summary: total issues by severity and overall code quality assessment.",
-        10,
+        30,
     )
 }
 
@@ -167,7 +167,7 @@ For each step:
 
 ### Estimated Complexity
 Low / Medium / High — with justification.",
-        12,
+        30,
     )
 }
 
