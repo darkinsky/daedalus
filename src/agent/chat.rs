@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -14,6 +15,7 @@ use crate::memory::{MemoryFactory, SlidingWindowFactory};
 use crate::prompt::PromptBuilder;
 use crate::skill::SkillInfo;
 use crate::subagent::SubagentInfo;
+use crate::agent_tracing;
 use crate::workspace::Workspace;
 
 use super::Session;
@@ -27,7 +29,7 @@ use super::tool_router::ToolRouter;
 /// Bounds the main agent's tool-calling loop so a misbehaving LLM cannot
 /// spin forever. The user can override this via the `--max-turns` CLI flag;
 /// subagents have their own independent default in `subagent::runner`.
-const DEFAULT_MAX_TOOL_ROUNDS: usize = 100;
+const DEFAULT_MAX_TOOL_ROUNDS: usize = 200;
 
 /// Chat mode — multi-turn conversation with optional tool calling.
 ///
@@ -64,6 +66,8 @@ pub struct ChatAgent {
     workspace: Option<Workspace>,
     /// Maximum tool-calling rounds per user message (overridable via CLI).
     max_tool_rounds: usize,
+    /// Tracing manager for observability (shared across agent lifecycle).
+    tracing_manager: Option<Arc<agent_tracing::TracingManager>>,
 }
 
 impl ChatAgent {
@@ -113,6 +117,7 @@ impl ChatAgent {
             soul: config.soul.clone(),
             workspace: None,
             max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
+            tracing_manager: None,
         }
     }
 
@@ -231,6 +236,14 @@ impl ChatAgent {
         tracing::info!(max_tool_rounds = self.max_tool_rounds, "Max tool rounds updated");
     }
 
+    /// Set the tracing manager for observability.
+    ///
+    /// When set, the agent will emit trace spans for LLM calls, tool calls,
+    /// and subagent invocations, forming a complete call chain.
+    pub fn set_tracing_manager(&mut self, manager: Arc<agent_tracing::TracingManager>) {
+        self.tracing_manager = Some(manager);
+    }
+
     // ── Prompt construction ──
 
     /// Build the system prompt using PromptBuilder.
@@ -317,6 +330,32 @@ impl ChatAgent {
 
     /// Log the incoming LLM response details.
     fn log_response(&self, request_id: u64, response: &ChatResponse) {
+        // Log reasoning/thinking content at debug level (can be large)
+        if let Some(ref reasoning) = response.reasoning_content {
+            if !reasoning.is_empty() {
+                tracing::debug!(
+                    session_id = %self.session.id,
+                    request_id = request_id,
+                    reasoning_len = reasoning.len(),
+                    reasoning_content = reasoning.as_str(),
+                    "LLM response: reasoning/thinking"
+                );
+            }
+        }
+
+        // Log tool calls detail at debug level
+        if !response.tool_calls.is_empty() {
+            let tool_calls_summary: Vec<String> = response.tool_calls.iter().map(|tc| {
+                format!("{}({})", tc.function_name, truncate_at_char_boundary(&tc.arguments.to_string(), 200))
+            }).collect();
+            tracing::debug!(
+                session_id = %self.session.id,
+                request_id = request_id,
+                tool_calls = %tool_calls_summary.join(", "),
+                "LLM response: tool calls requested"
+            );
+        }
+
         tracing::info!(
             session_id = %self.session.id,
             request_id = request_id,
@@ -325,6 +364,8 @@ impl ChatAgent {
             role = "assistant",
             message = response.content.as_str(),
             content_len = response.content.len(),
+            has_reasoning = response.reasoning_content.as_ref().map_or(false, |r| !r.is_empty()),
+            reasoning_len = response.reasoning_content.as_ref().map_or(0, |r| r.len()),
             tool_call_count = response.tool_calls.len(),
             prompt_tokens = response.usage.as_ref().and_then(|u| u.prompt_tokens),
             completion_tokens = response.usage.as_ref().and_then(|u| u.completion_tokens),
@@ -370,6 +411,7 @@ impl ChatAgent {
         request_id: u64,
         messages: &[ChatMessage],
         on_tool_event: Option<&ToolEventCallback>,
+        trace_ctx: Option<&Arc<agent_tracing::TraceContext>>,
     ) -> Result<(ChatResponse, Vec<ToolRound>)> {
         let tools = self.tool_router.build_tool_definitions();
         let executor = ToolRouterExecutor { router: &self.tool_router };
@@ -384,6 +426,11 @@ impl ChatAgent {
         // the generic loop.
         let log_cb = |resp: &ChatResponse| self.log_response(request_id, resp);
 
+        // Build tracing hook if trace context is available
+        let tracing_hook = trace_ctx.map(|ctx| {
+            agent_tracing::TracingHook::new(Arc::clone(ctx))
+        });
+
         let LoopResult { outcome, usage, tool_history } = run_tool_loop(
             &*self.llm,
             &executor,
@@ -392,6 +439,7 @@ impl ChatAgent {
             on_tool_event,
             &cfg,
             Some(&log_cb),
+            tracing_hook.as_ref(),
         ).await?;
 
         match outcome {
@@ -501,14 +549,61 @@ impl AgentMode for ChatAgent {
     ) -> Result<ChatResponse> {
         let request_id = self.session.next_request_id();
 
+        // Initialize tracing context for this turn
+        let trace_ctx = if let Some(ref mgr) = self.tracing_manager {
+            if mgr.is_enabled() {
+                let metadata = agent_tracing::TraceMetadata {
+                    agent_name: self.agent_name.clone(),
+                    model: self.llm.model_name().to_string(),
+                    provider: self.llm.provider_name().to_string(),
+                };
+                let ctx = mgr.start_trace(&self.session.id, metadata);
+                ctx.start().await;
+                Some(Arc::new(ctx))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Start agent turn span
+        let mut turn_guard = if let Some(ref ctx) = trace_ctx {
+            Some(ctx.start_agent_turn(user_input).await)
+        } else {
+            None
+        };
+
+        // Set the shared tracing hook so subagent tool calls can create
+        // nested spans under this trace.
+        if let Some(ref ctx) = trace_ctx {
+            self.tool_router.set_shared_tracing_hook(Some(Arc::clone(ctx)));
+        }
+
         self.session.memory_mut().add_user_message(user_input);
         let messages = self.session.memory().build_messages();
         self.log_request(request_id, user_input, &messages);
 
         let response = if self.has_tools() && self.llm.supports_tools() {
-            let (final_resp, tool_history) = self.chat_with_tools(
-                request_id, &messages, on_tool_event,
-            ).await?;
+            let result = self.chat_with_tools(
+                request_id, &messages, on_tool_event, trace_ctx.as_ref(),
+            ).await;
+
+            // On error, finish trace before propagating
+            if result.is_err() {
+                self.tool_router.set_shared_tracing_hook(None);
+                if let Some(guard) = turn_guard {
+                    guard.finish_error(
+                        result.as_ref().err().map(|e| e.to_string()).unwrap_or_default()
+                    ).await;
+                }
+                if let Some(ref ctx) = trace_ctx {
+                    ctx.finish().await;
+                }
+                return Err(result.err().unwrap());
+            }
+
+            let (final_resp, tool_history) = result.unwrap();
 
             if !tool_history.is_empty() {
                 let summary = Self::summarize_tool_history(&tool_history);
@@ -517,15 +612,51 @@ impl AgentMode for ChatAgent {
             self.session.memory_mut().add_assistant_message(&final_resp.content);
             final_resp
         } else {
-            let llm_resp = self.llm.chat(&messages, None).await?;
+            // Start LLM call span for simple (no-tool) chat
+            let mut llm_guard = if let Some(ref ctx) = trace_ctx {
+                Some(ctx.start_llm_call(
+                    self.llm.model_name(),
+                    self.llm.provider_name(),
+                    &messages,
+                ).await)
+            } else {
+                None
+            };
+
+            let llm_result = self.llm.chat(&messages, None).await;
+
+            // On error, finish spans and trace before propagating
+            if llm_result.is_err() {
+                self.tool_router.set_shared_tracing_hook(None);
+                let err_msg = llm_result.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
+                if let Some(guard) = llm_guard {
+                    guard.finish_error(err_msg.clone()).await;
+                }
+                if let Some(guard) = turn_guard {
+                    guard.finish_error(err_msg).await;
+                }
+                if let Some(ref ctx) = trace_ctx {
+                    ctx.finish().await;
+                }
+                return Err(llm_result.err().unwrap());
+            }
+
+            let llm_resp = llm_result.unwrap();
             self.log_response(request_id, &llm_resp);
+
+            // Finish LLM span
+            if let Some(ref mut guard) = llm_guard {
+                guard.set_llm_response(&llm_resp);
+            }
+            if let Some(guard) = llm_guard {
+                guard.finish_ok().await;
+            }
+
             self.session.memory_mut().add_assistant_message(&llm_resp.content);
             llm_resp
         };
 
         // Check if consolidation should be triggered after this turn.
-        // The actual LLM-backed consolidation is not yet implemented;
-        // for now we only surface the threshold event for observability.
         if self.session.memory().should_consolidate() {
             tracing::debug!(
                 session_id = %self.session.id,
@@ -533,11 +664,26 @@ impl AgentMode for ChatAgent {
             );
         }
 
-        // Trigger post-turn reflection (strategy-specific: DC insight
-        // extraction, A-MEM note storage + context pre-retrieval, etc.).
+        // Trigger post-turn reflection
         self.session.memory_mut().reflect_on_turn(
             user_input, &response.content, &*self.llm,
         ).await;
+
+        // Finish agent turn span
+        if let Some(ref mut guard) = turn_guard {
+            guard.set_agent_output(&response.content);
+        }
+        if let Some(guard) = turn_guard {
+            guard.finish_ok().await;
+        }
+
+        // Clear the shared tracing hook before finishing the trace
+        self.tool_router.set_shared_tracing_hook(None);
+
+        // Finish the trace
+        if let Some(ref ctx) = trace_ctx {
+            ctx.finish().await;
+        }
 
         Ok(response)
     }
@@ -594,6 +740,11 @@ impl AgentMode for ChatAgent {
 
         // 2. Shut down MCP servers to prevent orphaned child processes
         self.tool_router.shutdown().await;
+
+        // 3. Flush tracing collectors to ensure all data is exported
+        if let Some(ref mgr) = self.tracing_manager {
+            mgr.flush().await;
+        }
 
         Ok(())
     }

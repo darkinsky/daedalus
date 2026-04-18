@@ -285,9 +285,18 @@ impl VenusProvider {
             thinking_enabled = ?body.get("thinking_enabled"),
             thinking_tokens = ?body.get("thinking_tokens"),
             reasoning_effort = ?body.get("reasoning_effort"),
+            message_count = ?body.get("messages").and_then(|m| m.as_array()).map(|a| a.len()),
+            tool_count = ?body.get("tools").and_then(|t| t.as_array()).map(|a| a.len()),
             "Venus API request"
         );
 
+        // Log full request body at trace level for deep debugging
+        tracing::trace!(
+            request_body = %body,
+            "Venus API request body (full)"
+        );
+
+        let start = std::time::Instant::now();
         let response = self
             .client
             .post(&url)
@@ -297,12 +306,26 @@ impl VenusProvider {
             .send()
             .await
             .map_err(|e| anyhow::anyhow!("Venus HTTP request error: {}", e))?;
+        let http_elapsed_ms = start.elapsed().as_millis() as u64;
 
         let status = response.status();
         let response_text = response
             .text()
             .await
             .map_err(|e| anyhow::anyhow!("Venus response read error: {}", e))?;
+
+        tracing::debug!(
+            status = %status,
+            response_len = response_text.len(),
+            http_elapsed_ms = http_elapsed_ms,
+            "Venus API response received"
+        );
+
+        // Log full response body at trace level for deep debugging
+        tracing::trace!(
+            response_body = %response_text,
+            "Venus API response body (full)"
+        );
 
         let response_body: Value = serde_json::from_str(&response_text)
             .map_err(|e| {

@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 use crate::agent::tool_loop::{run_tool_loop, LoopConfig, LoopOutcome, LoopResult, ToolExecutor};
+use crate::agent_tracing::TracingHook;
 use crate::tools::ToolEventCallback;
 use crate::llm::{self, LlmApi, LlmConfig, ToolCall, ToolResponse};
 use crate::tools::BuiltinToolRegistry;
@@ -10,7 +11,7 @@ use super::{IsolationMode, SubagentDefinition, SubagentResult};
 use super::TeamTask;
 
 /// Maximum tool-calling rounds for subagents (default, can be overridden per-agent).
-const DEFAULT_MAX_TOOL_ROUNDS: usize = 50;
+const DEFAULT_MAX_TOOL_ROUNDS: usize = 100;
 
 /// Tool names that are never available to subagents (prevents recursion and misuse).
 const EXCLUDED_TOOLS: &[&str] = &["spawn_subagent", "spawn_team", "use_skill"];
@@ -52,6 +53,7 @@ impl SubagentRunner {
         definition: &SubagentDefinition,
         task: &str,
         on_tool_event: Option<&ToolEventCallback>,
+        tracing_hook: Option<&TracingHook>,
     ) -> Result<SubagentResult> {
         tracing::info!(
             agent = %definition.name,
@@ -94,10 +96,10 @@ impl SubagentRunner {
 
         let result = if has_tools {
             self.run_with_tools(
-                definition, &*llm, &filtered_tools, &messages, &tools, max_tool_rounds, on_tool_event,
+                definition, &*llm, &filtered_tools, &messages, &tools, max_tool_rounds, on_tool_event, tracing_hook,
             ).await
         } else {
-            self.run_without_tools(definition, &*llm, &messages).await
+            self.run_without_tools(definition, &*llm, &messages, tracing_hook).await
         };
 
         // Run onComplete lifecycle hook if configured
@@ -198,8 +200,28 @@ impl SubagentRunner {
         definition: &SubagentDefinition,
         llm: &dyn LlmApi,
         messages: &[crate::llm::ChatMessage],
+        tracing_hook: Option<&TracingHook>,
     ) -> Result<SubagentResult> {
+        // Start LLM call tracing span for subagent
+        let mut llm_span = if let Some(hook) = tracing_hook {
+            hook.on_llm_call_start(
+                llm.model_name(),
+                llm.provider_name(),
+                messages,
+            ).await
+        } else {
+            None
+        };
+
         let response = llm.chat(messages, None).await?;
+
+        // Finish LLM call tracing span
+        if let Some(ref mut span) = llm_span {
+            span.set_llm_response(&response);
+        }
+        if let Some(span) = llm_span {
+            span.finish_ok().await;
+        }
 
         tracing::info!(
             agent = %definition.name,
@@ -231,6 +253,7 @@ impl SubagentRunner {
         tools: &[serde_json::Value],
         max_tool_rounds: usize,
         on_tool_event: Option<&ToolEventCallback>,
+        tracing_hook: Option<&TracingHook>,
     ) -> Result<SubagentResult> {
         let executor = SubagentExecutor {
             builtin,
@@ -252,6 +275,7 @@ impl SubagentRunner {
             on_tool_event,
             &cfg,
             None,
+            tracing_hook, // Pass tracing hook to subagent's tool loop
         ).await?;
 
         let tool_rounds = tool_history.len();
@@ -315,7 +339,7 @@ impl SubagentRunner {
                     let def = definition.ok_or_else(|| {
                         anyhow::anyhow!("Subagent '{}' not found", task.agent_name)
                     })?;
-                    self.run(&def, &task_str, on_tool_event).await
+                    self.run(&def, &task_str, on_tool_event, None).await
                 }
             })
             .collect();

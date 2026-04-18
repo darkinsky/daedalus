@@ -36,6 +36,7 @@ use crate::llm::{
     ChatMessage, ChatResponse, LlmApi, TokenUsage, ToolCall, ToolResponse, ToolRound,
 };
 use crate::tools::{ToolEvent, ToolEventCallback};
+use crate::agent_tracing::TracingHook;
 
 use super::duplicate_detector::{annotate_responses, DuplicateAction, DuplicateDetector};
 
@@ -116,6 +117,7 @@ pub async fn run_tool_loop(
     on_event: Option<&ToolEventCallback>,
     cfg: &LoopConfig,
     on_llm_response: Option<&(dyn Fn(&ChatResponse) + Send + Sync)>,
+    tracing_hook: Option<&TracingHook>,
 ) -> Result<LoopResult> {
     let mut tool_history: Vec<ToolRound> = Vec::new();
     let mut total_usage = TokenUsage::default();
@@ -127,10 +129,30 @@ pub async fn run_tool_loop(
         let round_number = round_idx + 1;
 
         let llm_start = Instant::now();
+
+        // Start LLM call tracing span
+        let mut llm_span = if let Some(hook) = tracing_hook {
+            hook.on_llm_call_start(
+                llm.model_name(),
+                llm.provider_name(),
+                messages,
+            ).await
+        } else {
+            None
+        };
+
         let response = llm
             .chat_with_tools(messages, tools, &tool_history, None)
             .await?;
         let llm_elapsed_ms = llm_start.elapsed().as_millis() as u64;
+
+        // Finish LLM call tracing span
+        if let Some(ref mut span) = llm_span {
+            span.set_llm_response(&response);
+        }
+        if let Some(span) = llm_span {
+            span.finish_ok().await;
+        }
 
         if let Some(hook) = on_llm_response {
             hook(&response);
@@ -167,22 +189,52 @@ pub async fn run_tool_loop(
             elapsed_ms: llm_elapsed_ms,
         });
 
-        if cfg.track_reasoning && response.reasoning_content.is_some() {
-            last_reasoning = response.reasoning_content;
-        }
-
+        // Log intermediate LLM response details for tracing/debugging
         tracing::info!(
             agent = %cfg.agent_label,
             round = round_number,
+            llm_elapsed_ms = llm_elapsed_ms,
             tool_calls = response.tool_calls.len(),
-            "LLM requested tool calls"
+            content_len = response.content.len(),
+            has_reasoning = response.reasoning_content.as_ref().map_or(false, |r| !r.is_empty()),
+            prompt_tokens = response.usage.as_ref().and_then(|u| u.prompt_tokens),
+            completion_tokens = response.usage.as_ref().and_then(|u| u.completion_tokens),
+            total_tokens = response.usage.as_ref().and_then(|u| u.total_tokens),
+            "LLM round response: requested tool calls"
         );
+
+        // Log reasoning content at debug level (can be large)
+        if let Some(ref reasoning) = response.reasoning_content {
+            if !reasoning.is_empty() {
+                tracing::debug!(
+                    agent = %cfg.agent_label,
+                    round = round_number,
+                    reasoning_len = reasoning.len(),
+                    reasoning_content = reasoning.as_str(),
+                    "LLM round reasoning/thinking"
+                );
+            }
+        }
+
+        // Log intermediate content at debug level
+        if !response.content.is_empty() {
+            tracing::debug!(
+                agent = %cfg.agent_label,
+                round = round_number,
+                content = response.content.as_str(),
+                "LLM round intermediate content"
+            );
+        }
+
+        if cfg.track_reasoning && response.reasoning_content.is_some() {
+            last_reasoning = response.reasoning_content;
+        }
 
         emit(on_event, ToolEvent::RoundStart { round: round_number });
 
         let tool_calls = response.tool_calls;
         let mut responses =
-            execute_round(executor, &tool_calls, on_event).await;
+            execute_round(executor, &tool_calls, on_event, tracing_hook).await;
 
         // Check for runaway duplicate calls and react.
         match duplicate_detector.record_round(&tool_calls) {
@@ -252,6 +304,7 @@ async fn execute_round(
     executor: &dyn ToolExecutor,
     tool_calls: &[ToolCall],
     on_event: Option<&ToolEventCallback>,
+    tracing_hook: Option<&TracingHook>,
 ) -> Vec<ToolResponse> {
     let round_start = Instant::now();
 
@@ -269,12 +322,39 @@ async fn execute_round(
     }
 
     // Parallel dispatch: all calls in a round run concurrently.
-    // Each call is individually timed.
-    let futures = tool_calls.iter().map(|tc| async {
-        let start = Instant::now();
-        let resp = executor.execute(tc).await;
-        let elapsed_ms = start.elapsed().as_millis() as u64;
-        (resp, elapsed_ms)
+    // Each call is individually timed and traced.
+    let futures = tool_calls.iter().map(|tc| {
+        let source = executor.source_of(&tc.function_name);
+        async move {
+            // Start tool call tracing span
+            let mut tool_span = if let Some(hook) = tracing_hook {
+                hook.on_tool_call_start(
+                    &tc.function_name,
+                    &source,
+                    &tc.arguments,
+                ).await
+            } else {
+                None
+            };
+
+            let start = Instant::now();
+            let resp = executor.execute(tc).await;
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+
+            // Finish tool call tracing span
+            if let Some(ref mut span) = tool_span {
+                span.set_tool_result(&resp.content, resp.success);
+            }
+            if let Some(span) = tool_span {
+                if resp.success {
+                    span.finish_ok().await;
+                } else {
+                    span.finish_error(resp.content.clone()).await;
+                }
+            }
+
+            (resp, elapsed_ms)
+        }
     });
     let timed_results: Vec<(ToolResponse, u64)> = futures::future::join_all(futures).await;
 

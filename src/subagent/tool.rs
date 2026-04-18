@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use super::registry::SubagentRegistry;
 use super::runner::SubagentRunner;
 use super::SubagentResult;
+use crate::agent_tracing::{SharedTracingHook, TracingHook};
 use crate::tools::{truncate_chars, BuiltinTool, ToolEvent, ToolEventCallback};
 
 /// The tool name used for LLM-routed subagent spawn.
@@ -68,6 +69,7 @@ struct SubagentToolContext {
     registry: Arc<SubagentRegistry>,
     runner: Arc<SubagentRunner>,
     event_sink: SubagentEventSink,
+    tracing_hook: SharedTracingHook,
 }
 
 impl SubagentToolContext {
@@ -144,6 +146,7 @@ pub fn build_subagent_tool(
     registry: &Arc<SubagentRegistry>,
     runner: Arc<SubagentRunner>,
     event_sink: SubagentEventSink,
+    tracing_hook: SharedTracingHook,
 ) -> Option<Box<dyn BuiltinTool>> {
     if registry.agent_count() == 0 {
         return None;
@@ -153,6 +156,7 @@ pub fn build_subagent_tool(
             registry: Arc::clone(registry),
             runner,
             event_sink,
+            tracing_hook,
         },
     }))
 }
@@ -167,6 +171,7 @@ pub fn build_team_tool(
     registry: &Arc<SubagentRegistry>,
     runner: Arc<SubagentRunner>,
     event_sink: SubagentEventSink,
+    tracing_hook: SharedTracingHook,
 ) -> Option<Box<dyn BuiltinTool>> {
     if registry.agent_count() < 2 {
         return None;
@@ -176,6 +181,7 @@ pub fn build_team_tool(
             registry: Arc::clone(registry),
             runner,
             event_sink,
+            tracing_hook,
         },
     }))
 }
@@ -328,11 +334,44 @@ impl BuiltinTool for SubagentTool {
 
         self.ctx.emit_start(agent_name, task);
 
+        // Start subagent tracing span if trace context is available
+        let trace_ctx = self.ctx.tracing_hook.read();
+        let mut subagent_span = if let Some(ref ctx) = trace_ctx {
+            if ctx.is_enabled() {
+                Some(ctx.start_subagent_call(agent_name, task).await)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Build tracing hook for the subagent's tool loop
+        let subagent_tracing_hook = trace_ctx.as_ref().map(|ctx| {
+            TracingHook::new(Arc::clone(ctx))
+        });
+
         // Execute the subagent task (pass through the event callback)
         let callback = self.ctx.read_callback();
         let subagent_start = std::time::Instant::now();
-        let result = self.ctx.runner.run(definition, task, callback.as_ref()).await;
+        let result = self.ctx.runner.run(
+            definition, task, callback.as_ref(), subagent_tracing_hook.as_ref(),
+        ).await;
         let subagent_elapsed_ms = subagent_start.elapsed().as_millis() as u64;
+
+        // Finish subagent tracing span
+        if let Some(ref mut span) = subagent_span {
+            match &result {
+                Ok(r) => span.set_subagent_result(&r.content, r.usage.as_ref(), r.tool_rounds),
+                Err(e) => span.set_subagent_result(&format!("Error: {}", e), None, 0),
+            }
+        }
+        if let Some(span) = subagent_span {
+            match &result {
+                Ok(_) => span.finish_ok().await,
+                Err(e) => span.finish_error(e.to_string()).await,
+            }
+        }
 
         self.ctx.emit_complete(agent_name, &result, subagent_elapsed_ms);
 

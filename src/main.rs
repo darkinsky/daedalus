@@ -11,9 +11,14 @@ mod subagent;
 mod tools;
 mod workspace;
 
+// Named `agent_tracing` to avoid shadowing the `tracing` crate used for logging.
+#[path = "tracing/mod.rs"]
+mod agent_tracing;
+
 use agent::AgentMode;
 use anyhow::Result;
 use clap::Parser;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -68,6 +73,9 @@ async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard
     // Phase 1: Load raw config from workspace YAML (single file read, no tracing)
     let (mut raw_config, log_config) = config::load_from_workspace(&workspace)?;
 
+    // Extract tracing config before consuming raw_config
+    let tracing_config = raw_config.tracing.clone();
+
     // Apply CLI overrides to the raw config before building AgentConfig
     apply_cli_overrides(&args, &mut raw_config);
 
@@ -85,12 +93,16 @@ async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard
     // Apply system prompt overrides from CLI
     apply_prompt_overrides(&args, &mut agent_config);
 
+    // Phase 3: Initialize the TracingManager from config
+    let tracing_manager = init_tracing_manager(&tracing_config, &workspace).await;
+
     tracing::info!("Daedalus Agent starting...");
     tracing::info!(
         workspace = %workspace.root().display(),
         kind = %workspace.kind(),
         config_file = workspace.has_config_file(),
         print_mode = args.is_print_mode(),
+        tracing_enabled = tracing_config.enabled,
         "Workspace resolved"
     );
     tracing::info!("Using model: {}", agent_config.model());
@@ -100,7 +112,7 @@ async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard
     }
 
     // Build the agent with all extensions
-    let agent = build_agent(&args, &workspace, &agent_config).await?;
+    let agent = build_agent(&args, &workspace, &agent_config, tracing_manager).await?;
 
     Ok((agent, args, _log_guard))
 }
@@ -110,6 +122,7 @@ async fn build_agent(
     args: &cli::CliArgs,
     workspace: &workspace::Workspace,
     agent_config: &config::AgentConfig,
+    tracing_manager: Arc<agent_tracing::TracingManager>,
 ) -> Result<agent::ChatAgent> {
     let skip_extensions = args.bare;
 
@@ -126,6 +139,7 @@ async fn build_agent(
 
     // Build the chat agent with workspace-aware memory persistence
     let mut agent = agent::ChatAgent::new_with_workspace(provider, agent_config, workspace.clone());
+    agent.set_tracing_manager(tracing_manager);
     if let Some(manager) = mcp_manager {
         agent.attach_mcp(manager);
     }
@@ -240,6 +254,67 @@ fn load_skills(agent: &mut agent::ChatAgent, dir: &std::path::Path) {
             );
         }
     }
+}
+
+/// Initialize the TracingManager from configuration.
+///
+/// Creates the appropriate collectors based on the `tracing` config section
+/// and returns an `Arc<TracingManager>` ready to be shared with the agent.
+async fn init_tracing_manager(
+    config: &agent_tracing::TracingConfig,
+    workspace: &workspace::Workspace,
+) -> Arc<agent_tracing::TracingManager> {
+    let manager = Arc::new(agent_tracing::TracingManager::new(config.enabled, config.full_content));
+
+    if !config.enabled {
+        return manager;
+    }
+
+    for collector_config in &config.collectors {
+        match collector_config {
+            agent_tracing::config::CollectorConfig::File { path, format } => {
+                let output_dir = path
+                    .as_ref()
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| workspace.root().join("traces"));
+                let collector = agent_tracing::exporters::file::FileCollector::new(
+                    output_dir,
+                    format.clone(),
+                    config.full_content,
+                );
+                manager.add_collector(Box::new(collector)).await;
+            }
+            agent_tracing::config::CollectorConfig::Console { verbosity } => {
+                let collector =
+                    agent_tracing::exporters::console::ConsoleCollector::new(verbosity.clone());
+                manager.add_collector(Box::new(collector)).await;
+            }
+            agent_tracing::config::CollectorConfig::Otel {
+                endpoint,
+                service_name,
+            } => {
+                let collector = agent_tracing::exporters::otel::OtelCollector::new(
+                    endpoint.clone(),
+                    service_name.clone(),
+                );
+                manager.add_collector(Box::new(collector)).await;
+            }
+            agent_tracing::config::CollectorConfig::Langfuse {
+                public_key,
+                secret_key,
+                host,
+            } => {
+                let collector = agent_tracing::exporters::langfuse::LangfuseCollector::new(
+                    public_key.clone(),
+                    secret_key.clone(),
+                    host.clone(),
+                );
+                manager.add_collector(Box::new(collector)).await;
+            }
+        }
+    }
+
+    manager
 }
 
 /// Load subagent definitions from workspace and global directories.

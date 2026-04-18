@@ -7,6 +7,7 @@ use crate::mcp::McpManager;
 use crate::skill::SkillRegistry;
 use crate::subagent::{SubagentRegistry, SubagentRunner};
 use crate::subagent::tool::SubagentEventSink;
+use crate::agent_tracing::SharedTracingHook;
 use crate::tools::{BuiltinToolRegistry, ToolInfo};
 
 /// Tool filter for --allowed-tools / --disallowed-tools CLI flags.
@@ -72,6 +73,10 @@ pub struct ToolRouter {
     /// The REPL sets this before each chat call so subagent tool events
     /// are rendered in real-time.
     subagent_event_sink: SubagentEventSink,
+    /// Shared tracing hook for subagent span creation.
+    /// Set by ChatAgent before each chat call so subagent tool calls
+    /// create spans nested under the main trace.
+    shared_tracing_hook: SharedTracingHook,
     /// Optional tool filter (from --allowed-tools / --disallowed-tools).
     tool_filter: Option<ToolFilter>,
 }
@@ -85,6 +90,7 @@ impl ToolRouter {
             skills: Arc::new(SkillRegistry::new()),
             subagents: Arc::new(SubagentRegistry::new()),
             subagent_event_sink: SubagentEventSink::new(),
+            shared_tracing_hook: SharedTracingHook::new(),
             tool_filter: None,
         }
     }
@@ -140,6 +146,7 @@ impl ToolRouter {
             &subagents,
             Arc::clone(&runner),
             self.subagent_event_sink.clone(),
+            self.shared_tracing_hook.clone(),
         ) {
             self.builtin.register_tool(subagent_tool);
         }
@@ -151,6 +158,7 @@ impl ToolRouter {
             &subagents,
             Arc::clone(&runner),
             self.subagent_event_sink.clone(),
+            self.shared_tracing_hook.clone(),
         ) {
             self.builtin.register_tool(team_tool);
         }
@@ -173,6 +181,14 @@ impl ToolRouter {
     /// to the current spinner. The callback is cleared after the call.
     pub fn set_subagent_event_callback(&self, callback: Option<crate::tools::ToolEventCallback>) {
         self.subagent_event_sink.set(callback);
+    }
+
+    /// Set the shared tracing hook for subagent span creation.
+    ///
+    /// Called by ChatAgent before each chat call to bind the trace context.
+    /// The hook is cleared after the call completes.
+    pub fn set_shared_tracing_hook(&self, ctx: Option<std::sync::Arc<crate::agent_tracing::TraceContext>>) {
+        self.shared_tracing_hook.set(ctx);
     }
 
     /// Attach an MCP manager to enable external tool calling.
@@ -317,6 +333,7 @@ impl ToolRouter {
     ///
     /// This helper eliminates the duplicated Ok/Err logging pattern
     /// that was previously repeated for each tool source.
+    /// Includes timing and result preview for observability.
     async fn execute_and_log(
         &self,
         call_id: &str,
@@ -324,13 +341,29 @@ impl ToolRouter {
         source: &str,
         fut: impl std::future::Future<Output = Result<String>>,
     ) -> ToolResponse {
-        match fut.await {
+        let start = std::time::Instant::now();
+        let outcome = fut.await;
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+
+        match outcome {
             Ok(result) => {
+                // Truncate result preview for logging (avoid flooding logs)
+                let preview = if result.len() > 500 {
+                    format!("{}...(truncated, total {} bytes)", crate::tools::truncate_at_char_boundary(&result, 500), result.len())
+                } else {
+                    result.clone()
+                };
                 tracing::info!(
                     tool = %tool_name,
-                    result_len = result.len(),
                     source = source,
+                    result_len = result.len(),
+                    elapsed_ms = elapsed_ms,
                     "Tool call succeeded"
+                );
+                tracing::debug!(
+                    tool = %tool_name,
+                    result_preview = %preview,
+                    "Tool call result"
                 );
                 ToolResponse::new(call_id, result)
             }
@@ -339,6 +372,7 @@ impl ToolRouter {
                     tool = %tool_name,
                     error = %e,
                     source = source,
+                    elapsed_ms = elapsed_ms,
                     "Tool call failed"
                 );
                 ToolResponse::error(

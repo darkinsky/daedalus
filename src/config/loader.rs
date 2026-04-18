@@ -20,6 +20,7 @@ use crate::workspace::Workspace;
 
 use super::agent_config::{AgentConfig, AgentSection, EmbeddingConfig, MemorySection};
 use super::logging::LogConfig;
+use crate::agent_tracing::TracingConfig;
 
 /// Top-level YAML configuration file structure.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -35,6 +36,8 @@ struct DaedalusConfigFile {
     embedding: EmbeddingConfig,
     /// Logging configuration.
     logging: LogConfig,
+    /// Tracing/observability configuration.
+    tracing: TracingConfig,
 }
 
 /// Intermediate configuration state between YAML parsing and AgentConfig construction.
@@ -47,6 +50,8 @@ pub struct RawConfig {
     agent: AgentSection,
     memory: MemorySection,
     embedding: EmbeddingConfig,
+    /// Tracing configuration (exposed for bootstrap to initialize TracingManager).
+    pub tracing: TracingConfig,
 }
 
 impl RawConfig {
@@ -92,6 +97,7 @@ pub fn load_from_workspace(workspace: &Workspace) -> Result<(RawConfig, LogConfi
         agent: file_config.agent,
         memory: file_config.memory,
         embedding: file_config.embedding,
+        tracing: file_config.tracing,
     };
 
     let mut log_config = file_config.logging;
