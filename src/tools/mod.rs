@@ -19,6 +19,9 @@ use async_trait::async_trait;
 // without knowing about the internal `text_utils` module layout.
 pub(crate) use text_utils::{truncate_at_char_boundary, truncate_chars};
 
+// Re-export rg pre-initialization for eager startup outside async context.
+pub(crate) use grep_search::ensure_rg_init;
+
 // ── Tool execution events ──
 
 /// Events emitted during tool execution, allowing the CLI layer

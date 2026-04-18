@@ -192,20 +192,22 @@ impl Span {
     /// Mark the span as completed successfully.
     #[allow(dead_code)]
     pub fn finish_ok(&mut self) {
-        self.ended_at = Some(Utc::now());
+        let ended = Utc::now();
         self.elapsed_ms = Some(
-            (self.ended_at.unwrap() - self.started_at).num_milliseconds().max(0) as u64,
+            (ended - self.started_at).num_milliseconds().max(0) as u64,
         );
+        self.ended_at = Some(ended);
         self.status = SpanStatus::Ok;
     }
 
     /// Mark the span as completed with an error.
     #[allow(dead_code)]
     pub fn finish_error(&mut self, error: String) {
-        self.ended_at = Some(Utc::now());
+        let ended = Utc::now();
         self.elapsed_ms = Some(
-            (self.ended_at.unwrap() - self.started_at).num_milliseconds().max(0) as u64,
+            (ended - self.started_at).num_milliseconds().max(0) as u64,
         );
+        self.ended_at = Some(ended);
         self.status = SpanStatus::Error(error);
     }
 }

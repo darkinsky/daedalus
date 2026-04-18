@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 
 use crate::llm::TokenUsage;
 use crate::agent_tracing::collector::TracingCollector;
-use crate::agent_tracing::config::FileFormat;
+use crate::agent_tracing::config::{ContentFlags, FileFormat};
 use crate::agent_tracing::types::{Span, SpanStatus, SpanType, Trace};
 
 /// File-based tracing collector.
@@ -27,13 +27,13 @@ pub struct FileCollector {
     /// Buffer of pending writes (flushed on trace_end or explicit flush).
     #[allow(dead_code)]
     buffer: Mutex<Vec<String>>,
-    /// Whether to record full content without truncation.
-    full_content: bool,
+    /// Resolved content recording flags.
+    flags: ContentFlags,
 }
 
 impl FileCollector {
     /// Create a new file collector writing to the given directory.
-    pub fn new(output_dir: PathBuf, format: FileFormat, full_content: bool) -> Self {
+    pub fn new(output_dir: PathBuf, format: FileFormat, flags: ContentFlags) -> Self {
         // Ensure the output directory exists
         if let Err(e) = std::fs::create_dir_all(&output_dir) {
             tracing::warn!(
@@ -47,7 +47,7 @@ impl FileCollector {
             output_dir,
             format,
             buffer: Mutex::new(Vec::new()),
-            full_content,
+            flags,
         }
     }
 
@@ -126,7 +126,7 @@ impl TracingCollector for FileCollector {
             }
             FileFormat::Yaml => {
                 // Human-readable YAML-like indented tree format
-                let yaml = serialize_trace_yaml(trace, self.full_content);
+                let yaml = serialize_trace_yaml(trace, self.flags);
                 self.write_line(&yaml);
             }
         }
@@ -325,7 +325,7 @@ fn serialize_usage(usage: Option<&TokenUsage>) -> serde_json::Value {
 ///           tool_rounds: 3
 ///           usage: 600/200/800
 /// ```
-fn serialize_trace_yaml(trace: &Trace, full_content: bool) -> String {
+fn serialize_trace_yaml(trace: &Trace, flags: ContentFlags) -> String {
     let mut out = String::new();
 
     out.push_str("---\n");
@@ -367,7 +367,7 @@ fn serialize_trace_yaml(trace: &Trace, full_content: bool) -> String {
     if !root_spans.is_empty() || !trace.spans.is_empty() {
         out.push_str("  spans:\n");
         for root in &root_spans {
-            serialize_span_yaml(&mut out, root, &trace.spans, 2, full_content);
+            serialize_span_yaml(&mut out, root, &trace.spans, 2, flags);
         }
         // Also print orphan spans (parent not in this trace) at root level
         let root_ids: Vec<&str> = root_spans.iter().map(|s| s.span_id.as_str()).collect();
@@ -376,7 +376,7 @@ fn serialize_trace_yaml(trace: &Trace, full_content: bool) -> String {
                 && !root_ids.contains(&span.span_id.as_str())
                 && !has_parent_in_trace(span, &trace.spans)
             {
-                serialize_span_yaml(&mut out, span, &trace.spans, 2, full_content);
+                serialize_span_yaml(&mut out, span, &trace.spans, 2, flags);
             }
         }
     }
@@ -395,7 +395,7 @@ fn has_parent_in_trace(span: &Span, all_spans: &[Span]) -> bool {
 }
 
 /// Recursively serialize a span and its children in YAML-like tree format.
-fn serialize_span_yaml(out: &mut String, span: &Span, all_spans: &[Span], indent: usize, full_content: bool) {
+fn serialize_span_yaml(out: &mut String, span: &Span, all_spans: &[Span], indent: usize, flags: ContentFlags) {
     let pad = " ".repeat(indent * 2);
     let status_str = match &span.status {
         SpanStatus::Running => "running",
@@ -416,7 +416,7 @@ fn serialize_span_yaml(out: &mut String, span: &Span, all_spans: &[Span], indent
 
     // Error message if any
     if let SpanStatus::Error(ref msg) = span.status {
-        out.push_str(&format!("{}    error: {}\n", pad, maybe_truncate(msg, 200, full_content)));
+        out.push_str(&format!("{}    error: {}\n", pad, maybe_truncate(msg, 200, true)));
     }
 
     // Type-specific details
@@ -426,13 +426,13 @@ fn serialize_span_yaml(out: &mut String, span: &Span, all_spans: &[Span], indent
             out.push_str(&format!(
                 "{}input: \"{}\"\n",
                 detail_pad,
-                maybe_truncate(user_input, 100, full_content)
+                maybe_truncate(user_input, 100, flags.llm_input)
             ));
             if let Some(o) = output {
                 out.push_str(&format!(
                     "{}output: \"{}\"\n",
                     detail_pad,
-                    maybe_truncate(o, 200, full_content)
+                    maybe_truncate(o, 200, flags.llm_output)
                 ));
             }
         }
@@ -455,14 +455,14 @@ fn serialize_span_yaml(out: &mut String, span: &Span, all_spans: &[Span], indent
                 out.push_str(&format!(
                     "{}output: \"{}\"\n",
                     detail_pad,
-                    maybe_truncate(content, 200, full_content)
+                    maybe_truncate(content, 200, flags.llm_output)
                 ));
             }
             if let Some(reasoning) = reasoning_content {
                 out.push_str(&format!(
                     "{}reasoning: \"{}\"\n",
                     detail_pad,
-                    maybe_truncate(reasoning, 150, full_content)
+                    maybe_truncate(reasoning, 150, flags.llm_output)
                 ));
             }
             if !tool_calls.is_empty() {
@@ -501,16 +501,18 @@ fn serialize_span_yaml(out: &mut String, span: &Span, all_spans: &[Span], indent
             out.push_str(&format!(
                 "{}arguments: {}\n",
                 detail_pad,
-                maybe_truncate(&args_str, 200, full_content)
+                maybe_truncate(&args_str, 200, flags.llm_output)
             ));
             if let Some(r) = result {
                 out.push_str(&format!(
                     "{}result: \"{}\"\n",
                     detail_pad,
-                    maybe_truncate(r, 200, full_content)
+                    maybe_truncate(r, 200, flags.tool_result)
                 ));
-            }        }
-        SpanType::SubagentCall {            agent_name,
+            }
+        }
+        SpanType::SubagentCall {
+            agent_name,
             task,
             model,
             result,
@@ -521,7 +523,7 @@ fn serialize_span_yaml(out: &mut String, span: &Span, all_spans: &[Span], indent
             out.push_str(&format!(
                 "{}task: \"{}\"\n",
                 detail_pad,
-                maybe_truncate(task, 150, full_content)
+                maybe_truncate(task, 150, flags.llm_input)
             ));
             if let Some(m) = model {
                 out.push_str(&format!("{}model: {}\n", detail_pad, m));
@@ -536,7 +538,7 @@ fn serialize_span_yaml(out: &mut String, span: &Span, all_spans: &[Span], indent
                 out.push_str(&format!(
                     "{}result: \"{}\"\n",
                     detail_pad,
-                    maybe_truncate(r, 200, full_content)
+                    maybe_truncate(r, 200, flags.tool_result)
                 ));
             }
         }
@@ -547,7 +549,7 @@ fn serialize_span_yaml(out: &mut String, span: &Span, all_spans: &[Span], indent
         .filter(|s| s.parent_span_id.as_deref() == Some(&span.span_id))
         .collect();
     for child in children {
-        serialize_span_yaml(out, child, all_spans, indent + 1, full_content);
+        serialize_span_yaml(out, child, all_spans, indent + 1, flags);
     }
 }
 /// Get a short type tag for the span type.

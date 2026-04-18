@@ -6,10 +6,13 @@
 //! (which would otherwise conflict with the single-file `render.rs`).
 
 /// Maximum number of lines to display for tool output before truncating.
+#[allow(dead_code)]
 pub(super) const TOOL_OUTPUT_MAX_LINES: usize = 10;
 /// Number of lines to show from the beginning when truncating.
+#[allow(dead_code)]
 pub(super) const TOOL_OUTPUT_HEAD_LINES: usize = 5;
 /// Number of lines to show from the end when truncating.
+#[allow(dead_code)]
 pub(super) const TOOL_OUTPUT_TAIL_LINES: usize = 3;
 
 /// Unfold a bash command: preserve the full text (no truncation), but insert a
@@ -131,6 +134,7 @@ pub(super) fn unfold_bash_command(cmd: &str) -> String {
 /// Mimics Claude Code's approach: if the output exceeds `TOOL_OUTPUT_MAX_LINES`,
 /// show the first `TOOL_OUTPUT_HEAD_LINES` lines, a "... (N lines hidden) ..."
 /// indicator, and the last `TOOL_OUTPUT_TAIL_LINES` lines.
+#[allow(dead_code)]
 pub(super) fn format_truncated_output(lines: &[&str]) -> Vec<String> {
     let line_count = lines.len();
     let mut result = Vec::new();

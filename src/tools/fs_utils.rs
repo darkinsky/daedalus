@@ -1,18 +1,100 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// Resolve a file path to an absolute path.
+/// Directories that are always off-limits, regardless of workspace root.
 ///
-/// If the path is already absolute, it is returned as-is.
-/// If the path is relative, it is resolved against the current working directory.
+/// Prevents LLM-driven file operations from accessing sensitive system paths.
+const BLOCKED_PREFIXES: &[&str] = &[
+    "/etc/shadow",
+    "/etc/gshadow",
+    "/proc/",
+    "/sys/",
+];
+
+/// Sensitive home-directory paths that should never be read/written by tools.
+const BLOCKED_HOME_SUFFIXES: &[&str] = &[
+    ".ssh/",
+    ".gnupg/",
+    ".aws/credentials",
+    ".config/gcloud/",
+];
+
+/// Resolve a file path to an absolute path with security validation.
+///
+/// # Security
+///
+/// - **Blocked system paths**: `/etc/shadow`, `/proc/`, `/sys/`, etc. are always rejected
+/// - **Blocked home secrets**: `~/.ssh/`, `~/.aws/credentials`, etc. are rejected
+/// - **Relative path traversal**: `../../etc/passwd` is caught by canonicalizing and
+///   verifying the resolved path doesn't land in a blocked zone
+/// - **Absolute paths**: Allowed (the user/LLM may legitimately reference files
+///   outside CWD), but still checked against the blocklist
 pub fn resolve_path(path_str: &str) -> Result<PathBuf> {
+    let cwd = std::env::current_dir().context("Failed to get current working directory")?;
     let path = Path::new(path_str);
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
+
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
     } else {
-        let cwd = std::env::current_dir().context("Failed to get current working directory")?;
-        Ok(cwd.join(path))
+        cwd.join(path)
+    };
+
+    // Canonicalize to resolve `..`, `.`, and symlinks where possible
+    let resolved = if absolute.exists() {
+        absolute.canonicalize().with_context(|| {
+            format!("Failed to canonicalize path: {}", absolute.display())
+        })?
+    } else {
+        // For non-existent paths, canonicalize the parent and append filename
+        if let Some(parent) = absolute.parent() {
+            if parent.exists() {
+                let canon_parent = parent.canonicalize().with_context(|| {
+                    format!("Failed to canonicalize parent: {}", parent.display())
+                })?;
+                if let Some(file_name) = absolute.file_name() {
+                    canon_parent.join(file_name)
+                } else {
+                    canon_parent
+                }
+            } else {
+                absolute
+            }
+        } else {
+            absolute
+        }
+    };
+
+    // Check against blocked system paths
+    let resolved_str = resolved.to_string_lossy();
+    for prefix in BLOCKED_PREFIXES {
+        if resolved_str.starts_with(prefix) {
+            anyhow::bail!(
+                "Access denied: path '{}' resolves to a restricted system path",
+                path_str
+            );
+        }
     }
+
+    // Check against blocked home-directory secrets
+    if let Some(home) = home_dir() {
+        let home_str = home.to_string_lossy();
+        for suffix in BLOCKED_HOME_SUFFIXES {
+            let blocked = format!("{}/{}", home_str, suffix);
+            if resolved_str.starts_with(&blocked) {
+                anyhow::bail!(
+                    "Access denied: path '{}' resolves to a sensitive home directory path",
+                    path_str
+                );
+            }
+        }
+    }
+
+    Ok(resolved)
+}
+
+/// Get the user's home directory.
+fn home_dir() -> Option<PathBuf> {
+    std::env::var("HOME").ok().map(PathBuf::from)
 }
 
 /// Extract a required string parameter from JSON arguments.
@@ -81,7 +163,27 @@ mod tests {
     fn test_resolve_path_relative() {
         let result = resolve_path("test.txt").unwrap();
         let cwd = std::env::current_dir().unwrap();
-        assert_eq!(result, cwd.join("test.txt"));
+        assert!(result.starts_with(&cwd));
+    }
+
+    #[test]
+    fn test_resolve_path_blocked_system_path() {
+        let result = resolve_path("/etc/shadow");
+        assert!(result.is_err(), "/etc/shadow should be blocked");
+
+        let result = resolve_path("/proc/self/environ");
+        assert!(result.is_err(), "/proc/ should be blocked");
+
+        let result = resolve_path("/sys/class/net");
+        assert!(result.is_err(), "/sys/ should be blocked");
+    }
+
+    #[test]
+    fn test_resolve_path_traversal_to_blocked() {
+        // Traversal that ends up at a blocked path should be caught
+        // (e.g., if CWD is /data/workspace, ../../etc/shadow resolves to /etc/shadow)
+        let result = resolve_path("../../../../../../etc/shadow");
+        assert!(result.is_err(), "Traversal to /etc/shadow should be blocked");
     }
 
     #[test]

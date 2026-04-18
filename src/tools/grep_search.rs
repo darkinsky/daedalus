@@ -5,10 +5,10 @@
 //! falling back to a system-installed `rg`, then to a built-in regex walker.
 
 use std::path::Path;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use once_cell::sync::Lazy;
 use tokio::process::Command;
 
 use super::BuiltinTool;
@@ -74,7 +74,24 @@ fn which_sync(cmd: &str) -> bool {
 }
 
 /// Cached rg binary path, resolved once at first use.
-static RG_BINARY: Lazy<Option<String>> = Lazy::new(find_rg_binary);
+///
+/// Use `ensure_rg_init()` during bootstrap (before entering the async
+/// runtime) to avoid blocking a Tokio worker thread on first access.
+static RG_BINARY: OnceLock<Option<String>> = OnceLock::new();
+
+/// Pre-initialize the rg binary lookup.
+///
+/// Call this during application startup (in `bootstrap()`, before
+/// entering the async runtime) so that the blocking `find_rg_binary()`
+/// call does not run on a Tokio worker thread.
+pub fn ensure_rg_init() {
+    RG_BINARY.get_or_init(find_rg_binary);
+}
+
+/// Get the cached rg binary path.
+fn rg_binary() -> &'static Option<String> {
+    RG_BINARY.get_or_init(find_rg_binary)
+}
 
 /// Search file contents using regex or literal patterns.
 pub struct GrepSearchTool;
@@ -144,7 +161,7 @@ impl BuiltinTool for GrepSearchTool {
             anyhow::bail!("Search path does not exist: {}", search_path.display());
         }
 
-        let rg_path = RG_BINARY.as_ref().ok_or_else(|| {
+        let rg_path = rg_binary().as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "ripgrep (rg) not found. Place the rg binary in bin/rg or install it on your system."
             )
@@ -280,7 +297,7 @@ mod tests {
     async fn test_rg_binary_found() {
         // The bundled rg should be discoverable
         assert!(
-            RG_BINARY.is_some(),
+            rg_binary().is_some(),
             "rg binary not found — ensure bin/rg exists in the project root"
         );
     }

@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 
 use crate::llm::{ChatMessage, ChatResponse, TokenUsage};
 
+use super::config::ContentFlags;
 use super::manager::TracingManager;
 use super::types::{
     MessageSummary, Span, SpanStatus, SpanType, ToolCallSummary, Trace, TraceMetadata,
@@ -43,8 +44,8 @@ pub struct TraceContext {
     created_at: chrono::DateTime<Utc>,
     /// Accumulated token usage across all LLM calls.
     total_usage: Arc<Mutex<TokenUsage>>,
-    /// Whether to record full content without truncation.
-    full_content: bool,
+    /// Resolved content recording flags for fine-grained truncation control.
+    flags: ContentFlags,
 }
 
 impl TraceContext {
@@ -53,7 +54,7 @@ impl TraceContext {
         manager: Arc<TracingManager>,
         session_id: &str,
         metadata: TraceMetadata,
-        full_content: bool,
+        flags: ContentFlags,
     ) -> Self {
         let trace_id = uuid::Uuid::new_v4().to_string();
 
@@ -67,7 +68,7 @@ impl TraceContext {
             started_at: Instant::now(),
             created_at: Utc::now(),
             total_usage: Arc::new(Mutex::new(TokenUsage::default())),
-            full_content,
+            flags,
         }
     }
 
@@ -125,7 +126,7 @@ impl TraceContext {
             .iter()
             .map(|m| MessageSummary {
                 role: m.role.to_string(),
-                content_preview: self.maybe_truncate(&m.content, MESSAGE_PREVIEW_LEN),
+                content_preview: maybe_truncate(&m.content, MESSAGE_PREVIEW_LEN, self.flags.llm_input),
                 content_len: m.content.len(),
             })
             .collect();
@@ -169,7 +170,7 @@ impl TraceContext {
     ) -> SpanGuard {
         let span_type = SpanType::SubagentCall {
             agent_name: agent_name.to_string(),
-            task: self.maybe_truncate(task, ARGS_PREVIEW_LEN),
+            task: maybe_truncate(task, ARGS_PREVIEW_LEN, self.flags.llm_input),
             model: None,
             result: None,
             usage: None,
@@ -182,7 +183,7 @@ impl TraceContext {
     /// Start an agent turn span (root span for the trace).
     pub async fn start_agent_turn(&self, user_input: &str) -> SpanGuard {
         let span_type = SpanType::AgentTurn {
-            user_input: self.maybe_truncate(user_input, MESSAGE_PREVIEW_LEN),
+            user_input: maybe_truncate(user_input, MESSAGE_PREVIEW_LEN, self.flags.llm_input),
             output: None,
         };
 
@@ -200,19 +201,17 @@ impl TraceContext {
 
     // ── Internal helpers ──
 
-    /// Truncate content based on the `full_content` setting.
-    /// When `full_content` is true, returns the full string without truncation.
-    fn maybe_truncate(&self, s: &str, max_len: usize) -> String {
-        if self.full_content {
-            s.to_string()
-        } else {
-            truncate(s, max_len)
-        }
-    }
-
     /// Start a span with automatic parent linking.
+    ///
+    /// The parent span ID is determined at span creation time by peeking
+    /// at the stack. The stack is used for sequential nesting; parallel
+    /// tool calls each see the same parent (the enclosing LLM call span)
+    /// because they all peek the stack before any of them push.
     async fn start_span(&self, name: String, span_type: SpanType) -> SpanGuard {
         let span_id = uuid::Uuid::new_v4().to_string();
+
+        // Capture parent before pushing — this is the key to correct
+        // parallel span nesting: concurrent calls all see the same parent.
         let parent_span_id = {
             let stack = self.span_stack.lock().await;
             stack.last().cloned()
@@ -226,7 +225,7 @@ impl TraceContext {
             span_type,
         );
 
-        // Push this span onto the stack as the new parent
+        // Push this span onto the stack as the new parent for nested spans
         self.span_stack.lock().await.push(span_id.clone());
 
         // Notify collectors
@@ -243,7 +242,7 @@ impl TraceContext {
             start_time: Instant::now(),
             finished: false,
             enabled: self.is_enabled(),
-            full_content: self.full_content,
+            flags: self.flags,
         }
     }
 
@@ -276,14 +275,14 @@ pub struct SpanGuard {
     start_time: Instant,
     finished: bool,
     enabled: bool,
-    /// Whether to record full content without truncation.
-    full_content: bool,
+    /// Resolved content recording flags for fine-grained truncation control.
+    flags: ContentFlags,
 }
 
 impl SpanGuard {
     /// Record the LLM response into this span (for LlmCall spans).
     pub fn set_llm_response(&mut self, response: &ChatResponse) {
-        let full = self.full_content;
+        let output_full = self.flags.llm_output;
         if let SpanType::LlmCall {
             ref mut output_content,
             ref mut reasoning_content,
@@ -292,17 +291,17 @@ impl SpanGuard {
             ..
         } = self.span.span_type
         {
-            *output_content = Some(maybe_truncate(&response.content, RESULT_PREVIEW_LEN, full));
+            *output_content = Some(maybe_truncate(&response.content, RESULT_PREVIEW_LEN, output_full));
             *reasoning_content = response
                 .reasoning_content
                 .as_ref()
-                .map(|r| maybe_truncate(r, RESULT_PREVIEW_LEN, full));
+                .map(|r| maybe_truncate(r, RESULT_PREVIEW_LEN, output_full));
             *tool_calls = response
                 .tool_calls
                 .iter()
                 .map(|tc| ToolCallSummary {
                     function_name: tc.function_name.clone(),
-                    arguments_preview: maybe_truncate(&tc.arguments.to_string(), ARGS_PREVIEW_LEN, full),
+                    arguments_preview: maybe_truncate(&tc.arguments.to_string(), ARGS_PREVIEW_LEN, output_full),
                 })
                 .collect();
             *usage = response.usage.clone();
@@ -311,14 +310,14 @@ impl SpanGuard {
 
     /// Record the tool result into this span (for ToolCall spans).
     pub fn set_tool_result(&mut self, result: &str, success: bool) {
-        let full = self.full_content;
+        let tool_full = self.flags.tool_result;
         if let SpanType::ToolCall {
             result: ref mut r,
             success: ref mut s,
             ..
         } = self.span.span_type
         {
-            *r = Some(maybe_truncate(result, RESULT_PREVIEW_LEN, full));
+            *r = Some(maybe_truncate(result, RESULT_PREVIEW_LEN, tool_full));
             *s = success;
         }
     }
@@ -330,7 +329,7 @@ impl SpanGuard {
         usage: Option<&TokenUsage>,
         tool_rounds: usize,
     ) {
-        let full = self.full_content;
+        let tool_full = self.flags.tool_result;
         if let SpanType::SubagentCall {
             result: ref mut r,
             usage: ref mut u,
@@ -338,7 +337,7 @@ impl SpanGuard {
             ..
         } = self.span.span_type
         {
-            *r = Some(maybe_truncate(result, RESULT_PREVIEW_LEN, full));
+            *r = Some(maybe_truncate(result, RESULT_PREVIEW_LEN, tool_full));
             *u = usage.cloned();
             *tr = tool_rounds;
         }
@@ -346,12 +345,12 @@ impl SpanGuard {
 
     /// Record the agent turn output (for AgentTurn spans).
     pub fn set_agent_output(&mut self, output: &str) {
-        let full = self.full_content;
+        let output_full = self.flags.llm_output;
         if let SpanType::AgentTurn {
             output: ref mut o, ..
         } = self.span.span_type
         {
-            *o = Some(maybe_truncate(output, RESULT_PREVIEW_LEN, full));
+            *o = Some(maybe_truncate(output, RESULT_PREVIEW_LEN, output_full));
         }
     }
 

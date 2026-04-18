@@ -66,3 +66,17 @@ logging:
 
   # File log format (default: "json")
   # file_format: json
+
+# ── Tracing Configuration ──
+tracing:
+  enabled: true
+
+  # Fine-grained content recording:
+  content:
+    llm_input: true     # Record full LLM input messages (system prompt + history)
+    llm_output: false   # Record full LLM output (response, reasoning, tool call args)
+    tool_result: false  # Record full tool execution results
+
+  collectors:
+    - type: file
+      format: yaml

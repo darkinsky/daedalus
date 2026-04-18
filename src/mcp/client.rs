@@ -344,14 +344,20 @@ impl McpClient {
 
     /// Gracefully shut down the MCP server.
     ///
-    /// Called during application shutdown. Currently invoked only via
-    /// `McpManager::shutdown()` which is itself reserved for future use.
+    /// Called during application shutdown. Closes the stdin pipe to signal
+    /// the server to exit, then kills the process if still running.
     #[allow(dead_code)]
     pub async fn shutdown(&mut self) -> Result<()> {
         tracing::info!(server = %self.server_name, "Shutting down MCP server");
 
-        // Try to send shutdown request (ignore errors — server may already be gone)
-        let _ = self.send_notification("notifications/cancelled", None).await;
+        // Close stdin to signal the server to exit gracefully
+        drop(self.stdin.lock().await);
+
+        // Give the server a moment to exit, then force-kill if needed
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.child.wait(),
+        ).await;
 
         // Kill the child process if still running
         let _ = self.child.kill().await;

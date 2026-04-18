@@ -12,7 +12,6 @@ use crossterm::style::{Attribute, Color, Stylize};
 use crate::tools::{truncate_chars, ToolEvent};
 
 use super::summarize::{edit_diff_preview, summarize_tool_args};
-use super::tool_output::format_truncated_output;
 
 /// Render a tool-execution event into fully styled terminal lines.
 ///
@@ -247,13 +246,8 @@ impl ToolEventFormatter {
                 tag_prefix.as_str().with(color).attribute(Attribute::Bold),
                 format!("{} ({} lines, {})", tool_name, line_count, elapsed_str).with(Color::DarkGrey),
             ));
-            for formatted_line in format_truncated_output(&content_lines) {
-                lines.push(format!(
-                    "    {}  {}",
-                    "│".with(Color::DarkGrey),
-                    formatted_line.with(Color::DarkGrey),
-                ));
-            }
+            // Tool result content is hidden by default in interactive mode.
+            // Use tracing/file collector to inspect full tool outputs.
         } else {
             let first_line = result_content.lines().next().unwrap_or("");
             lines.push(format!(

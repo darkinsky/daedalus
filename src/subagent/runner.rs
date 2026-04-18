@@ -72,7 +72,7 @@ impl SubagentRunner {
 
         // Set up worktree isolation if configured
         let _worktree_guard = if definition.isolation == IsolationMode::Worktree {
-            Some(super::isolation::setup_worktree(&definition.name)?)
+            Some(super::isolation::setup_worktree(&definition.name).await?)
         } else {
             None
         };

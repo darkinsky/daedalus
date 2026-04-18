@@ -14,6 +14,9 @@ use super::BuiltinTool;
 /// Default timeout for bash commands (in seconds).
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
+/// Maximum allowed timeout to prevent DoS via LLM-supplied values.
+const MAX_TIMEOUT_SECS: u64 = 300;
+
 /// Maximum output size in bytes to prevent unbounded memory usage.
 const MAX_OUTPUT_BYTES: usize = 256 * 1024; // 256 KB
 
@@ -70,7 +73,8 @@ impl BuiltinTool for BashTool {
         let timeout_secs = arguments
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
-            .unwrap_or(DEFAULT_TIMEOUT_SECS);
+            .unwrap_or(DEFAULT_TIMEOUT_SECS)
+            .min(MAX_TIMEOUT_SECS);
 
         tracing::info!(
             command = %command_str,

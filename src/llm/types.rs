@@ -85,7 +85,7 @@ impl VenusExtensions {
 }
 
 /// Configuration for an LLM provider.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 #[serde(default)]
 pub struct LlmConfig {
     /// API key for authentication.
@@ -100,6 +100,27 @@ pub struct LlmConfig {
     /// Venus API proxy advanced options (thinking, reasoning_effort).
     #[serde(default)]
     pub venus: VenusExtensions,
+}
+
+/// Custom Debug implementation that redacts the API key to prevent
+/// accidental leakage in logs, tracing output, or error messages.
+impl std::fmt::Debug for LlmConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redacted_key = if self.api_key.len() > 8 {
+            format!("{}...{}", &self.api_key[..4], &self.api_key[self.api_key.len()-4..])
+        } else if !self.api_key.is_empty() {
+            "***REDACTED***".to_string()
+        } else {
+            "(empty)".to_string()
+        };
+        f.debug_struct("LlmConfig")
+            .field("api_key", &redacted_key)
+            .field("model", &self.model)
+            .field("api_base", &self.api_base)
+            .field("adapter_kind", &self.adapter_kind)
+            .field("venus", &self.venus)
+            .finish()
+    }
 }
 
 impl Default for LlmConfig {

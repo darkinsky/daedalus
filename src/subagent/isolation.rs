@@ -10,16 +10,66 @@
 
 use anyhow::Result;
 
-/// Run a lifecycle hook shell command.
+/// Characters that are forbidden in lifecycle hook commands to prevent shell injection.
+///
+/// Blocks pipes, chaining, command substitution, and redirection. Users who
+/// need complex commands should use a wrapper script referenced by path.
+const FORBIDDEN_SHELL_CHARS: &[char] = &['|', ';', '&', '$', '`', '(', ')', '{', '}', '<', '>'];
+
+/// Validate that a lifecycle hook command does not contain shell injection risks.
+fn validate_hook_command(command: &str) -> Result<()> {
+    if let Some(ch) = command.chars().find(|c| FORBIDDEN_SHELL_CHARS.contains(c)) {
+        anyhow::bail!(
+            "Lifecycle hook command contains forbidden shell character '{}'. \
+             Use a wrapper script instead of inline shell syntax.",
+            ch
+        );
+    }
+    Ok(())
+}
+
+/// Validate that an agent name contains only safe characters (alphanumeric, '-', '_').
+///
+/// This prevents git option injection (e.g., `--exec=malicious`) when the
+/// agent name is used in git branch names or command arguments.
+fn validate_agent_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        anyhow::bail!("Agent name must not be empty");
+    }
+    if !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        anyhow::bail!(
+            "Agent name '{}' contains invalid characters. \
+             Only alphanumeric characters, '-', and '_' are allowed.",
+            name
+        );
+    }
+    // Reject names that start with '-' to prevent git option injection
+    if name.starts_with('-') {
+        anyhow::bail!(
+            "Agent name '{}' must not start with '-' (could be interpreted as a command flag).",
+            name
+        );
+    }
+    Ok(())
+}
+
+/// Run a lifecycle hook command.
 ///
 /// The hook receives input via stdin (task description for onStart,
 /// result content for onComplete).
+///
+/// The command is split on whitespace and executed directly (without a
+/// shell interpreter) to prevent shell injection attacks from user-defined
+/// agent YAML files.
 pub async fn run_lifecycle_hook(
     hook_name: &str,
     agent_name: &str,
     command: &str,
     stdin_input: &str,
 ) -> Result<()> {
+    // Validate command against shell injection
+    validate_hook_command(command)?;
+
     tracing::info!(
         hook = hook_name,
         agent = agent_name,
@@ -27,9 +77,13 @@ pub async fn run_lifecycle_hook(
         "Running lifecycle hook"
     );
 
-    let mut child = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(command)
+    // Split command into program + args, executing directly without shell
+    let parts: Vec<&str> = command.split_whitespace().collect();
+    let (program, args) = parts.split_first()
+        .ok_or_else(|| anyhow::anyhow!("Lifecycle hook command is empty"))?;
+
+    let mut child = tokio::process::Command::new(program)
+        .args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -77,7 +131,21 @@ pub async fn run_lifecycle_hook(
 ///
 /// Creates a temporary worktree branch and returns a guard that
 /// cleans up the worktree when dropped.
-pub fn setup_worktree(agent_name: &str) -> Result<WorktreeGuard> {
+///
+/// Uses `tokio::task::spawn_blocking` to avoid blocking the async runtime
+/// with synchronous git operations.
+pub async fn setup_worktree(agent_name: &str) -> Result<WorktreeGuard> {
+    // Validate agent name to prevent git option injection
+    validate_agent_name(agent_name)?;
+
+    let agent_name = agent_name.to_string();
+    tokio::task::spawn_blocking(move || setup_worktree_blocking(&agent_name))
+        .await
+        .map_err(|e| anyhow::anyhow!("Worktree setup task panicked: {}", e))?
+}
+
+/// Blocking implementation of worktree setup (runs inside spawn_blocking).
+fn setup_worktree_blocking(agent_name: &str) -> Result<WorktreeGuard> {
     let worktree_dir = std::env::temp_dir()
         .join(format!("daedalus-worktree-{}-{}", agent_name, std::process::id()));
 

@@ -32,7 +32,7 @@ mod types;
 
 #[allow(unused_imports)]
 pub use collector::TracingCollector;
-pub use config::TracingConfig;
+pub use config::{ContentFlags, TracingConfig};
 pub use context::{SpanGuard, TraceContext};
 pub use hook::{SharedTracingHook, TracingHook};
 pub use manager::TracingManager;

@@ -589,28 +589,27 @@ impl AgentMode for ChatAgent {
                 request_id, &messages, on_tool_event, trace_ctx.as_ref(),
             ).await;
 
-            // On error, finish trace before propagating
-            if result.is_err() {
-                self.tool_router.set_shared_tracing_hook(None);
-                if let Some(guard) = turn_guard {
-                    guard.finish_error(
-                        result.as_ref().err().map(|e| e.to_string()).unwrap_or_default()
-                    ).await;
+            match result {
+                Err(e) => {
+                    // On error, finish trace before propagating
+                    self.tool_router.set_shared_tracing_hook(None);
+                    if let Some(guard) = turn_guard {
+                        guard.finish_error(e.to_string()).await;
+                    }
+                    if let Some(ref ctx) = trace_ctx {
+                        ctx.finish().await;
+                    }
+                    return Err(e);
                 }
-                if let Some(ref ctx) = trace_ctx {
-                    ctx.finish().await;
+                Ok((final_resp, tool_history)) => {
+                    if !tool_history.is_empty() {
+                        let summary = Self::summarize_tool_history(&tool_history);
+                        self.session.memory_mut().add_tool_context(&summary);
+                    }
+                    self.session.memory_mut().add_assistant_message(&final_resp.content);
+                    final_resp
                 }
-                return Err(result.err().unwrap());
             }
-
-            let (final_resp, tool_history) = result.unwrap();
-
-            if !tool_history.is_empty() {
-                let summary = Self::summarize_tool_history(&tool_history);
-                self.session.memory_mut().add_tool_context(&summary);
-            }
-            self.session.memory_mut().add_assistant_message(&final_resp.content);
-            final_resp
         } else {
             // Start LLM call span for simple (no-tool) chat
             let mut llm_guard = if let Some(ref ctx) = trace_ctx {
@@ -625,35 +624,37 @@ impl AgentMode for ChatAgent {
 
             let llm_result = self.llm.chat(&messages, None).await;
 
-            // On error, finish spans and trace before propagating
-            if llm_result.is_err() {
-                self.tool_router.set_shared_tracing_hook(None);
-                let err_msg = llm_result.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
-                if let Some(guard) = llm_guard {
-                    guard.finish_error(err_msg.clone()).await;
+            match llm_result {
+                Err(e) => {
+                    // On error, finish spans and trace before propagating
+                    self.tool_router.set_shared_tracing_hook(None);
+                    let err_msg = e.to_string();
+                    if let Some(guard) = llm_guard {
+                        guard.finish_error(err_msg.clone()).await;
+                    }
+                    if let Some(guard) = turn_guard {
+                        guard.finish_error(err_msg).await;
+                    }
+                    if let Some(ref ctx) = trace_ctx {
+                        ctx.finish().await;
+                    }
+                    return Err(e);
                 }
-                if let Some(guard) = turn_guard {
-                    guard.finish_error(err_msg).await;
+                Ok(llm_resp) => {
+                    self.log_response(request_id, &llm_resp);
+
+                    // Finish LLM span
+                    if let Some(ref mut guard) = llm_guard {
+                        guard.set_llm_response(&llm_resp);
+                    }
+                    if let Some(guard) = llm_guard {
+                        guard.finish_ok().await;
+                    }
+
+                    self.session.memory_mut().add_assistant_message(&llm_resp.content);
+                    llm_resp
                 }
-                if let Some(ref ctx) = trace_ctx {
-                    ctx.finish().await;
-                }
-                return Err(llm_result.err().unwrap());
             }
-
-            let llm_resp = llm_result.unwrap();
-            self.log_response(request_id, &llm_resp);
-
-            // Finish LLM span
-            if let Some(ref mut guard) = llm_guard {
-                guard.set_llm_response(&llm_resp);
-            }
-            if let Some(guard) = llm_guard {
-                guard.finish_ok().await;
-            }
-
-            self.session.memory_mut().add_assistant_message(&llm_resp.content);
-            llm_resp
         };
 
         // Check if consolidation should be triggered after this turn.

@@ -90,6 +90,11 @@ async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard
     // Phase 2: Build AgentConfig (now tracing is available for soul file loading)
     let mut agent_config = raw_config.into_agent_config(&workspace);
 
+    // Pre-initialize blocking resources outside hot async paths.
+    // `find_rg_binary()` runs `std::process::Command` which would block
+    // a Tokio worker thread if deferred to first tool invocation.
+    tools::ensure_rg_init();
+
     // Apply system prompt overrides from CLI
     apply_prompt_overrides(&args, &mut agent_config);
 
@@ -264,7 +269,8 @@ async fn init_tracing_manager(
     config: &agent_tracing::TracingConfig,
     workspace: &workspace::Workspace,
 ) -> Arc<agent_tracing::TracingManager> {
-    let manager = Arc::new(agent_tracing::TracingManager::new(config.enabled, config.full_content));
+    let flags = agent_tracing::ContentFlags::from_config(config);
+    let manager = Arc::new(agent_tracing::TracingManager::new(config.enabled, flags));
 
     if !config.enabled {
         return manager;
@@ -280,7 +286,7 @@ async fn init_tracing_manager(
                 let collector = agent_tracing::exporters::file::FileCollector::new(
                     output_dir,
                     format.clone(),
-                    config.full_content,
+                    flags,
                 );
                 manager.add_collector(Box::new(collector)).await;
             }
