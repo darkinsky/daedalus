@@ -3,6 +3,12 @@ name = "daedalus"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Optional: enable the `spawn_team` built-in tool (parallel multi-agent
+# execution). Off by default — the single `spawn_subagent` tool covers
+# the vast majority of use cases and `spawn_team` is experimental.
+team = []
+
 [dependencies]
 anyhow = "1.0.102"
 async-trait = "0.1"

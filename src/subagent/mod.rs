@@ -23,5 +23,7 @@ pub use registry::SubagentRegistry;
 pub use runner::SubagentRunner;
 pub use types::{
     IsolationMode, PermissionMode, SubagentDefinition, SubagentInfo, SubagentResult,
-    SubagentSource, TeamTask,
+    SubagentSource,
 };
+#[cfg(feature = "team")]
+pub use types::TeamTask;

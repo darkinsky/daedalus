@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::Result;
@@ -6,11 +6,13 @@ use crossterm::style::{Attribute, Color, Stylize};
 use rustyline::error::ReadlineError;
 use rustyline::{CompletionType, Config, EditMode, Editor};
 
-use crate::agent::{AgentMode, ToolEventCallback};
+use crate::agent::AgentMode;
+use crate::tools::ToolEventCallback;
 use super::commands::{self, Command};
 use super::completer::SlashCommandHelper;
 use super::cost::SessionCost;
 use super::render;
+use super::render::ToolEventFormatter;
 
 /// Handle a parsed slash command. Returns `true` if the REPL should exit.
 fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &mut SessionCost) -> Result<bool> {
@@ -44,12 +46,24 @@ fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &mut Sessio
 ///
 /// The callback clears the spinner before printing tool events, then
 /// restarts it for the next LLM thinking phase.
+///
+/// A [`ToolEventFormatter`] is kept alive across events so per-tool-call
+/// tags (e.g. `[1.2]`) emitted on `ToolCallStart` match the tags emitted
+/// on the corresponding `ToolCallComplete`, even when several tools run
+/// in parallel within a single round.
 fn build_tool_event_callback(spinner: &Arc<indicatif::ProgressBar>) -> ToolEventCallback {
     let spinner = Arc::clone(spinner);
+    let formatter = Arc::new(Mutex::new(ToolEventFormatter::new()));
     Arc::new(move |event| {
         // Pause the spinner so tool output is not interleaved
         spinner.finish_and_clear();
-        render::tool_event(&event);
+        let rendered = {
+            let mut fmt = formatter.lock().expect("tool event formatter poisoned");
+            fmt.format(&event)
+        };
+        for line in rendered {
+            println!("{}", line);
+        }
         // Restart spinner for the next LLM round
         spinner.set_message("Thinking…");
         spinner.enable_steady_tick(std::time::Duration::from_millis(80));

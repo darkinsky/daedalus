@@ -4,6 +4,10 @@ mod completer;
 mod cost;
 mod output_format;
 mod print_runner;
+// Explicit `#[path]` pins `render` to the single-file implementation,
+// so a stale `render/mod.rs` placeholder in the source tree does not
+// conflict with `render.rs`. See `render.rs` for the module content.
+#[path = "render.rs"]
 mod render;
 mod repl;
 

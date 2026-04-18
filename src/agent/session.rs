@@ -62,22 +62,4 @@ impl Session {
     pub fn memory_mut(&mut self) -> &mut dyn Memory {
         &mut *self.memory
     }
-
-    /// Downcast the memory to a concrete type (immutable).
-    ///
-    /// Returns `None` if the underlying memory is not of type `T`.
-    /// This enables access to strategy-specific features (e.g.,
-    /// consolidation, history search on `SlidingWindowMemory`).
-    #[allow(dead_code)]
-    pub fn memory_as<T: Memory + 'static>(&self) -> Option<&T> {
-        self.memory.as_any().downcast_ref::<T>()
-    }
-
-    /// Downcast the memory to a concrete type (mutable).
-    ///
-    /// Returns `None` if the underlying memory is not of type `T`.
-    #[allow(dead_code)]
-    pub fn memory_as_mut<T: Memory + 'static>(&mut self) -> Option<&mut T> {
-        self.memory.as_any_mut().downcast_mut::<T>()
-    }
 }

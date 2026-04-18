@@ -1,11 +1,13 @@
 use anyhow::Result;
 
-use crate::agent::duplicate_detector::{annotate_responses, DuplicateAction, DuplicateDetector};
-use crate::tools::{ToolEvent, ToolEventCallback};
-use crate::llm::{self, LlmApi, LlmConfig, TokenUsage, ToolRound};
+use crate::agent::tool_loop::{run_tool_loop, LoopConfig, LoopOutcome, LoopResult, ToolExecutor};
+use crate::tools::ToolEventCallback;
+use crate::llm::{self, LlmApi, LlmConfig, ToolCall, ToolResponse};
 use crate::tools::BuiltinToolRegistry;
 
-use super::{IsolationMode, SubagentDefinition, SubagentResult, TeamTask};
+use super::{IsolationMode, SubagentDefinition, SubagentResult};
+#[cfg(feature = "team")]
+use super::TeamTask;
 
 /// Maximum tool-calling rounds for subagents (default, can be overridden per-agent).
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 50;
@@ -88,11 +90,11 @@ impl SubagentRunner {
         ];
 
         // 4. Run the tool-calling loop
-        let max_rounds = definition.max_turns.unwrap_or(DEFAULT_MAX_TOOL_ROUNDS);
+        let max_tool_rounds = definition.max_turns.unwrap_or(DEFAULT_MAX_TOOL_ROUNDS);
 
         let result = if has_tools {
             self.run_with_tools(
-                definition, &*llm, &filtered_tools, &messages, &tools, max_rounds, on_tool_event,
+                definition, &*llm, &filtered_tools, &messages, &tools, max_tool_rounds, on_tool_event,
             ).await
         } else {
             self.run_without_tools(definition, &*llm, &messages).await
@@ -214,6 +216,12 @@ impl SubagentRunner {
     }
 
     /// Run the subagent with the tool-calling loop.
+    ///
+    /// Thin wrapper over `tool_loop::run_tool_loop`: builds the executor
+    /// adapter, picks loop config, and translates the generic
+    /// `LoopOutcome` into the subagent's "return a partial result"
+    /// semantics (neither a duplicate-stop nor a max-rounds condition
+    /// should propagate as an `Err` — they're normal subagent outcomes).
     async fn run_with_tools(
         &self,
         definition: &SubagentDefinition,
@@ -221,192 +229,71 @@ impl SubagentRunner {
         builtin: &BuiltinToolRegistry,
         messages: &[crate::llm::ChatMessage],
         tools: &[serde_json::Value],
-        max_rounds: usize,
+        max_tool_rounds: usize,
         on_tool_event: Option<&ToolEventCallback>,
     ) -> Result<SubagentResult> {
-        let mut tool_history: Vec<ToolRound> = Vec::new();
-        let mut total_usage = TokenUsage::default();
-        let mut duplicate_detector = DuplicateDetector::new();
+        let executor = SubagentExecutor {
+            builtin,
+            agent_name: &definition.name,
+        };
+        let cfg = LoopConfig {
+            max_tool_rounds,
+            agent_label: format!("Subagent '{}'", definition.name),
+            // Subagents don't surface reasoning content upstream, so there's
+            // no point paying the book-keeping cost.
+            track_reasoning: false,
+        };
 
-        for round in 0..max_rounds {
-            let response = llm
-                .chat_with_tools(messages, tools, &tool_history, None)
-                .await?;
+        let LoopResult { outcome, usage, tool_history } = run_tool_loop(
+            llm,
+            &executor,
+            messages,
+            tools,
+            on_tool_event,
+            &cfg,
+            None,
+        ).await?;
 
-            if let Some(ref usage) = response.usage {
-                total_usage.accumulate(usage);
-            }
-
-            // If no tool calls, we have the final response
-            if response.tool_calls.is_empty() {
+        let tool_rounds = tool_history.len();
+        let content = match outcome {
+            LoopOutcome::Final { content, .. } => {
                 tracing::info!(
                     agent = %definition.name,
-                    rounds = round,
-                    content_len = response.content.len(),
+                    rounds = tool_rounds,
+                    content_len = content.len(),
                     "Subagent completed with tools"
                 );
-
-                return Ok(SubagentResult {
-                    agent_name: definition.name.clone(),
-                    content: response.content,
-                    usage: Some(total_usage),
-                    tool_rounds: tool_history.len(),
-                });
+                content
             }
-
-            // Execute one round of tool calls and collect results
-            let tool_calls = response.tool_calls;
-            let mut responses = Self::execute_tool_round_inner(
-                definition, builtin, &tool_calls, round + 1, on_tool_event,
-            ).await;
-
-            // Duplicate-call guard: warn on streaks of WARN_THRESHOLD,
-            // hard-stop on streaks of STOP_THRESHOLD.
-            match duplicate_detector.record_round(&tool_calls) {
-                DuplicateAction::Warn(warnings) => {
-                    for w in &warnings {
-                        tracing::warn!(
-                            agent = %definition.name,
-                            tool = %w.tool_name,
-                            streak = w.count,
-                            round = round + 1,
-                            "Subagent repeated identical tool call"
-                        );
-                    }
-                    annotate_responses(&tool_calls, &mut responses, &warnings);
-                }
-                DuplicateAction::Stop(w) => {
-                    tracing::error!(
-                        agent = %definition.name,
-                        tool = %w.tool_name,
-                        streak = w.count,
-                        round = round + 1,
-                        "Subagent force-stopped due to duplicate tool calls"
-                    );
-                    tool_history.push(ToolRound {
-                        calls: tool_calls,
-                        responses,
-                    });
-                    return Ok(SubagentResult {
-                        agent_name: definition.name.clone(),
-                        content: format!(
-                            "[Subagent '{}' stopped: {}]",
-                            definition.name,
-                            w.stop_message()
-                        ),
-                        usage: Some(total_usage),
-                        tool_rounds: tool_history.len(),
-                    });
-                }
-                DuplicateAction::Ok => {}
+            LoopOutcome::DuplicateStop { message } => {
+                format!("[Subagent '{}' stopped: {}]", definition.name, message)
             }
-
-            tool_history.push(ToolRound {
-                calls: tool_calls,
-                responses,
-            });
-        }
-
-        // Exceeded max rounds — return what we have
-        tracing::warn!(
-            agent = %definition.name,
-            max_rounds = max_rounds,
-            "Subagent exceeded maximum tool-calling rounds"
-        );
+            LoopOutcome::MaxRoundsExceeded => {
+                format!(
+                    "[Subagent '{}' reached maximum tool-calling rounds ({}). \
+                     Last tool history has {} rounds of context.]",
+                    definition.name,
+                    max_tool_rounds,
+                    tool_rounds
+                )
+            }
+        };
 
         Ok(SubagentResult {
             agent_name: definition.name.clone(),
-            content: format!(
-                "[Subagent '{}' reached maximum tool-calling rounds ({}). \
-                 Last tool history has {} rounds of context.]",
-                definition.name,
-                max_rounds,
-                tool_history.len()
-            ),
-            usage: Some(total_usage),
-            tool_rounds: tool_history.len(),
+            content,
+            usage: Some(usage),
+            tool_rounds,
         })
-    }
-
-    /// Execute a single round of tool calls in parallel and emit progress events.
-    ///
-    /// Splits out the execution so the outer loop can inspect the calls for
-    /// duplicate detection before building the final `ToolRound`.
-    async fn execute_tool_round_inner(
-        definition: &SubagentDefinition,
-        builtin: &BuiltinToolRegistry,
-        tool_calls: &[crate::llm::ToolCall],
-        round_number: usize,
-        on_tool_event: Option<&ToolEventCallback>,
-    ) -> Vec<crate::llm::ToolResponse> {
-        tracing::info!(
-            agent = %definition.name,
-            round = round_number,
-            tool_calls = tool_calls.len(),
-            "Subagent requesting tool calls"
-        );
-
-        // Emit round start event
-        Self::emit_event(on_tool_event, ToolEvent::RoundStart { round: round_number });
-
-        // Emit tool call start events
-        for tc in tool_calls {
-            Self::emit_event(on_tool_event, ToolEvent::ToolCallStart {
-                tool_name: tc.function_name.clone(),
-                source: format!("subagent:{}", definition.name),
-                arguments: tc.arguments.clone(),
-            });
-        }
-
-        // Execute all tool calls in parallel
-        let futures: Vec<_> = tool_calls
-            .iter()
-            .map(|tc| async {
-                if builtin.has_tool(&tc.function_name) {
-                    match builtin.call_tool(&tc.function_name, tc.arguments.clone()).await {
-                        Ok(result) => crate::llm::ToolResponse::new(&tc.call_id, result),
-                        Err(e) => crate::llm::ToolResponse::error(
-                            &tc.call_id,
-                            format!("Error: {}", e),
-                        ),
-                    }
-                } else {
-                    crate::llm::ToolResponse::error(
-                        &tc.call_id,
-                        format!("Tool '{}' not available in this subagent", tc.function_name),
-                    )
-                }
-            })
-            .collect();
-
-        let responses = futures::future::join_all(futures).await;
-
-        // Emit tool call completion events
-        for (tc, resp) in tool_calls.iter().zip(responses.iter()) {
-            Self::emit_event(on_tool_event, ToolEvent::ToolCallComplete {
-                tool_name: tc.function_name.clone(),
-                success: resp.success,
-                result_content: resp.content.clone(),
-            });
-        }
-        Self::emit_event(on_tool_event, ToolEvent::RoundComplete {
-            tool_count: responses.len(),
-        });
-
-        responses
-    }
-
-    /// Emit a tool event to the optional callback.
-    fn emit_event(callback: Option<&ToolEventCallback>, event: ToolEvent) {
-        if let Some(cb) = callback {
-            cb(event);
-        }
     }
 
     /// Execute multiple subagent tasks in parallel and return all results.
     ///
     /// This is the core of the "Agent Teams" feature. Each task is assigned
     /// to a named subagent and executed concurrently.
+    ///
+    /// Only compiled in when the `team` feature is enabled.
+    #[cfg(feature = "team")]
     pub async fn run_team(
         &self,
         tasks: &[TeamTask],
@@ -434,5 +321,50 @@ impl SubagentRunner {
             .collect();
 
         futures::future::join_all(futures).await
+    }
+}
+
+/// Adapter that lets a filtered `BuiltinToolRegistry` satisfy
+/// `tool_loop::ToolExecutor`.
+///
+/// Kept private to this module so the coupling between the generic loop
+/// and subagent-specific routing stays local. The `'a` lifetimes bind
+/// the adapter to the caller's stack; it does not outlive the enclosing
+/// `run_with_tools` call.
+struct SubagentExecutor<'a> {
+    builtin: &'a BuiltinToolRegistry,
+    agent_name: &'a str,
+}
+
+#[async_trait::async_trait]
+impl<'a> ToolExecutor for SubagentExecutor<'a> {
+    async fn execute(&self, call: &ToolCall) -> ToolResponse {
+        // Subagents run against a pre-filtered registry — tools that
+        // were excluded at build time are simply not present, so we
+        // synthesize an error rather than routing elsewhere.
+        if self.builtin.has_tool(&call.function_name) {
+            match self
+                .builtin
+                .call_tool(&call.function_name, call.arguments.clone())
+                .await
+            {
+                Ok(result) => ToolResponse::new(&call.call_id, result),
+                Err(e) => ToolResponse::error(&call.call_id, format!("Error: {}", e)),
+            }
+        } else {
+            ToolResponse::error(
+                &call.call_id,
+                format!(
+                    "Tool '{}' not available in this subagent",
+                    call.function_name
+                ),
+            )
+        }
+    }
+
+    fn source_of(&self, _tool_name: &str) -> String {
+        // Tool-event display labels every subagent tool call with its
+        // agent name so the REPL can distinguish concurrent team runs.
+        format!("subagent:{}", self.agent_name)
     }
 }

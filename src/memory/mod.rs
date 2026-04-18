@@ -17,6 +17,8 @@ pub use agentic::AgenticFactory;
 pub use mempalace::MemPalaceFactory;
 pub use wiki::WikiFactory;
 
+
+
 use std::any::Any;
 
 use crate::llm::{ChatMessage, LlmApi};
@@ -299,21 +301,6 @@ pub trait Memory: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
-
-    /// Downcast to a concrete type for advanced operations.
-    ///
-    /// This enables the agent layer to access strategy-specific features
-    /// (e.g., consolidation, history search) without polluting the base trait.
-    ///
-    /// Reserved for future use when consolidation is triggered externally.
-    #[allow(dead_code)]
-    fn as_any(&self) -> &dyn Any;
-
-    /// Downcast to a mutable concrete type for advanced operations.
-    ///
-    /// Reserved for future use when consolidation is triggered externally.
-    #[allow(dead_code)]
-    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 /// Factory trait for creating `Memory` instances.

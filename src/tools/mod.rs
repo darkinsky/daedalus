@@ -7,12 +7,17 @@ mod list_directory;
 mod multi_edit;
 mod read_file;
 mod search_files;
+pub(crate) mod text_utils;
 mod write_file;
 
 use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
+
+// Re-export shared text utilities so callers can use `crate::tools::truncate_chars`
+// without knowing about the internal `text_utils` module layout.
+pub(crate) use text_utils::{truncate_at_char_boundary, truncate_chars};
 
 // ── Tool execution events ──
 

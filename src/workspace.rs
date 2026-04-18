@@ -283,6 +283,19 @@ impl Workspace {
     pub fn has_history_log(&self) -> bool {
         self.history_log_path().exists()
     }
+
+    // ── Global (home-directory) paths ──
+
+    /// Return the path to the user-wide `~/.daedalus/agents/` directory,
+    /// or `None` if the home directory cannot be determined.
+    ///
+    /// This is distinct from [`agents_dir`](Self::agents_dir), which returns
+    /// the project-level `<workspace>/agents/` directory. Having one canonical
+    /// accessor here keeps path construction out of call sites (`main.rs`
+    /// used to build it manually).
+    pub fn home_agents_dir() -> Option<PathBuf> {
+        home_dir().map(|home| home.join(".daedalus/agents"))
+    }
 }
 
 /// Get the user's home directory from environment variables.

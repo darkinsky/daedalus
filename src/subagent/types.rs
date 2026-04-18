@@ -176,6 +176,9 @@ pub struct SubagentResult {
 }
 
 /// A task assignment for a team member in a parallel team execution.
+///
+/// Only compiled in when the `team` feature is enabled.
+#[cfg(feature = "team")]
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct TeamTask {
     /// The subagent name to assign this task to.

@@ -259,8 +259,8 @@ fn load_subagents(
     let mut sources = vec![subagent::SubagentSource::Project];
 
     // Also load from global ~/.daedalus/agents/ if different from workspace
-    let global_agents_dir = global_agents_dir();
-    if let Some(ref global_dir) = global_agents_dir {
+    let home_agents_dir = workspace::Workspace::home_agents_dir();
+    if let Some(ref global_dir) = home_agents_dir {
         if *global_dir != ws_agents_dir {
             dirs.push(global_dir.as_path());
             sources.push(subagent::SubagentSource::Global);
@@ -284,12 +284,4 @@ fn load_subagents(
             );
         }
     }
-}
-
-/// Get the global `~/.daedalus/agents/` directory path.
-fn global_agents_dir() -> Option<std::path::PathBuf> {
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok()
-        .map(|home| std::path::PathBuf::from(home).join(".daedalus/agents"))
 }

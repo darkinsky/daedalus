@@ -6,25 +6,57 @@ use async_trait::async_trait;
 use super::registry::SubagentRegistry;
 use super::runner::SubagentRunner;
 use super::SubagentResult;
-use crate::tools::{BuiltinTool, ToolEvent, ToolEventCallback};
+use crate::tools::{truncate_chars, BuiltinTool, ToolEvent, ToolEventCallback};
 
 /// The tool name used for LLM-routed subagent spawn.
 const SUBAGENT_TOOL_NAME: &str = "spawn_subagent";
 
 /// The tool name used for parallel multi-agent team execution.
 ///
-/// NOTE: `spawn_team` is currently disabled at the ToolRouter registration
-/// layer. The definition is kept so it can be re-enabled without restoring
-/// the implementation.
-#[allow(dead_code)]
+/// Only compiled in when the `team` feature is enabled.
+#[cfg(feature = "team")]
 const TEAM_TOOL_NAME: &str = "spawn_team";
 
 /// Shared container for a tool event callback that can be set at runtime.
 ///
 /// The callback is stored behind `RwLock` so it can be updated by the REPL
 /// before each chat call (to bind to the current spinner) and cleared after.
-/// The `SubagentTool` reads it during execution.
-pub type SharedEventCallback = Arc<std::sync::RwLock<Option<ToolEventCallback>>>;
+/// `SubagentTool` / `TeamTool` read it during execution.
+///
+/// ## Why a named struct instead of a type alias?
+///
+/// A bare `Arc<RwLock<Option<ToolEventCallback>>>` exposes `read()` /
+/// `write()` / `lock().unwrap()` to callers and invites lock-handling bugs.
+/// This wrapper offers two small methods (`set`, `read`) that handle the
+/// lock-poisoned case once, so every caller gets the right behaviour.
+#[derive(Clone, Default)]
+pub struct SubagentEventSink {
+    inner: Arc<std::sync::RwLock<Option<ToolEventCallback>>>,
+}
+
+impl SubagentEventSink {
+    /// Create an empty sink (no callback bound).
+    pub fn new() -> Self {
+        Self { inner: Arc::new(std::sync::RwLock::new(None)) }
+    }
+
+    /// Replace the current callback (pass `None` to clear).
+    ///
+    /// Silently no-ops if the lock is poisoned — losing a callback update
+    /// is strictly better than panicking in the middle of a REPL turn.
+    pub fn set(&self, callback: Option<ToolEventCallback>) {
+        if let Ok(mut guard) = self.inner.write() {
+            *guard = callback;
+        }
+    }
+
+    /// Read the currently bound callback, if any.
+    ///
+    /// Returns `None` if the lock is poisoned or no callback is set.
+    pub fn read(&self) -> Option<ToolEventCallback> {
+        self.inner.read().ok().and_then(|guard| guard.clone())
+    }
+}
 
 // ── Shared infrastructure ──
 
@@ -35,15 +67,15 @@ pub type SharedEventCallback = Arc<std::sync::RwLock<Option<ToolEventCallback>>>
 struct SubagentToolContext {
     registry: Arc<SubagentRegistry>,
     runner: Arc<SubagentRunner>,
-    shared_callback: SharedEventCallback,
+    event_sink: SubagentEventSink,
 }
 
 impl SubagentToolContext {
-    /// Read the current event callback from the shared container.
+    /// Read the current event callback from the shared sink.
     ///
     /// Returns `None` if the lock is poisoned or no callback is set.
     fn read_callback(&self) -> Option<ToolEventCallback> {
-        self.shared_callback.read().ok().and_then(|guard| guard.clone())
+        self.event_sink.read()
     }
 
     /// Emit a `SubagentStart` event via the current callback (if present).
@@ -51,7 +83,7 @@ impl SubagentToolContext {
         if let Some(ref cb) = self.read_callback() {
             cb(ToolEvent::SubagentStart {
                 agent_name: agent_name.to_string(),
-                task_preview: truncate_preview(task, 100),
+                task_preview: truncate_chars(task, 100),
             });
         }
     }
@@ -65,7 +97,7 @@ impl SubagentToolContext {
                         agent_name: agent_name.to_string(),
                         success: true,
                         tool_rounds: r.tool_rounds,
-                        result_preview: truncate_preview(&r.content, 120),
+                        result_preview: truncate_chars(&r.content, 120),
                     });
                 }
                 Err(e) => {
@@ -82,17 +114,6 @@ impl SubagentToolContext {
 }
 
 // ── Shared helpers ──
-
-/// Truncate a string to at most `max_chars` characters, appending "…" if truncated.
-///
-/// Uses `char_indices` for UTF-8 safe truncation — never panics on
-/// multi-byte characters (e.g. Chinese, emoji).
-fn truncate_preview(s: &str, max_chars: usize) -> String {
-    match s.char_indices().nth(max_chars) {
-        Some((byte_pos, _)) => format!("{}…", &s[..byte_pos]),
-        None => s.to_string(),
-    }
-}
 
 /// Format a successful SubagentResult into the output string for the main agent.
 fn format_result(result: &SubagentResult) -> String {
@@ -118,7 +139,7 @@ fn format_result(result: &SubagentResult) -> String {
 pub fn build_subagent_tool(
     registry: &Arc<SubagentRegistry>,
     runner: Arc<SubagentRunner>,
-    shared_callback: SharedEventCallback,
+    event_sink: SubagentEventSink,
 ) -> Option<Box<dyn BuiltinTool>> {
     if registry.agent_count() == 0 {
         return None;
@@ -127,7 +148,7 @@ pub fn build_subagent_tool(
         ctx: SubagentToolContext {
             registry: Arc::clone(registry),
             runner,
-            shared_callback,
+            event_sink,
         },
     }))
 }
@@ -135,15 +156,13 @@ pub fn build_subagent_tool(
 /// Build a `BuiltinTool` for the `spawn_team` tool.
 ///
 /// Returns `None` if fewer than 2 subagents are loaded (teams need
-/// at least 2 agents to be useful).
-///
-/// NOTE: Currently disabled — no call site references this function.
-/// Kept for future re-enablement.
-#[allow(dead_code)]
+/// at least 2 agents to be useful). Only compiled in when the `team`
+/// feature is enabled.
+#[cfg(feature = "team")]
 pub fn build_team_tool(
     registry: &Arc<SubagentRegistry>,
     runner: Arc<SubagentRunner>,
-    shared_callback: SharedEventCallback,
+    event_sink: SubagentEventSink,
 ) -> Option<Box<dyn BuiltinTool>> {
     if registry.agent_count() < 2 {
         return None;
@@ -152,7 +171,7 @@ pub fn build_team_tool(
         ctx: SubagentToolContext {
             registry: Arc::clone(registry),
             runner,
-            shared_callback,
+            event_sink,
         },
     }))
 }
@@ -332,18 +351,21 @@ impl BuiltinTool for SubagentTool {
     }
 }
 
-// ── TeamTool ──
+// ── TeamTool (feature-gated) ──
 
 /// A `BuiltinTool` that spawns multiple subagents in parallel.
 ///
 /// This enables "Agent Teams" — the LLM can assign different tasks to
 /// different subagents and have them all execute concurrently. Results
 /// are collected and returned as a combined summary.
-#[allow(dead_code)]
+///
+/// Only compiled in when the `team` feature is enabled.
+#[cfg(feature = "team")]
 pub struct TeamTool {
     ctx: SubagentToolContext,
 }
 
+#[cfg(feature = "team")]
 #[async_trait]
 impl BuiltinTool for TeamTool {
     fn name(&self) -> &str {

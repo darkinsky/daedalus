@@ -13,14 +13,14 @@ use std::time::Instant;
 use anyhow::Result;
 use crossterm::style::{Color, Stylize};
 
-use crate::agent::{AgentMode, ToolEvent, ToolEventCallback};
+use crate::agent::AgentMode;
+use crate::tools::{ToolEvent, ToolEventCallback};
 
 use super::cli_args::OutputFormat;
 use super::output_format::{
     StreamEvent, ResultPayload, UsageSummary,
     emit_stream_event, emit_json_result,
 };
-use super::render::format_tool_event_lines;
 
 /// Read the prompt from stdin (used when `-p -` is passed).
 pub fn read_stdin_prompt() -> Result<String> {
@@ -252,11 +252,20 @@ fn build_stream_json_callback() -> ToolEventCallback {
 /// Used in `text` output mode so tool progress doesn't pollute stdout
 /// (which is reserved for the final response, suitable for piping).
 ///
-/// Reuses `format_tool_event_lines()` from `render.rs` to avoid
-/// duplicating the ToolEvent rendering logic.
+/// Holds a long-lived [`ToolEventFormatter`] so each tool call gets a
+/// `[round.index]` tag that is repeated on its completion line, making
+/// it easy to pair concurrent starts and completes visually.
 fn build_text_stderr_callback() -> ToolEventCallback {
+    use std::sync::Mutex;
+    use super::render::ToolEventFormatter;
+
+    let formatter = Arc::new(Mutex::new(ToolEventFormatter::new()));
     Arc::new(move |event: ToolEvent| {
-        for line in format_tool_event_lines(&event) {
+        let rendered = {
+            let mut fmt = formatter.lock().expect("tool event formatter poisoned");
+            fmt.format(&event)
+        };
+        for line in rendered {
             eprintln!("{}", line);
         }
     })

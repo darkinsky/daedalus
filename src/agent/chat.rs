@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use crate::config::AgentConfig;
 use crate::llm::{
     ChatMessage, ChatResponse, LlmApi, LlmConfig, ToolResponse, ToolRound,
-    TokenUsage, format_messages_for_log,
+    format_messages_for_log,
 };
-use crate::tools::ToolInfo;
+use crate::tools::{truncate_at_char_boundary, ToolEventCallback, ToolInfo};
 use crate::mcp::McpManager;
 use crate::memory::{MemoryFactory, SlidingWindowFactory};
 use crate::prompt::PromptBuilder;
@@ -18,29 +18,16 @@ use crate::workspace::Workspace;
 
 use super::Session;
 
-use super::{AgentMetadata, AgentMode, ToolEvent, ToolEventCallback};
-use super::duplicate_detector::{annotate_responses, DuplicateAction, DuplicateDetector};
+use super::{AgentMetadata, AgentMode};
+use super::tool_loop::{run_tool_loop, LoopConfig, LoopOutcome, LoopResult, ToolExecutor};
 use super::tool_router::ToolRouter;
 
-/// Maximum number of tool-calling rounds per user message.
+/// Default maximum number of tool-calling rounds per user message.
 ///
-/// This prevents infinite loops if the LLM keeps requesting tool calls.
+/// Bounds the main agent's tool-calling loop so a misbehaving LLM cannot
+/// spin forever. The user can override this via the `--max-turns` CLI flag;
+/// subagents have their own independent default in `subagent::runner`.
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 100;
-
-/// Truncate a string at a UTF-8 character boundary.
-///
-/// Returns a sub-slice of at most `max_len` bytes, guaranteed to end
-/// on a valid character boundary (never splits a multi-byte character).
-fn truncate_at_char_boundary(s: &str, max_len: usize) -> &str {
-    if s.len() <= max_len {
-        return s;
-    }
-    // Find the last char boundary at or before max_len.
-    match s.char_indices().take_while(|(i, _)| *i <= max_len).last() {
-        Some((i, _)) => &s[..i],
-        None => &s[..0],
-    }
-}
 
 /// Chat mode — multi-turn conversation with optional tool calling.
 ///
@@ -163,9 +150,20 @@ impl ChatAgent {
     ///
     /// Skills are exposed to the LLM as a `use_skill` tool. The LLM
     /// decides which skill to invoke based on the user's request.
+    ///
+    /// Internally this splits into two concerns:
+    /// 1. **Load** the skill definitions via `SkillRegistry::load_from_dir`.
+    /// 2. **Install** the ready registry into the `ToolRouter`, which
+    ///    wires a `use_skill` built-in tool.
+    ///
+    /// Keeping the split explicit here makes the router easier to reason
+    /// about (it knows nothing about the filesystem) and leaves the door
+    /// open to loading from alternative sources in the future.
     pub fn load_skills(&mut self, dir: &Path) -> Result<usize> {
-        let count = self.tool_router.load_skills(dir)?;
+        let mut registry = crate::skill::SkillRegistry::new();
+        let count = registry.load_from_dir(dir)?;
         if count > 0 {
+            self.tool_router.install_skills(std::sync::Arc::new(registry));
             self.reset_with_updated_prompt();
         }
         Ok(count)
@@ -177,16 +175,34 @@ impl ChatAgent {
     /// The LLM decides which subagent to invoke based on the subagent
     /// descriptions embedded in the tool definition.
     ///
-    /// Each directory is associated with a source priority. Project-level
-    /// agents override global agents with the same name.
+    /// Each directory is associated with a source priority. Built-in
+    /// agents are registered first (lowest priority), then each
+    /// `(dir, source)` pair is loaded in order — later sources override
+    /// earlier ones. Typical call order: `[Project, Global]` so that
+    /// project-level agents win.
     pub fn load_subagents(
         &mut self,
         dirs: &[&Path],
         sources: &[crate::subagent::SubagentSource],
         parent_llm_config: LlmConfig,
     ) -> Result<usize> {
-        let count = self.tool_router.load_subagents(dirs, sources, parent_llm_config)?;
+        let mut registry = crate::subagent::SubagentRegistry::new();
+
+        // Built-ins first so user-defined agents with the same name take
+        // precedence when the directories are scanned.
+        registry.register_builtins();
+
+        for (dir, source) in dirs.iter().zip(sources.iter()) {
+            registry.load_from_dir(dir, source.clone())?;
+        }
+
+        // `agent_count()` is the post-dedup total; that's what the caller
+        // cares about and what the router uses to decide whether to
+        // register the `spawn_subagent` / `spawn_team` tools.
+        let count = registry.agent_count();
         if count > 0 {
+            self.tool_router
+                .install_subagents(std::sync::Arc::new(registry), parent_llm_config);
             self.reset_with_updated_prompt();
         }
         Ok(count)
@@ -206,11 +222,11 @@ impl ChatAgent {
     ///
     /// Used by the `--max-turns` CLI flag. A value of 0 means use the
     /// internal default.
-    pub fn set_max_tool_rounds(&mut self, max_rounds: usize) {
-        self.max_tool_rounds = if max_rounds == 0 {
+    pub fn set_max_tool_rounds(&mut self, max_tool_rounds: usize) {
+        self.max_tool_rounds = if max_tool_rounds == 0 {
             DEFAULT_MAX_TOOL_ROUNDS
         } else {
-            max_rounds
+            max_tool_rounds
         };
         tracing::info!(max_tool_rounds = self.max_tool_rounds, "Max tool rounds updated");
     }
@@ -343,64 +359,12 @@ impl ChatAgent {
         parts.join("\n")
     }
 
-    /// Emit a tool event to the optional callback.
-    fn emit_event(callback: Option<&ToolEventCallback>, event: ToolEvent) {
-        if let Some(cb) = callback {
-            cb(event);
-        }
-    }
-
-    /// Emit `ToolCallStart` events for all tool calls in a round.
-    fn emit_tool_start_events(
-        &self,
-        tool_calls: &[crate::llm::ToolCall],
-        on_tool_event: Option<&ToolEventCallback>,
-    ) {
-        for tc in tool_calls {
-            let source = if self.tool_router.is_builtin(&tc.function_name) {
-                "built-in"
-            } else {
-                "mcp"
-            };
-            Self::emit_event(on_tool_event, ToolEvent::ToolCallStart {
-                tool_name: tc.function_name.clone(),
-                source: source.to_string(),
-                arguments: tc.arguments.clone(),
-            });
-        }
-    }
-
-    /// Execute all tool calls in parallel and emit completion events.
-    async fn execute_tool_round(
-        &self,
-        tool_calls: &[crate::llm::ToolCall],
-        on_tool_event: Option<&ToolEventCallback>,
-    ) -> Vec<ToolResponse> {
-        let futures: Vec<_> = tool_calls.iter()
-            .map(|tc| self.tool_router.execute(tc))
-            .collect();
-        let responses: Vec<ToolResponse> = futures::future::join_all(futures).await;
-
-        for (tool_call, tool_response) in tool_calls.iter().zip(responses.iter()) {
-            let success = tool_response.success;
-            Self::emit_event(on_tool_event, ToolEvent::ToolCallComplete {
-                tool_name: tool_call.function_name.clone(),
-                success,
-                result_content: tool_response.content.clone(),
-            });
-        }
-        Self::emit_event(on_tool_event, ToolEvent::RoundComplete {
-            tool_count: responses.len(),
-        });
-
-        responses
-    }
-
     /// Run the tool-calling loop.
     ///
-    /// Iterates: LLM response → tool calls → execute via ToolRouter → feed results back.
-    /// All tool history is accumulated and passed to the provider on each round.
-    /// Token usage is accumulated across all rounds.
+    /// Thin wrapper over `tool_loop::run_tool_loop`: builds the executor
+    /// adapter, picks loop config, and translates the generic
+    /// `LoopOutcome` into `ChatAgent`'s fail-hard semantics
+    /// (duplicate-stop / max-rounds both `bail!`).
     async fn chat_with_tools(
         &self,
         request_id: u64,
@@ -408,89 +372,69 @@ impl ChatAgent {
         on_tool_event: Option<&ToolEventCallback>,
     ) -> Result<(ChatResponse, Vec<ToolRound>)> {
         let tools = self.tool_router.build_tool_definitions();
-        let mut tool_history: Vec<ToolRound> = Vec::new();
-        let mut total_usage = TokenUsage::default();
-        let mut last_reasoning_content: Option<String> = None;
-        let mut duplicate_detector = DuplicateDetector::new();
+        let executor = ToolRouterExecutor { router: &self.tool_router };
+        let cfg = LoopConfig {
+            max_tool_rounds: self.max_tool_rounds,
+            agent_label: "Lead agent".to_string(),
+            track_reasoning: true,
+        };
 
-        for round_number in 1..=self.max_tool_rounds {
-            let response = self.llm.chat_with_tools(
-                messages, &tools, &tool_history, None,
-            ).await?;
-            self.log_response(request_id, &response);
+        // Per-round LLM response logging — lets chat_with_tools keep the
+        // log-with-request-id semantics without leaking request_id into
+        // the generic loop.
+        let log_cb = |resp: &ChatResponse| self.log_response(request_id, resp);
 
-            if let Some(ref usage) = response.usage {
-                total_usage.accumulate(usage);
-            }
+        let LoopResult { outcome, usage, tool_history } = run_tool_loop(
+            &*self.llm,
+            &executor,
+            messages,
+            &tools,
+            on_tool_event,
+            &cfg,
+            Some(&log_cb),
+        ).await?;
 
-            if response.tool_calls.is_empty() {
+        match outcome {
+            LoopOutcome::Final { content, reasoning } => {
                 let final_response = ChatResponse {
-                    content: response.content,
-                    reasoning_content: response.reasoning_content.or(last_reasoning_content),
-                    usage: Some(total_usage),
+                    content,
+                    reasoning_content: reasoning,
+                    usage: Some(usage),
                     tool_calls: vec![],
                 };
-                return Ok((final_response, tool_history));
+                Ok((final_response, tool_history))
             }
-
-            if response.reasoning_content.is_some() {
-                last_reasoning_content = response.reasoning_content;
-            }
-
-            tracing::info!(
-                round = round_number,
-                tool_calls = response.tool_calls.len(),
-                "LLM requested tool calls"
-            );
-
-            // Notify CLI about the new round
-            Self::emit_event(on_tool_event, ToolEvent::RoundStart { round: round_number });
-
-            // Emit start events and execute all tool calls in parallel
-            self.emit_tool_start_events(&response.tool_calls, on_tool_event);
-            let mut responses = self.execute_tool_round(&response.tool_calls, on_tool_event).await;
-
-            // Check for consecutive duplicate tool calls and react accordingly:
-            //   - Warn (>=3 in a row): append a note to the matching tool response
-            //     so the LLM sees it in the next turn.
-            //   - Stop (>=5 in a row): abort the loop to prevent a non-productive spin.
-            let duplicate_action = duplicate_detector.record_round(&response.tool_calls);
-            match &duplicate_action {
-                DuplicateAction::Warn(warnings) => {
-                    for w in warnings {
-                        tracing::warn!(
-                            tool = %w.tool_name,
-                            streak = w.count,
-                            round = round_number,
-                            "Lead agent repeated identical tool call"
-                        );
-                    }
-                    annotate_responses(&response.tool_calls, &mut responses, warnings);
-                }
-                DuplicateAction::Stop(w) => {
-                    tracing::error!(
-                        tool = %w.tool_name,
-                        streak = w.count,
-                        round = round_number,
-                        "Lead agent force-stopped due to duplicate tool calls"
-                    );
-                    // Keep the round in history so the trace is complete.
-                    tool_history.push(ToolRound {
-                        calls: response.tool_calls,
-                        responses,
-                    });
-                    anyhow::bail!("{}", w.stop_message());
-                }
-                DuplicateAction::Ok => {}
-            }
-
-            tool_history.push(ToolRound {
-                calls: response.tool_calls,
-                responses,
-            });
+            LoopOutcome::DuplicateStop { message } => anyhow::bail!("{}", message),
+            LoopOutcome::MaxRoundsExceeded => anyhow::bail!(
+                "Exceeded maximum tool-calling rounds ({})",
+                self.max_tool_rounds
+            ),
         }
+    }
+}
 
-        anyhow::bail!("Exceeded maximum tool-calling rounds ({})", self.max_tool_rounds)
+/// Adapter that lets `ToolRouter` satisfy `tool_loop::ToolExecutor`.
+///
+/// Kept as a private newtype so the coupling between the generic loop
+/// and the routing layer stays local to this file. The lifetime is tied
+/// to the borrow of the router — callers build the adapter on the stack
+/// just before invoking `run_tool_loop` and drop it right after.
+struct ToolRouterExecutor<'a> {
+    router: &'a ToolRouter,
+}
+
+#[async_trait]
+impl<'a> ToolExecutor for ToolRouterExecutor<'a> {
+    async fn execute(&self, call: &crate::llm::ToolCall) -> ToolResponse {
+        self.router.execute(call).await
+    }
+
+    fn source_of(&self, tool_name: &str) -> String {
+        if self.router.is_builtin(tool_name) {
+            "built-in".to_string()
+        } else {
+            "mcp".to_string()
+        }
     }
 }
 
@@ -580,14 +524,13 @@ impl AgentMode for ChatAgent {
         };
 
         // Check if consolidation should be triggered after this turn.
+        // The actual LLM-backed consolidation is not yet implemented;
+        // for now we only surface the threshold event for observability.
         if self.session.memory().should_consolidate() {
-            tracing::info!(
+            tracing::debug!(
                 session_id = %self.session.id,
-                "Consolidation threshold reached — consolidation should be triggered"
+                "Consolidation threshold reached"
             );
-            // TODO: Trigger background consolidation via LLM.
-            // For now, we log the event. The actual consolidation LLM call
-            // will be implemented as a separate async task in a future iteration.
         }
 
         // Trigger post-turn reflection (strategy-specific: DC insight

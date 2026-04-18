@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -7,7 +6,7 @@ use crate::llm::{LlmConfig, ToolCall, ToolResponse};
 use crate::mcp::McpManager;
 use crate::skill::SkillRegistry;
 use crate::subagent::{SubagentRegistry, SubagentRunner};
-use crate::subagent::tool::SharedEventCallback;
+use crate::subagent::tool::SubagentEventSink;
 use crate::tools::{BuiltinToolRegistry, ToolInfo};
 
 /// Tool filter for --allowed-tools / --disallowed-tools CLI flags.
@@ -69,10 +68,10 @@ pub struct ToolRouter {
     skills: Arc<SkillRegistry>,
     /// Subagent registry (shared via Arc so SubagentTool can reference it).
     subagents: Arc<SubagentRegistry>,
-    /// Shared event callback for subagent tool execution progress.
+    /// Shared event sink for subagent tool execution progress.
     /// The REPL sets this before each chat call so subagent tool events
     /// are rendered in real-time.
-    subagent_event_callback: SharedEventCallback,
+    subagent_event_sink: SubagentEventSink,
     /// Optional tool filter (from --allowed-tools / --disallowed-tools).
     tool_filter: Option<ToolFilter>,
 }
@@ -85,97 +84,82 @@ impl ToolRouter {
             mcp: None,
             skills: Arc::new(SkillRegistry::new()),
             subagents: Arc::new(SubagentRegistry::new()),
-            subagent_event_callback: Arc::new(std::sync::RwLock::new(None)),
+            subagent_event_sink: SubagentEventSink::new(),
             tool_filter: None,
         }
     }
 
-    /// Load skills from a directory and register them as a built-in tool.
+    /// Install a ready-to-use skill registry into the router.
     ///
-    /// Skills are exposed to the LLM as a single `use_skill` tool.
-    /// The LLM decides which skill to invoke based on the skill
-    /// descriptions embedded in the tool definition.
+    /// The registry must already contain any skills the caller wants
+    /// exposed — this method only handles the last mile of wiring a
+    /// `use_skill` `BuiltinTool` into the underlying `BuiltinToolRegistry`.
     ///
-    /// Internally, this creates a new `SkillRegistry`, wraps it in `Arc`,
-    /// and registers a `SkillTool` adapter into the `BuiltinToolRegistry`.
-    pub fn load_skills(&mut self, dir: &Path) -> Result<usize> {
-        let mut registry = SkillRegistry::new();
-        let count = registry.load_from_dir(dir)?;
-        if count > 0 {
-            let registry = Arc::new(registry);
-            // Register the SkillTool as a regular built-in tool
-            if let Some(skill_tool) = registry.build_skill_tool() {
-                self.builtin.register_tool(skill_tool);
-            }
-            self.skills = registry;
+    /// This deliberately knows nothing about the filesystem: loading is
+    /// the registry's job (`SkillRegistry::load_from_dir`). Splitting
+    /// the concerns keeps the router focused on routing.
+    ///
+    /// No-op if the registry is empty.
+    pub fn install_skills(&mut self, skills: Arc<SkillRegistry>) {
+        if let Some(skill_tool) = skills.build_skill_tool() {
+            self.builtin.register_tool(skill_tool);
             tracing::info!(
-                skills = count,
-                path = %dir.display(),
-                "Skills loaded into ToolRouter as built-in tool"
+                skills = skills.skill_count(),
+                "Skills installed into ToolRouter as built-in tool"
             );
         }
-        Ok(count)
+        self.skills = skills;
     }
 
-    /// Load subagent definitions from directories and register as a built-in tool.
+    /// Install a ready-to-use subagent registry into the router.
     ///
-    /// Subagents are exposed to the LLM as a single `spawn_subagent` tool.
-    /// The LLM decides which subagent to invoke based on the subagent
-    /// descriptions embedded in the tool definition.
+    /// The registry must already contain every agent the caller wants
+    /// exposed (builtins, project, global — loaded in whichever order
+    /// the caller considers correct). This method only handles the
+    /// last mile: building the `spawn_subagent` (and optionally
+    /// `spawn_team`) `BuiltinTool`s and registering them.
     ///
-    /// Loading order determines priority: project-level agents override
-    /// global agents with the same name.
-    pub fn load_subagents(
+    /// `parent_llm_config` seeds each subagent's LLM provider when it
+    /// doesn't override the model itself.
+    ///
+    /// No-op if the registry is empty.
+    pub fn install_subagents(
         &mut self,
-        dirs: &[&Path],
-        sources: &[crate::subagent::SubagentSource],
+        subagents: Arc<SubagentRegistry>,
         parent_llm_config: LlmConfig,
-    ) -> Result<usize> {
-        let mut registry = SubagentRegistry::new();
-
-        // Register built-in subagents first (lowest priority).
-        // User-defined agents loaded below will override builtins with the same name.
-        registry.register_builtins();
-
-        for (dir, source) in dirs.iter().zip(sources.iter()) {
-            registry.load_from_dir(dir, source.clone())?;
+    ) {
+        let count = subagents.agent_count();
+        if count == 0 {
+            self.subagents = subagents;
+            return;
         }
 
-        // Use agent_count() for the actual number of unique agents after
-        // deduplication (builtins may be overridden by user-defined agents).
-        let actual_count = registry.agent_count();
+        let runner = Arc::new(SubagentRunner::new(parent_llm_config));
 
-        if actual_count > 0 {
-            let registry = Arc::new(registry);
-            let runner = Arc::new(SubagentRunner::new(parent_llm_config));
-
-            // Register the SubagentTool as a regular built-in tool
-            if let Some(subagent_tool) = crate::subagent::tool::build_subagent_tool(
-                &registry,
-                Arc::clone(&runner),
-                Arc::clone(&self.subagent_event_callback),
-            ) {
-                self.builtin.register_tool(subagent_tool);
-            }
-
-            // Register the TeamTool for parallel multi-agent execution
-            // NOTE: `spawn_team` is temporarily disabled. Keep the code here
-            // so it can be re-enabled by uncommenting this block.
-            // if let Some(team_tool) = crate::subagent::tool::build_team_tool(
-            //     &registry,
-            //     Arc::clone(&runner),
-            //     Arc::clone(&self.subagent_event_callback),
-            // ) {
-            //     self.builtin.register_tool(team_tool);
-            // }
-            self.subagents = registry;
-            tracing::info!(
-                subagents = actual_count,
-                "Subagents loaded into ToolRouter as built-in tool"
-            );
+        if let Some(subagent_tool) = crate::subagent::tool::build_subagent_tool(
+            &subagents,
+            Arc::clone(&runner),
+            self.subagent_event_sink.clone(),
+        ) {
+            self.builtin.register_tool(subagent_tool);
         }
 
-        Ok(actual_count)
+        // Register the TeamTool for parallel multi-agent execution.
+        // Gated behind the `team` cargo feature (off by default).
+        #[cfg(feature = "team")]
+        if let Some(team_tool) = crate::subagent::tool::build_team_tool(
+            &subagents,
+            Arc::clone(&runner),
+            self.subagent_event_sink.clone(),
+        ) {
+            self.builtin.register_tool(team_tool);
+        }
+
+        self.subagents = subagents;
+        tracing::info!(
+            subagents = count,
+            "Subagents installed into ToolRouter as built-in tool"
+        );
     }
 
     /// Return the subagent registry reference (for CLI display).
@@ -188,9 +172,7 @@ impl ToolRouter {
     /// Called by the REPL before each chat call to bind the callback
     /// to the current spinner. The callback is cleared after the call.
     pub fn set_subagent_event_callback(&self, callback: Option<crate::tools::ToolEventCallback>) {
-        if let Ok(mut guard) = self.subagent_event_callback.write() {
-            *guard = callback;
-        }
+        self.subagent_event_sink.set(callback);
     }
 
     /// Attach an MCP manager to enable external tool calling.
@@ -214,6 +196,19 @@ impl ToolRouter {
             + self.mcp.as_ref().map(|m| m.tool_count()).unwrap_or(0)
     }
 
+    /// Return true if a tool name is allowed by the current filter.
+    ///
+    /// If no filter is active (the default), every name is allowed.
+    /// This is the single source of truth consulted by every place that
+    /// needs to make an allow/deny decision — `build_tool_definitions`,
+    /// `tool_infos`, and `execute` all call it.
+    fn is_tool_allowed(&self, name: &str) -> bool {
+        self.tool_filter
+            .as_ref()
+            .map(|f| f.is_allowed(name))
+            .unwrap_or(true)
+    }
+
     /// Build tool definitions in OpenAI function-calling JSON format.
     ///
     /// Combines built-in (including skill) and MCP tool definitions into a single list.
@@ -224,17 +219,14 @@ impl ToolRouter {
             definitions.extend(mcp.build_tool_definitions());
         }
 
-        // Apply tool filter if active
-        if let Some(ref filter) = self.tool_filter {
-            definitions.retain(|def| {
-                let name = def
-                    .get("function")
-                    .and_then(|f| f.get("name"))
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("");
-                filter.is_allowed(name)
-            });
-        }
+        definitions.retain(|def| {
+            let name = def
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
+            self.is_tool_allowed(name)
+        });
 
         definitions
     }
@@ -261,10 +253,7 @@ impl ToolRouter {
         if let Some(ref mcp) = self.mcp {
             infos.extend(mcp.tool_infos());
         }
-        // Apply tool filter if active
-        if let Some(ref filter) = self.tool_filter {
-            infos.retain(|info| filter.is_allowed(&info.name));
-        }
+        infos.retain(|info| self.is_tool_allowed(&info.name));
         infos
     }
 
@@ -286,17 +275,15 @@ impl ToolRouter {
         );
 
         // Check tool filter before execution
-        if let Some(ref filter) = self.tool_filter {
-            if !filter.is_allowed(&tool_call.function_name) {
-                tracing::warn!(
-                    tool = %tool_call.function_name,
-                    "Tool call blocked by filter"
-                );
-                return ToolResponse::error(
-                    &tool_call.call_id,
-                    format!("Error: Tool '{}' is not allowed by the current tool filter", tool_call.function_name),
-                );
-            }
+        if !self.is_tool_allowed(&tool_call.function_name) {
+            tracing::warn!(
+                tool = %tool_call.function_name,
+                "Tool call blocked by filter"
+            );
+            return ToolResponse::error(
+                &tool_call.call_id,
+                format!("Error: Tool '{}' is not allowed by the current tool filter", tool_call.function_name),
+            );
         }
 
         // Try built-in tools first (includes skill tool)

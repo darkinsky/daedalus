@@ -1,6 +1,7 @@
 mod chat;
 pub(crate) mod duplicate_detector;
 mod session;
+pub(crate) mod tool_loop;
 pub(crate) mod tool_router;
 
 pub use chat::ChatAgent;
@@ -11,16 +12,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::llm::ChatResponse;
-use crate::tools::ToolInfo;
+use crate::tools::{ToolInfo, ToolEventCallback};
 use crate::mcp::McpManager;
 use crate::skill::SkillInfo;
 use crate::subagent::SubagentInfo;
-
-// Re-export ToolEvent and ToolEventCallback from tools module.
-// These types are defined in `tools` (the shared infrastructure layer) so that
-// both `agent` and `subagent` can depend on them without circular imports.
-// Re-exported here for backward compatibility with existing `use crate::agent::ToolEvent` paths.
-pub use crate::tools::{ToolEvent, ToolEventCallback};
 
 // ── Agent metadata trait (read-only introspection) ──
 
