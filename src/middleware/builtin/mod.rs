@@ -8,6 +8,8 @@
 //! - [`tracing::TracingTurnMiddleware`] — Trace + span lifecycle management
 //! - [`logging::LoggingTurnMiddleware`] — Request/response structured logging
 //! - [`memory::MemoryTurnMiddleware`] — User/assistant message storage and retrieval
+//! - [`cost::CostTurnMiddleware`] — Cumulative token usage accounting
+//! - [`metrics::MetricsTurnMiddleware`] — Turn timing and round counting
 //!
 //! ## Tool Middleware
 //!
@@ -21,3 +23,5 @@ pub mod logging;
 pub mod memory;
 pub mod event;
 pub mod permission;
+pub mod cost;
+pub mod metrics;

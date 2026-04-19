@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 
 use crate::embedding::Embedding;
 use crate::llm::LlmConfig;
+use crate::prompt::PromptStyle;
 use crate::workspace::Workspace;
 
 // ── Shared constants ──
@@ -179,6 +180,8 @@ pub(super) struct AgentSection {
     system_prompt: Option<String>,
     /// Path to SOUL.md personality file.
     soul_file: Option<String>,
+    /// Prompt assembly style: "default" or "coding".
+    prompt_style: PromptStyle,
 }
 
 // ── Agent configuration ──
@@ -198,6 +201,8 @@ pub struct AgentConfig {
     pub agent_name: Option<String>,
     /// Loaded soul content (read from SOUL.md file at startup).
     pub soul: Option<String>,
+    /// Prompt assembly style (default vs coding).
+    pub prompt_style: PromptStyle,
     /// Selected memory strategy.
     pub memory_strategy: MemoryStrategy,
     /// Full memory configuration (strategy + per-strategy sub-configs).
@@ -240,6 +245,7 @@ impl AgentConfig {
             is_custom_prompt,
             agent_name,
             soul,
+            prompt_style: agent.prompt_style,
             memory_strategy: memory.strategy.clone(),
             memory_config: memory,
             embedding,

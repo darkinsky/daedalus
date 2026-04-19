@@ -109,33 +109,54 @@ pub struct LoopResult {
     pub tool_history: Vec<ToolRound>,
 }
 
+// ── Loop context ──
+
+/// Runtime context for a single tool-calling loop invocation.
+///
+/// Groups the optional callbacks, hooks, and pipeline that were previously
+/// passed as individual parameters to `run_tool_loop`. This reduces the
+/// function signature from 9 parameters to 3 (`llm`, `cfg`, `ctx`), making
+/// call sites clearer and easier to extend.
+pub struct LoopContext<'a> {
+    /// The tool executor that handles individual tool calls.
+    pub executor: &'a dyn ToolExecutor,
+    /// Pre-built messages from memory (system + history + user).
+    pub messages: &'a [ChatMessage],
+    /// Tool definitions in OpenAI function-calling JSON format.
+    pub tools: &'a [Value],
+    /// Optional callback for CLI event rendering (spinners, progress).
+    pub on_tool_event: Option<&'a ToolEventCallback>,
+    /// Optional callback invoked after each LLM response (used by subagent runner).
+    pub on_llm_response: Option<&'a (dyn Fn(&ChatResponse) + Send + Sync)>,
+    /// Optional tracing hook for LLM call spans and fallback tool spans.
+    pub tracing_hook: Option<&'a TracingHook>,
+    /// Optional tool middleware pipeline (tracing → permission → logging → event → executor).
+    /// When `None`, tool calls go directly to the executor (backward compatible
+    /// for subagent runner which doesn't need middleware).
+    pub tool_pipeline: Option<&'a ToolPipeline>,
+}
+
 // ── The loop itself ──
 
 /// Run the tool-calling loop against an LLM and a tool executor.
 ///
 /// ## Tool middleware pipeline
 ///
-/// If `tool_pipeline` is provided, each tool call is routed through the
+/// If `ctx.tool_pipeline` is provided, each tool call is routed through the
 /// pipeline (tracing → permission → logging → event → executor). If
 /// `None`, tool calls go directly to the executor (backward compatible
 /// for subagent runner which doesn't need middleware).
 ///
 /// ## Tracing hook
 ///
-/// `tracing_hook` is used exclusively for LLM call spans. Tool-level
+/// `ctx.tracing_hook` is used exclusively for LLM call spans. Tool-level
 /// tracing is handled by the tool pipeline's `TracingToolMiddleware`.
-/// If no pipeline is provided, `tracing_hook` also handles tool spans
+/// If no pipeline is provided, `ctx.tracing_hook` also handles tool spans
 /// (fallback for subagent runner).
 pub async fn run_tool_loop(
     llm: &dyn LlmApi,
-    executor: &dyn ToolExecutor,
-    messages: &[ChatMessage],
-    tools: &[Value],
-    on_event: Option<&ToolEventCallback>,
     cfg: &LoopConfig,
-    on_llm_response: Option<&(dyn Fn(&ChatResponse) + Send + Sync)>,
-    tracing_hook: Option<&TracingHook>,
-    tool_pipeline: Option<&ToolPipeline>,
+    ctx: &LoopContext<'_>,
 ) -> Result<LoopResult> {
     let mut tool_history: Vec<ToolRound> = Vec::new();
     let mut total_usage = TokenUsage::default();
@@ -149,18 +170,18 @@ pub async fn run_tool_loop(
         let llm_start = Instant::now();
 
         // Start LLM call tracing span
-        let mut llm_span = if let Some(hook) = tracing_hook {
+        let mut llm_span = if let Some(hook) = ctx.tracing_hook {
             hook.on_llm_call_start(
                 llm.model_name(),
                 llm.provider_name(),
-                messages,
+                ctx.messages,
             ).await
         } else {
             None
         };
 
         let response = llm
-            .chat_with_tools(messages, tools, &tool_history, None)
+            .chat_with_tools(ctx.messages, ctx.tools, &tool_history, None)
             .await?;
         let llm_elapsed_ms = llm_start.elapsed().as_millis() as u64;
 
@@ -172,7 +193,7 @@ pub async fn run_tool_loop(
             span.finish_ok().await;
         }
 
-        if let Some(hook) = on_llm_response {
+        if let Some(hook) = ctx.on_llm_response {
             hook(&response);
         }
 
@@ -199,7 +220,7 @@ pub async fn run_tool_loop(
 
         // Emit intermediate LLM response so the CLI can display
         // reasoning/content in real time during tool-calling rounds.
-        emit(on_event, ToolEvent::LlmResponse {
+        emit(ctx.on_tool_event, ToolEvent::LlmResponse {
             round: round_number,
             reasoning: response.reasoning_content.clone(),
             content: response.content.clone(),
@@ -211,20 +232,21 @@ pub async fn run_tool_loop(
             last_reasoning = response.reasoning_content;
         }
 
-        emit(on_event, ToolEvent::RoundStart { round: round_number });
+        emit(ctx.on_tool_event, ToolEvent::RoundStart { round: round_number });
 
         let tool_calls = response.tool_calls;
+        let tool_start = Instant::now();
 
         // Execute all tool calls — through pipeline if available, else directly.
-        let mut responses = if let Some(pipeline) = tool_pipeline {
+        let mut responses = if let Some(pipeline) = ctx.tool_pipeline {
             // Extract trace context from the tracing hook for tool-level middleware
-            let trace_ctx = tracing_hook.map(|h| h.context_arc());
+            let trace_ctx = ctx.tracing_hook.map(|h| h.context_arc());
             execute_round_via_pipeline(
-                executor, &tool_calls, pipeline, trace_ctx, round_number, on_event,
+                ctx.executor, &tool_calls, pipeline, trace_ctx, round_number, ctx.on_tool_event,
             ).await
         } else {
             // Legacy path: direct execution with inline tracing (for subagent runner)
-            execute_round_direct(executor, &tool_calls, on_event, tracing_hook).await
+            execute_round_direct(ctx.executor, &tool_calls, ctx.on_tool_event, ctx.tracing_hook).await
         };
 
         // Check for runaway duplicate calls and react.
@@ -268,9 +290,9 @@ pub async fn run_tool_loop(
             responses,
         });
 
-        emit(on_event, ToolEvent::RoundComplete {
+        emit(ctx.on_tool_event, ToolEvent::RoundComplete {
             tool_count: tool_history.last().map(|r| r.calls.len()).unwrap_or(0),
-            elapsed_ms: llm_start.elapsed().as_millis() as u64,
+            elapsed_ms: tool_start.elapsed().as_millis() as u64,
         });
     }
 
@@ -293,27 +315,19 @@ pub async fn run_tool_loop(
 ///
 /// Each tool call is wrapped in a `ToolRequest` and routed through the pipeline.
 /// The pipeline handles tracing spans, permission checks, logging, and event emission.
+///
+/// Note: Per-call events (`ToolCallStart`/`ToolCallComplete`) are now handled by
+/// `EventToolMiddleware` in the pipeline. This function only dispatches requests.
 async fn execute_round_via_pipeline(
     executor: &dyn ToolExecutor,
     tool_calls: &[ToolCall],
     pipeline: &ToolPipeline,
     trace_ctx: Option<Arc<TraceContext>>,
     round: usize,
-    on_event: Option<&ToolEventCallback>,
+    _on_event: Option<&ToolEventCallback>,
 ) -> Vec<ToolResponse> {
-    // Start events (fire before dispatch so the UI can render spinners)
-    for tc in tool_calls {
-        emit(
-            on_event,
-            ToolEvent::ToolCallStart {
-                tool_name: tc.function_name.clone(),
-                source: executor.source_of(&tc.function_name),
-                arguments: tc.arguments.clone(),
-            },
-        );
-    }
-
     // Parallel dispatch through pipeline
+    // Per-call events (ToolCallStart/ToolCallComplete) are handled by EventToolMiddleware.
     let futures = tool_calls.iter().map(|tc| {
         let source = executor.source_of(&tc.function_name);
         let trace_ctx = trace_ctx.clone();
@@ -331,32 +345,10 @@ async fn execute_round_via_pipeline(
                 extensions,
             };
 
-            let start = Instant::now();
-            let resp = pipeline.execute(request).await;
-            let elapsed_ms = start.elapsed().as_millis() as u64;
-
-            (resp, elapsed_ms)
+            pipeline.execute(request).await
         }
     });
-    let timed_results: Vec<(ToolResponse, u64)> = futures::future::join_all(futures).await;
-
-    let mut responses = Vec::with_capacity(timed_results.len());
-
-    // Completion events
-    for (tc, (resp, elapsed_ms)) in tool_calls.iter().zip(timed_results.into_iter()) {
-        emit(
-            on_event,
-            ToolEvent::ToolCallComplete {
-                tool_name: tc.function_name.clone(),
-                success: resp.success,
-                result_content: resp.content.clone(),
-                elapsed_ms,
-            },
-        );
-        responses.push(resp);
-    }
-
-    responses
+    futures::future::join_all(futures).await
 }
 
 /// Execute all tool calls directly (legacy path for subagent runner).
@@ -369,8 +361,6 @@ async fn execute_round_direct(
     on_event: Option<&ToolEventCallback>,
     tracing_hook: Option<&TracingHook>,
 ) -> Vec<ToolResponse> {
-    let round_start = Instant::now();
-
     // Start events
     for tc in tool_calls {
         emit(
@@ -432,14 +422,8 @@ async fn execute_round_direct(
         responses.push(resp);
     }
 
-    let round_elapsed_ms = round_start.elapsed().as_millis() as u64;
-    emit(
-        on_event,
-        ToolEvent::RoundComplete {
-            tool_count: responses.len(),
-            elapsed_ms: round_elapsed_ms,
-        },
-    );
+    // Note: RoundComplete is emitted by the main loop in `run_tool_loop`,
+    // not here, to avoid duplicate events.
 
     responses
 }

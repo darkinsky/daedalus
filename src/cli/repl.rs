@@ -8,6 +8,7 @@ use rustyline::{CompletionType, Config, EditMode, Editor};
 
 use crate::agent::AgentMode;
 use crate::llm::TokenUsage;
+use crate::middleware::builtin::cost::SharedSessionCost;
 use crate::tools::{ToolEvent, ToolEventCallback};
 use super::commands::{self, Command};
 use super::completer::SlashCommandHelper;
@@ -16,7 +17,7 @@ use super::render;
 use super::render::ToolEventFormatter;
 
 /// Handle a parsed slash command. Returns `true` if the REPL should exit.
-fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &mut SessionCost) -> Result<bool> {
+fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &SharedSessionCost) -> Result<bool> {
     match cmd {
         Command::Exit => {
             render::goodbye();
@@ -25,7 +26,9 @@ fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &mut Sessio
         Command::Help => render::help(),
         Command::NewSession => {
             agent.new_session();
-            cost.reset();
+            if let Ok(mut c) = cost.lock() {
+                c.reset();
+            }
             render::new_session(agent);
         }
         Command::Clear => {
@@ -33,7 +36,11 @@ fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &mut Sessio
             std::io::Write::flush(&mut std::io::stdout())?;
             render::screen_cleared(agent);
         }
-        Command::Cost => render::cost(cost),
+        Command::Cost => {
+            if let Ok(c) = cost.lock() {
+                render::cost(&c);
+            }
+        }
         Command::Model => render::model_info(agent),
         Command::Tools => render::tools_list(agent),
         Command::Skills => render::skills_list(agent),
@@ -118,7 +125,7 @@ fn build_tool_event_callback(
     })
 }
 /// Send user input to the agent and render the response.
-async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &mut SessionCost) {
+async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &SharedSessionCost) {
     tracing::debug!("User input: {}", input);
 
     // Show spinner while waiting for LLM response
@@ -151,8 +158,8 @@ async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &mut SessionC
 
             render::response(&result.content);
 
-            // Track token usage for the session
-            cost.add_usage(result.usage.as_ref());
+            // Token usage is now automatically tracked by CostTurnMiddleware.
+            // We only need to handle subagent stats for the turn summary.
 
             // Collect subagent stats and render turn summary
             let subagent_stats = stats_collector
@@ -181,8 +188,10 @@ async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &mut SessionC
                 );
 
                 // Also add subagent token usage to session cost
-                for s in &subagent_stats {
-                    cost.add_subagent_usage(s.usage.as_ref());
+                if let Ok(mut c) = cost.lock() {
+                    for s in &subagent_stats {
+                        c.add_subagent_usage(s.usage.as_ref());
+                    }
                 }
             }
             println!();
@@ -201,7 +210,12 @@ async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &mut SessionC
 
 /// Run an interactive REPL loop in Claude Code style.
 pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
-    let mut cost = SessionCost::new();
+    // Use the agent's shared session cost (populated by CostTurnMiddleware)
+    // or fall back to a standalone tracker if the agent doesn't provide one.
+    let cost: SharedSessionCost = agent
+        .session_cost()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(Mutex::new(SessionCost::new())));
 
     render::banner(agent);
 
@@ -231,7 +245,7 @@ pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
 
                 // ── Handle slash commands ──
                 if let Some(cmd) = commands::parse(input) {
-                    if handle_command(cmd, agent, &mut cost)? {
+                    if handle_command(cmd, agent, &cost)? {
                         break;
                     }
                     continue;
@@ -244,7 +258,7 @@ pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
                 }
 
                 // ── Chat with the agent ──
-                handle_chat(input, agent, &mut cost).await;
+                handle_chat(input, agent, &cost).await;
             }
             Err(ReadlineError::Interrupted) => {
                 // Ctrl-C: just print a new line and continue

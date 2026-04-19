@@ -1,4 +1,5 @@
 mod chat;
+pub(crate) mod core_handler;
 pub(crate) mod duplicate_detector;
 mod session;
 pub(crate) mod tool_loop;
@@ -15,6 +16,7 @@ use async_trait::async_trait;
 use crate::llm::ChatResponse;
 use crate::tools::{ToolInfo, ToolEventCallback};
 use crate::mcp::McpManager;
+use crate::middleware::builtin::cost::SharedSessionCost;
 use crate::skill::SkillInfo;
 use crate::subagent::SubagentInfo;
 
@@ -74,6 +76,14 @@ pub trait AgentMetadata {
     /// Return the number of loaded subagents.
     fn subagent_count(&self) -> usize {
         0
+    }
+
+    /// Return the shared session cost tracker, if available.
+    ///
+    /// Used by the CLI layer for `/cost` display and turn footers.
+    /// The cost is automatically accumulated by `CostTurnMiddleware`.
+    fn session_cost(&self) -> Option<&SharedSessionCost> {
+        None
     }
 }
 

@@ -38,6 +38,13 @@ agent:
   # Falls back to <workspace>/config/soul.md if not set
   # soul_file: "./SOUL.md"
 
+  # Prompt assembly style: "default" or "coding"
+  # - default: Original Daedalus prompt (generic AI assistant)
+  # - coding: Coding-focused prompt (autonomous coding agent with
+  #   cache boundary, environment awareness, and agentic coding focus)
+  # Can also be overridden via CLI: --prompt-style coding
+  # prompt_style: "default"
+
 # ── Logging Configuration ──
 logging:
   # Log level filter directive (default: "daedalus=debug")

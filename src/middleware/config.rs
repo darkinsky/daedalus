@@ -59,8 +59,8 @@ impl MiddlewareConfig {
 pub struct MiddlewareEntry {
     /// Middleware name (must match a built-in name).
     ///
-    /// Built-in turn middleware: `memory`, `request_logging`, `tracing`
-    /// Built-in tool middleware: `tool_logging`, `permission`, `tracing`
+    /// Built-in turn middleware: `memory`, `cost`, `metrics`, `request_logging`, `tracing`
+    /// Built-in tool middleware: `event`, `tool_logging`, `permission`, `tracing`
     pub name: String,
 
     /// Whether this middleware is enabled (default: true).

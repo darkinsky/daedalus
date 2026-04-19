@@ -144,9 +144,20 @@ impl Workspace {
 
     // ── Path accessors ──
 
-    /// Root directory of the workspace.
+    /// Root directory of the workspace (i.e., the `.daedalus/` directory itself).
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The project directory that *contains* the `.daedalus/` workspace.
+    ///
+    /// For a project workspace at `/home/user/my_project/.daedalus/`,
+    /// this returns `/home/user/my_project`.
+    ///
+    /// Falls back to the workspace root itself if there is no parent
+    /// (should never happen in practice).
+    pub fn project_dir(&self) -> &Path {
+        self.root.parent().unwrap_or(&self.root)
     }
 
     /// How this workspace was resolved.

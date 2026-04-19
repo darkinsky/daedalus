@@ -1,3 +1,4 @@
+pub mod coding;
 pub mod sections;
 
 use crate::tools::ToolInfo;
@@ -8,6 +9,105 @@ use sections::response_style::build_response_style_section;
 use sections::role::build_role_section;
 use sections::thinking::build_thinking_section;
 use sections::tool_guidance::build_tool_guidance_section;
+
+// Re-export the coding prompt's environment context for external use.
+#[allow(unused_imports)]
+pub use coding::EnvironmentContext;
+
+// ── Unified prompt construction ──
+
+/// Build a system prompt using the specified style and parameters.
+///
+/// This is the single entry point for all prompt construction, centralizing
+/// the style dispatch logic that was previously embedded in `ChatAgent`.
+///
+/// If `prompt_override` is `Some`, it is returned directly, bypassing all
+/// style-specific builders. Otherwise, the appropriate builder is selected
+/// based on `style`.
+///
+/// # Arguments
+/// * `prompt_override` — Custom system prompt (from CLI `--system-prompt`).
+/// * `agent_name` — Optional custom agent name.
+/// * `soul` — Optional personality content (from SOUL.md).
+/// * `tools` — Available tool descriptions for prompt injection.
+/// * `style` — Which prompt architecture to use (Default vs Coding).
+/// * `cwd` — Current working directory (used by Coding style for environment detection).
+pub fn build_system_prompt(
+    prompt_override: Option<&str>,
+    agent_name: Option<&str>,
+    soul: Option<&str>,
+    tools: &[ToolInfo],
+    style: &PromptStyle,
+    cwd: Option<&str>,
+) -> String {
+    // If custom prompt is set, use it directly regardless of style
+    if let Some(custom) = prompt_override {
+        return custom.to_string();
+    }
+
+    match style {
+        PromptStyle::Default => {
+            let mut builder = PromptBuilder::new().tools(tools);
+            if let Some(name) = agent_name {
+                builder = builder.agent_name(name);
+            }
+            if let Some(soul_content) = soul {
+                builder = builder.soul(soul_content);
+            }
+            builder.build()
+        }
+        PromptStyle::Coding => {
+            use coding::{CodingPromptBuilder, EnvironmentContext};
+
+            let resolved_cwd = cwd
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    std::env::current_dir()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| ".".to_string())
+                });
+
+            let env = EnvironmentContext::detect(&resolved_cwd);
+
+            let mut builder = CodingPromptBuilder::new()
+                .tools(tools)
+                .environment(env);
+
+            if let Some(name) = agent_name {
+                builder = builder.agent_name(name);
+            }
+            if let Some(soul_content) = soul {
+                builder = builder.soul(soul_content);
+            }
+
+            builder.build()
+        }
+    }
+}
+
+/// Prompt assembly style selection.
+///
+/// Controls which prompt architecture is used to build the system prompt.
+/// Can be set via YAML config (`agent.prompt_style`) or CLI (`--prompt-style`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptStyle {
+    /// Original Daedalus prompt — generic AI assistant with XML sections.
+    #[default]
+    Default,
+    /// Coding-focused prompt — autonomous coding agent with cache boundary,
+    /// environment awareness, and agentic coding focus.
+    Coding,
+}
+
+impl std::fmt::Display for PromptStyle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Default => write!(f, "default"),
+            Self::Coding => write!(f, "coding"),
+        }
+    }
+}
 
 /// Configuration for building a system prompt.
 ///
@@ -120,21 +220,6 @@ impl<'a> PromptBuilder<'a> {
         sections.push(build_reminders_section(has_tools));
 
         sections.join("\n\n")
-    }
-
-    /// Build a system prompt with an optional custom override.
-    ///
-    /// If `custom_prompt` is `Some`, it is returned directly, bypassing
-    /// the PromptBuilder entirely. Otherwise, the prompt is dynamically
-    /// assembled from sections using the builder's current configuration.
-    ///
-    /// This is the primary entry point used by `ChatAgent` to construct
-    /// the system prompt, centralizing the "custom vs. dynamic" decision.
-    pub fn build_with_override(&self, custom_prompt: Option<&str>) -> String {
-        if let Some(custom) = custom_prompt {
-            return custom.to_string();
-        }
-        self.build()
     }
 }
 

@@ -224,6 +224,13 @@ fn apply_prompt_overrides(args: &cli::CliArgs, config: &mut config::AgentConfig)
         config.system_prompt = format!("{}\n\n{}", config.system_prompt, append);
         config.is_custom_prompt = true;
     }
+    // CLI --prompt-style overrides YAML config
+    if let Some(ref style) = args.prompt_style {
+        config.prompt_style = match style {
+            cli::CliPromptStyle::Default => prompt::PromptStyle::Default,
+            cli::CliPromptStyle::Coding => prompt::PromptStyle::Coding,
+        };
+    }
 }
 
 /// Apply tool filtering based on CLI arguments.

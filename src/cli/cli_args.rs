@@ -78,6 +78,22 @@ pub struct CliArgs {
     /// Significantly reduces startup time for simple queries.
     #[arg(long = "bare")]
     pub bare: bool,
+
+    /// Prompt assembly style: "default" or "coding".
+    ///
+    /// - "default": Original Daedalus prompt (generic AI assistant)
+    /// - "coding": Coding-focused prompt (autonomous coding agent)
+    #[arg(long = "prompt-style", value_name = "STYLE")]
+    pub prompt_style: Option<CliPromptStyle>,
+}
+
+/// Prompt style for CLI argument parsing.
+#[derive(Debug, Clone, clap::ValueEnum)]
+pub enum CliPromptStyle {
+    /// Original Daedalus prompt.
+    Default,
+    /// Coding-focused prompt.
+    Coding,
 }
 
 /// Output format for non-interactive (print) mode.
@@ -139,6 +155,7 @@ mod tests {
             verbose: false,
             skip_permissions: false,
             bare: false,
+            prompt_style: None,
         };
         let tools = args.allowed_tools_list().unwrap();
         assert_eq!(tools, vec!["read_file", "write_file", "bash"]);
@@ -160,6 +177,7 @@ mod tests {
             verbose: false,
             skip_permissions: false,
             bare: false,
+            prompt_style: None,
         };
         let tools = args.disallowed_tools_list().unwrap();
         assert_eq!(tools, vec!["bash", "write_file"]);
@@ -181,6 +199,7 @@ mod tests {
             verbose: false,
             skip_permissions: false,
             bare: false,
+            prompt_style: None,
         };
         assert!(args.allowed_tools_list().is_none());
         assert!(args.disallowed_tools_list().is_none());
@@ -202,6 +221,7 @@ mod tests {
             verbose: false,
             skip_permissions: false,
             bare: false,
+            prompt_style: None,
         };
         assert!(!args.is_print_mode());
 
@@ -225,6 +245,7 @@ mod tests {
             verbose: false,
             skip_permissions: false,
             bare: false,
+            prompt_style: None,
         };
         let tools = args.allowed_tools_list().unwrap();
         assert!(tools.is_empty());

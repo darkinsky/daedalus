@@ -57,7 +57,12 @@ impl TurnMiddleware for MemoryTurnMiddleware {
         // ── Delegate to core ──
         let response = next.run(request).await?;
 
-        // ── After: store results in memory ──
+        // ── After: store results and trigger reflection in a single lock ──
+        //
+        // Previously this was split into two separate lock acquisitions,
+        // which could allow intermediate state inconsistency if concurrent
+        // access were ever introduced. Merging into one lock is both more
+        // efficient (one await instead of two) and safer.
         {
             let mut mem = self.memory.lock().await;
 
@@ -69,11 +74,8 @@ impl TurnMiddleware for MemoryTurnMiddleware {
 
             // Store assistant response
             mem.add_assistant_message(&response.chat_response.content);
-        }
 
-        // Trigger post-turn reflection (some memory strategies use LLM)
-        {
-            let mut mem = self.memory.lock().await;
+            // Trigger post-turn reflection (some memory strategies use LLM)
             mem.reflect_on_turn(
                 &user_input,
                 &response.chat_response.content,

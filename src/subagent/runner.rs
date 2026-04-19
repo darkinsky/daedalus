@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::agent::tool_loop::{run_tool_loop, LoopConfig, LoopOutcome, LoopResult, ToolExecutor};
+use crate::agent::tool_loop::{run_tool_loop, LoopConfig, LoopContext, LoopOutcome, LoopResult, ToolExecutor};
 use crate::agent_tracing::TracingHook;
 use crate::tools::ToolEventCallback;
 use crate::llm::{self, LlmApi, LlmConfig, ToolCall, ToolResponse};
@@ -267,16 +267,20 @@ impl SubagentRunner {
             track_reasoning: false,
         };
 
-        let LoopResult { outcome, usage, tool_history } = run_tool_loop(
-            llm,
-            &executor,
+        let loop_ctx = LoopContext {
+            executor: &executor,
             messages,
             tools,
             on_tool_event,
-            &cfg,
-            None,
+            on_llm_response: None,
             tracing_hook, // Pass tracing hook to subagent's tool loop
-            None,         // No tool pipeline for subagents (uses direct execution)
+            tool_pipeline: None, // No tool pipeline for subagents (uses direct execution)
+        };
+
+        let LoopResult { outcome, usage, tool_history } = run_tool_loop(
+            llm,
+            &cfg,
+            &loop_ctx,
         ).await?;
 
         let tool_rounds = tool_history.len();

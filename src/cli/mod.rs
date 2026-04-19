@@ -1,7 +1,7 @@
 pub mod cli_args;
 mod commands;
 mod completer;
-mod cost;
+pub(crate) mod cost;
 mod output_format;
 mod print_runner;
 // Explicit `#[path]` pins `render` to the single-file implementation,
@@ -17,7 +17,7 @@ use anyhow::Result;
 
 use crate::agent::AgentMode;
 
-pub use cli_args::{CliArgs, OutputFormat};
+pub use cli_args::{CliArgs, CliPromptStyle, OutputFormat};
 
 /// Run an interactive REPL loop in Claude Code style.
 ///
