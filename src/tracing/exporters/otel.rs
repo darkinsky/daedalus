@@ -188,12 +188,39 @@ impl OtelCollector {
                 tool_calls,
                 usage,
                 input_messages,
+                available_tools,
                 ..
             } => {
                 attrs.push(attr_str("daedalus.span_type", "llm_call"));
                 attrs.push(attr_str("gen_ai.system", provider));
                 attrs.push(attr_str("gen_ai.request.model", model));
                 attrs.push(attr_int("gen_ai.request.message_count", input_messages.len() as i64));
+                if !available_tools.is_empty() {
+                    attrs.push(attr_str("gen_ai.request.available_tools", &available_tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")));
+                    attrs.push(attr_int("gen_ai.request.tool_count", available_tools.len() as i64));
+                    // Export tool details as separate attributes for better observability
+                    for (i, tool) in available_tools.iter().enumerate() {
+                        attrs.push(attr_str(
+                            &format!("gen_ai.request.tool.{}.name", i),
+                            &tool.name,
+                        ));
+                        attrs.push(attr_str(
+                            &format!("gen_ai.request.tool.{}.description", i),
+                            &tool.description,
+                        ));
+                        if let Some(params) = tool.parameters_schema.get("properties") {
+                            if let Some(param_names) = params.as_object() {
+                                let param_list: Vec<String> = param_names.keys().map(|k| k.to_string()).collect();
+                                if !param_list.is_empty() {
+                                    attrs.push(attr_str(
+                                        &format!("gen_ai.request.tool.{}.parameters", i),
+                                        &param_list.join(", "),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
                 if let Some(content) = output_content {
                     attrs.push(attr_str("gen_ai.response.content", content));
                 }

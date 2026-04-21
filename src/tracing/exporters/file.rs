@@ -202,6 +202,7 @@ fn serialize_span(span: &Span) -> serde_json::Value {
             model,
             provider,
             input_messages,
+            available_tools,
             output_content,
             reasoning_content,
             tool_calls,
@@ -218,6 +219,15 @@ fn serialize_span(span: &Span) -> serde_json::Value {
                     "content_len": m.content_len,
                 })).collect::<Vec<_>>()
             );
+            if !available_tools.is_empty() {
+                json["available_tools"] = serde_json::json!(
+                    available_tools.iter().map(|t| serde_json::json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters_schema": t.parameters_schema,
+                    })).collect::<Vec<_>>()
+                );
+            }
             json["output_content"] = serde_json::json!(output_content);
             json["reasoning_content"] = serde_json::json!(reasoning_content);
             json["tool_calls"] = serde_json::json!(
@@ -439,6 +449,7 @@ fn serialize_span_yaml(out: &mut String, span: &Span, all_spans: &[Span], indent
         SpanType::LlmCall {
             model,
             input_messages,
+            available_tools,
             output_content,
             reasoning_content,
             tool_calls,
@@ -460,6 +471,28 @@ fn serialize_span_yaml(out: &mut String, span: &Span, all_spans: &[Span], indent
                     detail_pad,
                     input_messages.len()
                 ));
+            }
+            if !available_tools.is_empty() {
+                out.push_str(&format!(
+                    "{}available_tools: [{}]\n",
+                    detail_pad,
+                    available_tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")
+                ));
+                if flags.llm_input {
+                    out.push_str(&format!("{}tool_details:\n", detail_pad));
+                    for (i, tool) in available_tools.iter().enumerate() {
+                        out.push_str(&format!("{}  [{}] {}\n", detail_pad, i, tool.name));
+                        out.push_str(&format!("{}      description: {}\n", detail_pad, tool.description));
+                        if let Some(params) = tool.parameters_schema.get("properties") {
+                            let param_names: Vec<String> = params.as_object()
+                                .map(|props| props.keys().map(|k| k.to_string()).collect())
+                                .unwrap_or_default();
+                            if !param_names.is_empty() {
+                                out.push_str(&format!("{}      parameters: {}\n", detail_pad, param_names.join(", ")));
+                            }
+                        }
+                    }
+                }
             }
             if let Some(content) = output_content {
                 out.push_str(&format!(

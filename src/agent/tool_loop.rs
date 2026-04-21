@@ -117,6 +117,8 @@ pub struct LoopResult {
 /// passed as individual parameters to `run_tool_loop`. This reduces the
 /// function signature from 9 parameters to 3 (`llm`, `cfg`, `ctx`), making
 /// call sites clearer and easier to extend.
+use crate::agent_tracing::ToolDetail;
+
 pub struct LoopContext<'a> {
     /// The tool executor that handles individual tool calls.
     pub executor: &'a dyn ToolExecutor,
@@ -171,10 +173,26 @@ pub async fn run_tool_loop(
 
         // Start LLM call tracing span
         let mut llm_span = if let Some(hook) = ctx.tracing_hook {
+            // Extract detailed tool information from JSON definitions for tracing
+            let tool_details: Vec<ToolDetail> = ctx.tools.iter()
+                .filter_map(|t| {
+                    let function = t.get("function")?;
+                    let name = function.get("name")?.as_str()?;
+                    let description = function.get("description")?.as_str()?;
+                    let parameters = function.get("parameters")?;
+                    
+                    Some(ToolDetail {
+                        name: name.to_string(),
+                        description: description.to_string(),
+                        parameters_schema: parameters.clone(),
+                    })
+                })
+                .collect();
             hook.on_llm_call_start(
                 llm.model_name(),
                 llm.provider_name(),
                 ctx.messages,
+                &tool_details,
             ).await
         } else {
             None

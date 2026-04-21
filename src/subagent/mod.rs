@@ -13,6 +13,7 @@
 pub(crate) mod builtins;
 pub(crate) mod isolation;
 pub(crate) mod loader;
+pub(crate) mod prompt;
 pub mod registry;
 pub(crate) mod runner;
 pub(crate) mod tool;

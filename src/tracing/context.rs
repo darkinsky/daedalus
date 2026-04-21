@@ -11,7 +11,7 @@ use crate::llm::{ChatMessage, ChatResponse, TokenUsage};
 use super::config::ContentFlags;
 use super::manager::TracingManager;
 use super::types::{
-    MessageSummary, Span, SpanStatus, SpanType, ToolCallSummary, Trace, TraceMetadata,
+    MessageSummary, Span, SpanStatus, SpanType, ToolCallSummary, ToolDetail, Trace, TraceMetadata,
 };
 
 /// Maximum characters to include in message content previews (when truncation is enabled).
@@ -121,6 +121,7 @@ impl TraceContext {
         model: &str,
         provider: &str,
         messages: &[ChatMessage],
+        available_tools: &[ToolDetail],
     ) -> SpanGuard {
         let input_messages: Vec<MessageSummary> = messages
             .iter()
@@ -135,6 +136,7 @@ impl TraceContext {
             model: model.to_string(),
             provider: provider.to_string(),
             input_messages,
+            available_tools: available_tools.to_vec(),
             output_content: None,
             reasoning_content: None,
             tool_calls: Vec::new(),

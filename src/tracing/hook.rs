@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use crate::llm::{ChatMessage, TokenUsage};
-
 use super::context::TraceContext;
+use super::types::ToolDetail;
 
 // ── SharedTracingHook ──
 
@@ -102,11 +102,12 @@ impl TracingHook {
         model: &str,
         provider: &str,
         messages: &[ChatMessage],
+        available_tools: &[ToolDetail],
     ) -> Option<super::SpanGuard> {
         if !self.is_enabled() {
             return None;
         }
-        Some(self.ctx.start_llm_call(model, provider, messages).await)
+        Some(self.ctx.start_llm_call(model, provider, messages, available_tools).await)
     }
 
     /// Record that a tool call is about to start.

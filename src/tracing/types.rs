@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::llm::TokenUsage;
 
@@ -86,6 +87,9 @@ pub enum SpanType {
         provider: String,
         /// Summary of input messages (role + truncated content).
         input_messages: Vec<MessageSummary>,
+        /// Detailed information about tools available to the LLM for this call.
+        /// Empty if no tools were provided (simple chat mode).
+        available_tools: Vec<ToolDetail>,
         /// The text output from the model.
         output_content: Option<String>,
         /// Reasoning/thinking content (if any).
@@ -123,6 +127,17 @@ pub enum SpanType {
         /// Number of tool-calling rounds the subagent executed.
         tool_rounds: usize,
     },
+}
+
+/// Detailed information about a tool available to the LLM.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDetail {
+    /// Tool name.
+    pub name: String,
+    /// Tool description.
+    pub description: String,
+    /// JSON schema of tool parameters.
+    pub parameters_schema: serde_json::Value,
 }
 
 /// Summary of a message in the LLM input (for tracing, not full content).

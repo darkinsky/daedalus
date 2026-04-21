@@ -38,6 +38,6 @@ pub use hook::{SharedTracingHook, TracingHook};
 pub use manager::TracingManager;
 #[allow(unused_imports)]
 pub use types::{
-    MessageSummary, Span, SpanStatus, SpanType, SpanValue, ToolCallSummary, Trace,
+    MessageSummary, Span, SpanStatus, SpanType, SpanValue, ToolCallSummary, ToolDetail, Trace,
     TraceMetadata,
 };

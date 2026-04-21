@@ -165,6 +165,7 @@ impl CoreTurnHandler {
                     self.llm.model_name(),
                     self.llm.provider_name(),
                     &request.messages,
+                    &[], // No tools in simple chat mode
                 )
                 .await,
             ),

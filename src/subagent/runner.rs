@@ -6,6 +6,7 @@ use crate::tools::ToolEventCallback;
 use crate::llm::{self, LlmApi, LlmConfig, ToolCall, ToolResponse};
 use crate::tools::BuiltinToolRegistry;
 
+use super::prompt;
 use super::{IsolationMode, SubagentDefinition, SubagentResult};
 #[cfg(feature = "team")]
 use super::TeamTask;
@@ -85,13 +86,24 @@ impl SubagentRunner {
         let tools = filtered_tools.build_tool_definitions();
         let has_tools = !tools.is_empty() && llm.supports_tools();
 
-        // 3. Build messages: system prompt + user task
+        // 3. Build the effective system prompt with tool guidance,
+        //    environment context, and safety constraints.
+        //    This aligns with Claude Code's SubAgent prompt construction:
+        //    base prompt + tool inventory + usage strategy + env + constraints.
+        let tool_infos = filtered_tools.tool_infos();
+        let effective_prompt = prompt::build_effective_prompt(
+            &definition.system_prompt,
+            &tool_infos,
+            has_tools,
+        );
+
+        // 4. Build messages: enhanced system prompt + user task
         let messages = vec![
-            crate::llm::ChatMessage::system(&definition.system_prompt),
+            crate::llm::ChatMessage::system(&effective_prompt),
             crate::llm::ChatMessage::user(task),
         ];
 
-        // 4. Run the tool-calling loop
+        // 5. Run the tool-calling loop
         let max_tool_rounds = definition.max_turns.unwrap_or(DEFAULT_MAX_TOOL_ROUNDS);
 
         let result = if has_tools {
@@ -208,6 +220,7 @@ impl SubagentRunner {
                 llm.model_name(),
                 llm.provider_name(),
                 messages,
+                &[], // No tools available in simple chat mode
             ).await
         } else {
             None
