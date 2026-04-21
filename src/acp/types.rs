@@ -628,6 +628,7 @@ mod tests {
             prompt_tokens: Some(100),
             completion_tokens: Some(50),
             total_tokens: Some(150),
+            cached_tokens: None,
         };
         let task_usage = TaskUsage::from(&llm_usage);
         assert_eq!(task_usage.prompt_tokens, Some(100));

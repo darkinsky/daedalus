@@ -240,6 +240,11 @@ pub fn response_footer(usage: Option<&TokenUsage>, elapsed: f64) {
         if let Some(pt) = u.prompt_tokens {
             parts.push(format!("{}↑", pt));
         }
+        if let Some(cached) = u.cached_tokens {
+            if cached > 0 {
+                parts.push(format!("{}cached", cached));
+            }
+        }
         if let Some(ct) = u.completion_tokens {
             parts.push(format!("{}↓", ct));
         }

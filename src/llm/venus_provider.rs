@@ -57,14 +57,35 @@ impl VenusProvider {
         tool_history: &[ToolRound],
         options: Option<&ChatOptions>,
     ) -> Value {
-        // Build messages array
+        // Build messages array, with cache_control support.
+        //
+        // When a message has `cache_control: Some(Ephemeral)`, we emit
+        // the Anthropic-style content block format:
+        //   { "role": "...", "content": [{ "type": "text", "text": "...",
+        //     "cache_control": { "type": "ephemeral" } }] }
+        //
+        // Venus proxy forwards this to Anthropic backends as-is, and
+        // for OpenAI backends the proxy strips the cache_control field
+        // (OpenAI uses automatic prefix caching, no explicit markers needed).
         let mut msg_array: Vec<Value> = messages
             .iter()
             .map(|msg| {
-                json!({
-                    "role": msg.role.to_string(),
-                    "content": msg.content,
-                })
+                if msg.cache_control.is_some() {
+                    // Use content-block format with cache_control marker
+                    json!({
+                        "role": msg.role.to_string(),
+                        "content": [{
+                            "type": "text",
+                            "text": msg.content,
+                            "cache_control": { "type": "ephemeral" }
+                        }]
+                    })
+                } else {
+                    json!({
+                        "role": msg.role.to_string(),
+                        "content": msg.content,
+                    })
+                }
             })
             .collect();
 
@@ -234,16 +255,30 @@ impl VenusProvider {
     }
 
     /// Parse token usage statistics from the response body.
+    ///
+    /// Extracts cached token counts from multiple possible locations:
+    /// - `usage.prompt_tokens_details.cached_tokens` (OpenAI format)
+    /// - `usage.cache_read_input_tokens` (Anthropic format)
+    /// Venus proxy normalizes both formats, so we check both.
     fn parse_usage(response_body: &Value) -> Option<TokenUsage> {
         let usage_obj = response_body.get("usage")?;
         let prompt = usage_obj.get("prompt_tokens").and_then(|v| v.as_u64());
         let completion = usage_obj.get("completion_tokens").and_then(|v| v.as_u64());
         let total = usage_obj.get("total_tokens").and_then(|v| v.as_u64());
+
+        // Extract cached tokens from OpenAI-style nested field or Anthropic-style flat field
+        let cached = usage_obj
+            .get("prompt_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(|v| v.as_u64())
+            .or_else(|| usage_obj.get("cache_read_input_tokens").and_then(|v| v.as_u64()));
+
         if prompt.is_some() || completion.is_some() || total.is_some() {
             Some(TokenUsage {
                 prompt_tokens: prompt,
                 completion_tokens: completion,
                 total_tokens: total,
+                cached_tokens: cached,
             })
         } else {
             None
@@ -588,5 +623,112 @@ mod tests {
         assert!(msgs[1]["tool_calls"].is_array());
         assert_eq!(msgs[2]["role"], "tool");
         assert_eq!(msgs[2]["tool_call_id"], "call_1");
+    }
+
+    #[test]
+    fn test_build_request_body_with_cache_control() {
+        use crate::llm::CacheControl;
+
+        let config = LlmConfig {
+            api_key: "test-key".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
+            api_base: None,
+            adapter_kind: None,
+            venus: VenusExtensions::default(),
+        };
+
+        let provider = VenusProvider::new(config).unwrap();
+        let messages = vec![
+            ChatMessage::system("You are helpful.")
+                .with_cache_control(CacheControl::Ephemeral),
+            ChatMessage::user("Hello"),
+        ];
+
+        let body = provider.build_request_body(&messages, &[], &[], None);
+        let msgs = body["messages"].as_array().unwrap();
+
+        // System message should use content-block format with cache_control
+        assert_eq!(msgs[0]["role"], "system");
+        let content_blocks = msgs[0]["content"].as_array()
+            .expect("System message with cache_control should use content-block format");
+        assert_eq!(content_blocks.len(), 1);
+        assert_eq!(content_blocks[0]["type"], "text");
+        assert_eq!(content_blocks[0]["text"], "You are helpful.");
+        assert_eq!(content_blocks[0]["cache_control"]["type"], "ephemeral");
+
+        // User message should use plain string format (no cache_control)
+        assert_eq!(msgs[1]["role"], "user");
+        assert!(msgs[1]["content"].is_string());
+        assert_eq!(msgs[1]["content"], "Hello");
+    }
+
+    #[test]
+    fn test_parse_usage_with_cached_tokens_openai_format() {
+        let body = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "Hello!"
+                }
+            }],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+                "prompt_tokens_details": {
+                    "cached_tokens": 80
+                }
+            }
+        });
+
+        let resp = VenusProvider::parse_response(&body).unwrap();
+        let usage = resp.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, Some(100));
+        assert_eq!(usage.cached_tokens, Some(80));
+    }
+
+    #[test]
+    fn test_parse_usage_with_cached_tokens_anthropic_format() {
+        let body = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "Hello!"
+                }
+            }],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+                "cache_read_input_tokens": 75
+            }
+        });
+
+        let resp = VenusProvider::parse_response(&body).unwrap();
+        let usage = resp.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, Some(100));
+        assert_eq!(usage.cached_tokens, Some(75));
+    }
+
+    #[test]
+    fn test_parse_usage_without_cached_tokens() {
+        let body = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "Hello!"
+                }
+            }],
+            "usage": {
+                "prompt_tokens": 50,
+                "completion_tokens": 10,
+                "total_tokens": 60
+            }
+        });
+
+        let resp = VenusProvider::parse_response(&body).unwrap();
+        let usage = resp.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, Some(50));
+        assert!(usage.cached_tokens.is_none());
     }
 }

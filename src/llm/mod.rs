@@ -6,7 +6,7 @@ mod venus_provider;
 // This makes it clear which symbols come from the llm module and
 // prevents accidental namespace pollution as the type set grows.
 pub use types::{
-    ChatMessage, ChatOptions, ChatRole, ChatResponse,
+    CacheControl, ChatMessage, ChatOptions, ChatRole, ChatResponse,
     LlmConfig, ReasoningEffort, VenusExtensions,
     TokenUsage, ToolCall, ToolResponse, ToolRound,
     format_messages_for_log,

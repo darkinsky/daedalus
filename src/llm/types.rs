@@ -140,6 +140,16 @@ impl Default for LlmConfig {
 pub struct ChatMessage {
     pub role: ChatRole,
     pub content: String,
+    /// Optional cache control hint for prompt caching optimization.
+    ///
+    /// When set, the provider should mark this message as a cache
+    /// breakpoint. This enables API-level prompt caching where the
+    /// static prefix of the conversation is cached and reused across
+    /// requests, significantly reducing latency and cost.
+    ///
+    /// Typically set on the system message that contains the static
+    /// portion of the prompt (identity, rules, tool definitions).
+    pub cache_control: Option<CacheControl>,
 }
 
 /// The role of a message sender.
@@ -172,10 +182,14 @@ pub fn format_messages_for_log(messages: &[ChatMessage]) -> String {
     let entries: Vec<serde_json::Value> = messages
         .iter()
         .map(|m| {
-            serde_json::json!({
+            let mut obj = serde_json::json!({
                 "role": m.role.to_string(),
                 "content": m.content,
-            })
+            });
+            if m.cache_control.is_some() {
+                obj["cache_control"] = serde_json::json!("ephemeral");
+            }
+            obj
         })
         .collect();
     serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string())
@@ -183,15 +197,15 @@ pub fn format_messages_for_log(messages: &[ChatMessage]) -> String {
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::System, content: content.into() }
+        Self { role: ChatRole::System, content: content.into(), cache_control: None }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::User, content: content.into() }
+        Self { role: ChatRole::User, content: content.into(), cache_control: None }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::Assistant, content: content.into() }
+        Self { role: ChatRole::Assistant, content: content.into(), cache_control: None }
     }
 
     /// Create a tool message.
@@ -200,7 +214,16 @@ impl ChatMessage {
     /// distinct message types in conversation memory.
     #[allow(dead_code)]
     pub fn tool(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::Tool, content: content.into() }
+        Self { role: ChatRole::Tool, content: content.into(), cache_control: None }
+    }
+
+    /// Set cache control on this message (builder pattern).
+    ///
+    /// Marks this message as a cache breakpoint for prompt caching.
+    /// The provider will use this hint to enable API-level caching.
+    pub fn with_cache_control(mut self, cc: CacheControl) -> Self {
+        self.cache_control = Some(cc);
+        self
     }
 }
 
@@ -287,6 +310,17 @@ pub struct TokenUsage {
     pub prompt_tokens: Option<u64>,
     pub completion_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
+    /// Number of prompt tokens that were served from cache.
+    ///
+    /// When prompt caching is active, this indicates how many input
+    /// tokens were reused from a previous request's cache, avoiding
+    /// recomputation. A high ratio of `cached_tokens / prompt_tokens`
+    /// indicates effective cache utilization.
+    ///
+    /// - Anthropic: `usage.cache_read_input_tokens`
+    /// - OpenAI: `usage.prompt_tokens_details.cached_tokens`
+    /// - Venus proxy: `usage.prompt_tokens_details.cached_tokens`
+    pub cached_tokens: Option<u64>,
 }
 
 impl TokenUsage {
@@ -298,6 +332,7 @@ impl TokenUsage {
         self.prompt_tokens = sum_optional(self.prompt_tokens, other.prompt_tokens);
         self.completion_tokens = sum_optional(self.completion_tokens, other.completion_tokens);
         self.total_tokens = sum_optional(self.total_tokens, other.total_tokens);
+        self.cached_tokens = sum_optional(self.cached_tokens, other.cached_tokens);
     }
 }
 
@@ -321,6 +356,23 @@ pub struct ChatOptions {
     pub top_p: Option<f64>,
     /// Venus API proxy advanced parameters (thinking, reasoning_effort).
     pub venus: VenusExtensions,
+}
+
+/// Cache control hint for prompt caching optimization.
+///
+/// When set on a `ChatMessage`, tells the provider to mark this message
+/// (or content block) as a cache breakpoint. Providers that support
+/// prompt caching (Anthropic, OpenAI, Venus proxy) will use this to
+/// avoid reprocessing static prefix content across requests.
+///
+/// Messages *without* `cache_control` are treated normally.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CacheControl {
+    /// Ephemeral cache — content is cached for the duration of the
+    /// conversation but not persisted across sessions.
+    /// Maps to Anthropic's `{"type": "ephemeral"}` and OpenAI's
+    /// automatic prefix caching boundary hint.
+    Ephemeral,
 }
 
 // NOTE: `ToolInfo` has been moved to `crate::tools::ToolInfo` where it
@@ -414,6 +466,7 @@ mod tests {
                 prompt_tokens: Some(10),
                 completion_tokens: Some(5),
                 total_tokens: Some(15),
+                cached_tokens: None,
             }),
             tool_calls: vec![],
         };
@@ -475,11 +528,13 @@ mod tests {
             prompt_tokens: Some(10),
             completion_tokens: Some(5),
             total_tokens: Some(15),
+            cached_tokens: None,
         };
         let round = TokenUsage {
             prompt_tokens: Some(20),
             completion_tokens: Some(10),
             total_tokens: Some(30),
+            cached_tokens: None,
         };
         total.accumulate(&round);
         assert_eq!(total.prompt_tokens, Some(30));
@@ -494,6 +549,7 @@ mod tests {
             prompt_tokens: Some(10),
             completion_tokens: None,
             total_tokens: Some(10),
+            cached_tokens: None,
         };
         total.accumulate(&round);
         assert_eq!(total.prompt_tokens, Some(10));

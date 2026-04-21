@@ -519,11 +519,15 @@ impl Memory for SlidingWindowMemory {
     }
 
     fn build_messages(&self) -> Vec<ChatMessage> {
+        use crate::llm::CacheControl;
         let system_prompt = self.effective_system_prompt();
         let window = self.windowed_messages();
 
         let mut messages = Vec::with_capacity(1 + window.len());
-        messages.push(ChatMessage::system(system_prompt));
+        messages.push(
+            ChatMessage::system(system_prompt)
+                .with_cache_control(CacheControl::Ephemeral)
+        );
         messages.extend(window.iter().cloned());
         messages
     }

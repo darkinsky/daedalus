@@ -196,18 +196,29 @@ impl<'a> PromptBuilder<'a> {
 
     /// Assemble the final system prompt from all configured sections.
     ///
-    /// The prompt is assembled in a deliberate order:
+    /// The prompt is assembled in a deliberate order optimized for KV cache:
+    ///
+    /// **Static prefix** (cacheable across requests):
     /// 1. **Role** — Who am I? What can I do?
     /// 2. **Soul** — Personality and behavioral guardrails (optional)
     /// 3. **Thinking Style** — How should I reason?
     /// 4. **Tool Guidance** — How do I use tools? (only if tools available)
     /// 5. **Response Style** — How should I format output?
-    /// 6. **Context** — Dynamic runtime info (date, memory)
-    /// 7. **Critical Reminders** — Hard rules that must not be violated
+    /// 6. **Critical Reminders** — Hard rules that must not be violated
+    ///
+    /// **Dynamic suffix** (changes per session/turn):
+    /// 7. **Project Rules** — Workspace-specific rules (semi-static)
+    /// 8. **Context** — Dynamic runtime info (date, memory)
+    ///
+    /// This ordering ensures the static prefix is identical across requests,
+    /// maximizing KV cache hit rate for both implicit (OpenAI) and explicit
+    /// (Anthropic) prompt caching.
     pub fn build(&self) -> String {
         let has_tools = !self.tools.is_empty();
 
         let mut sections: Vec<String> = Vec::with_capacity(8);
+
+        // ═══ STATIC PREFIX (cacheable across requests) ═══
 
         // 1. Role definition
         sections.push(build_role_section(self.agent_name, self.tools));
@@ -231,10 +242,17 @@ impl<'a> PromptBuilder<'a> {
         // 5. Response style
         sections.push(build_response_style_section());
 
-        // 6. Dynamic context (date, memory)
-        sections.push(build_context_section(self.memory_context));
+        // 6. Critical reminders (static guardrails)
+        sections.push(build_reminders_section(has_tools));
 
-        // 7. Project rules from DAEDALUS.md (optional, high salience)
+        // ═══ CACHE BOUNDARY ═══
+        // Content above this line is static and can be cached across requests.
+        // Content below changes per session/turn.
+        sections.push("<!-- CACHE_BOUNDARY -->".to_string());
+
+        // ═══ DYNAMIC SUFFIX (changes per session/turn) ═══
+
+        // 7. Project rules from DAEDALUS.md (optional, semi-static)
         if let Some(rules) = self.project_rules {
             if !rules.trim().is_empty() {
                 sections.push(format!(
@@ -247,8 +265,8 @@ impl<'a> PromptBuilder<'a> {
             }
         }
 
-        // 8. Critical reminders (always last — highest salience)
-        sections.push(build_reminders_section(has_tools));
+        // 8. Dynamic context (date, memory) — last for maximum cache prefix
+        sections.push(build_context_section(self.memory_context));
 
         sections.join("\n\n")
     }
@@ -312,14 +330,16 @@ mod tests {
         let soul_pos = prompt.find("<soul>").unwrap();
         let thinking_pos = prompt.find("<thinking_style>").unwrap();
         let response_pos = prompt.find("<response_style>").unwrap();
-        let context_pos = prompt.find("<context>").unwrap();
         let reminders_pos = prompt.find("<critical_reminders>").unwrap();
+        let context_pos = prompt.find("<context>").unwrap();
 
+        // Static prefix: role → soul → thinking → response → reminders
         assert!(role_pos < soul_pos);
         assert!(soul_pos < thinking_pos);
         assert!(thinking_pos < response_pos);
-        assert!(response_pos < context_pos);
-        assert!(context_pos < reminders_pos);
+        assert!(response_pos < reminders_pos);
+        // Dynamic suffix: context comes after reminders (for cache optimization)
+        assert!(reminders_pos < context_pos);
     }
 
     #[test]

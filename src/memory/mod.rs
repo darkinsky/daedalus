@@ -124,10 +124,19 @@ impl MessageBuffer {
     }
 
     /// Build the full message list with a system prompt prepended.
+    ///
+    /// The system message is marked with `CacheControl::Ephemeral` to enable
+    /// API-level prompt caching. Since the system prompt is the longest and
+    /// most stable part of the conversation, caching it provides the biggest
+    /// latency and cost savings.
     pub fn build_messages_with_system(&self, system_prompt: String) -> Vec<ChatMessage> {
+        use crate::llm::CacheControl;
         let window = self.windowed();
         let mut messages = Vec::with_capacity(1 + window.len());
-        messages.push(ChatMessage::system(system_prompt));
+        messages.push(
+            ChatMessage::system(system_prompt)
+                .with_cache_control(CacheControl::Ephemeral)
+        );
         messages.extend(window.iter().cloned());
         messages
     }

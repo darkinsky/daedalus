@@ -85,17 +85,26 @@ impl GenAiProvider {
     // ── Type conversion helpers (genai ↔ our types) ──
 
     /// Convert our ChatMessages to genai ChatMessages.
+    ///
+    /// Note: genai crate does not natively support `cache_control` markers.
+    /// For Anthropic prompt caching through genai, the cache_control hint
+    /// is currently a no-op. If cache_control support is critical, use
+    /// VenusProvider which has full control over the HTTP request body.
     fn convert_messages(messages: &[ChatMessage]) -> Vec<GenAiChatMessage> {
         messages
             .iter()
-            .map(|msg| match msg.role {
-                ChatRole::System => GenAiChatMessage::system(&msg.content),
-                ChatRole::User => GenAiChatMessage::user(&msg.content),
-                ChatRole::Assistant => GenAiChatMessage::assistant(&msg.content),
-                // Tool messages are stored in memory as context; when sent to
-                // genai they are treated as assistant messages since genai
-                // handles tool responses via its own ToolResponse type.
-                ChatRole::Tool => GenAiChatMessage::assistant(&msg.content),
+            .map(|msg| {
+                // TODO: When genai crate adds cache_control support,
+                // propagate msg.cache_control here.
+                match msg.role {
+                    ChatRole::System => GenAiChatMessage::system(&msg.content),
+                    ChatRole::User => GenAiChatMessage::user(&msg.content),
+                    ChatRole::Assistant => GenAiChatMessage::assistant(&msg.content),
+                    // Tool messages are stored in memory as context; when sent to
+                    // genai they are treated as assistant messages since genai
+                    // handles tool responses via its own ToolResponse type.
+                    ChatRole::Tool => GenAiChatMessage::assistant(&msg.content),
+                }
             })
             .collect()
     }
@@ -200,6 +209,9 @@ impl GenAiProvider {
                 prompt_tokens: usage.prompt_tokens.map(|v| v as u64),
                 completion_tokens: usage.completion_tokens.map(|v| v as u64),
                 total_tokens: usage.total_tokens.map(|v| v as u64),
+                // genai crate does not currently expose cached token counts.
+                // When it does, extract them here.
+                cached_tokens: None,
             })
         } else {
             None
