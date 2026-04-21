@@ -14,7 +14,7 @@ use crate::middleware::pipeline::TurnPipeline;
 use crate::middleware::builtin::tracing::TracingTurnMiddleware;
 use crate::middleware::builtin::logging::LoggingTurnMiddleware;
 use crate::middleware::builtin::memory::MemoryTurnMiddleware;
-use crate::middleware::builtin::cost::{CostTurnMiddleware, SharedSessionCost};
+use crate::middleware::builtin::cost::{CostTurnMiddleware, SessionCost, SharedSessionCost};
 use crate::middleware::builtin::metrics::MetricsTurnMiddleware;
 use crate::middleware::config::MiddlewareConfig;
 use crate::prompt::PromptStyle;
@@ -119,7 +119,7 @@ impl ChatAgent {
             tracing_manager: None,
             middleware_config: MiddlewareConfig::default(),
             session_cost: Arc::new(std::sync::Mutex::new(
-                crate::cli::cost::SessionCost::new(),
+SessionCost::new(),
             )),
         }
     }
@@ -190,6 +190,15 @@ impl ChatAgent {
 
     pub fn set_tool_filter(&mut self, filter: Option<super::tool_router::ToolFilter>) {
         self.router_mut_exclusive().set_tool_filter(filter);
+        self.reset_with_updated_prompt();
+    }
+
+    /// Install an ACP tool into the tool router.
+    ///
+    /// This registers the `call_acp_agent` built-in tool, making ACP agents
+    /// available to the LLM through the standard tool-calling interface.
+    pub fn install_acp_tool(&mut self, tool: Box<dyn crate::tools::BuiltinTool>) {
+        self.router_mut_exclusive().register_builtin_tool(tool);
         self.reset_with_updated_prompt();
     }
 

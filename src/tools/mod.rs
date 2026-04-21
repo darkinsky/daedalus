@@ -18,6 +18,7 @@ use async_trait::async_trait;
 // Re-export shared text utilities so callers can use `crate::tools::truncate_chars`
 // without knowing about the internal `text_utils` module layout.
 pub(crate) use text_utils::{truncate_at_char_boundary, truncate_chars};
+pub(crate) use text_utils::maybe_truncate_for_display;
 
 // Re-export rg pre-initialization for eager startup outside async context.
 pub(crate) use grep_search::ensure_rg_init;

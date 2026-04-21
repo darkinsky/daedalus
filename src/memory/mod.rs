@@ -40,7 +40,8 @@ pub(crate) const CHARS_PER_TOKEN: usize = 4;
 /// Shared by `Playbook::to_markdown` and `DynamicCheatsheet::to_markdown`.
 pub(crate) fn truncate_to_token_budget(text: String, max_tokens: usize, truncation_suffix: &str) -> String {
     let max_chars = max_tokens * CHARS_PER_TOKEN;
-    if text.len() <= max_chars {
+    // Use char count (not byte length) for correct multi-byte character handling.
+    if text.chars().count() <= max_chars {
         return text;
     }
 

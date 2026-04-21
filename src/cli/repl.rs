@@ -8,11 +8,10 @@ use rustyline::{CompletionType, Config, EditMode, Editor};
 
 use crate::agent::AgentMode;
 use crate::llm::TokenUsage;
-use crate::middleware::builtin::cost::SharedSessionCost;
+use crate::middleware::builtin::cost::{SessionCost, SharedSessionCost};
 use crate::tools::{ToolEvent, ToolEventCallback};
 use super::commands::{self, Command};
 use super::completer::SlashCommandHelper;
-use super::cost::SessionCost;
 use super::render;
 use super::render::ToolEventFormatter;
 

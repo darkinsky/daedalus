@@ -572,25 +572,10 @@ fn span_type_tag(span_type: &SpanType) -> &'static str {
     }
 }
 
-/// Truncate a string to max_len characters, appending "..." if truncated.
-fn truncate(s: &str, max_len: usize) -> String {
-    // Also replace newlines for single-line display
-    let clean: String = s.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();
-    if clean.chars().count() <= max_len {
-        clean
-    } else {
-        let truncated: String = clean.chars().take(max_len).collect();
-        format!("{}...", truncated)
-    }
-}
+// Use shared truncation utilities from `tools::text_utils`.
+use crate::tools::maybe_truncate_for_display;
 
-/// Conditionally truncate based on the `full_content` flag.
-/// When `full_content` is true, only replaces newlines but does not truncate.
+/// Alias for backward compatibility within this module.
 fn maybe_truncate(s: &str, max_len: usize, full_content: bool) -> String {
-    if full_content {
-        // Still replace newlines for single-line YAML display
-        s.chars().map(|c| if c == '\n' { ' ' } else { c }).collect()
-    } else {
-        truncate(s, max_len)
-    }
+    maybe_truncate_for_display(s, max_len, full_content)
 }

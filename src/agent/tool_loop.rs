@@ -242,7 +242,7 @@ pub async fn run_tool_loop(
             // Extract trace context from the tracing hook for tool-level middleware
             let trace_ctx = ctx.tracing_hook.map(|h| h.context_arc());
             execute_round_via_pipeline(
-                ctx.executor, &tool_calls, pipeline, trace_ctx, round_number, ctx.on_tool_event,
+                ctx.executor, &tool_calls, pipeline, trace_ctx, round_number,
             ).await
         } else {
             // Legacy path: direct execution with inline tracing (for subagent runner)
@@ -324,7 +324,6 @@ async fn execute_round_via_pipeline(
     pipeline: &ToolPipeline,
     trace_ctx: Option<Arc<TraceContext>>,
     round: usize,
-    _on_event: Option<&ToolEventCallback>,
 ) -> Vec<ToolResponse> {
     // Parallel dispatch through pipeline
     // Per-call events (ToolCallStart/ToolCallComplete) are handled by EventToolMiddleware.

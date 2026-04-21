@@ -312,13 +312,13 @@ impl SpanGuard {
     pub fn set_tool_result(&mut self, result: &str, success: bool) {
         let tool_full = self.flags.tool_result;
         if let SpanType::ToolCall {
-            result: ref mut r,
-            success: ref mut s,
+            result: ref mut span_result,
+            success: ref mut span_success,
             ..
         } = self.span.span_type
         {
-            *r = Some(maybe_truncate(result, RESULT_PREVIEW_LEN, tool_full));
-            *s = success;
+            *span_result = Some(maybe_truncate(result, RESULT_PREVIEW_LEN, tool_full));
+            *span_success = success;
         }
     }
 
@@ -331,15 +331,15 @@ impl SpanGuard {
     ) {
         let tool_full = self.flags.tool_result;
         if let SpanType::SubagentCall {
-            result: ref mut r,
-            usage: ref mut u,
-            tool_rounds: ref mut tr,
+            result: ref mut span_result,
+            usage: ref mut span_usage,
+            tool_rounds: ref mut span_rounds,
             ..
         } = self.span.span_type
         {
-            *r = Some(maybe_truncate(result, RESULT_PREVIEW_LEN, tool_full));
-            *u = usage.cloned();
-            *tr = tool_rounds;
+            *span_result = Some(maybe_truncate(result, RESULT_PREVIEW_LEN, tool_full));
+            *span_usage = usage.cloned();
+            *span_rounds = tool_rounds;
         }
     }
 

@@ -4,10 +4,10 @@ mod completer;
 pub(crate) mod cost;
 mod output_format;
 mod print_runner;
-// Explicit `#[path]` pins `render` to the single-file implementation,
-// so a stale `render/mod.rs` placeholder in the source tree does not
-// conflict with `render.rs`. See `render.rs` for the module content.
-#[path = "render.rs"]
+// The `render` module lives in `render/mod.rs` (standard directory layout).
+// `#[path]` is used to disambiguate from the legacy `render.rs` file which
+// is kept empty until the next cleanup pass removes it.
+#[path = "render/mod.rs"]
 mod render;
 mod repl;
 

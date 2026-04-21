@@ -1,3 +1,4 @@
+mod acp;
 mod agent;
 mod cli;
 mod config;
@@ -74,11 +75,10 @@ async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard
     // Phase 1: Load raw config from workspace YAML (single file read, no tracing)
     let (mut raw_config, log_config) = config::load_from_workspace(&workspace)?;
 
-    // Extract tracing config before consuming raw_config
+    // Extract sub-configs before `into_agent_config()` consumes raw_config.
     let tracing_config = raw_config.tracing.clone();
-
-    // Extract middleware config before consuming raw_config
     let middleware_config = raw_config.middleware.clone();
+    let acp_config = raw_config.acp.clone();
 
     // Apply CLI overrides to the raw config before building AgentConfig
     apply_cli_overrides(&args, &mut raw_config);
@@ -124,18 +124,19 @@ async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard
     }
 
     // Build the agent with all extensions
-    let agent = build_agent(&args, &workspace, &agent_config, tracing_manager, middleware_config).await?;
+    let agent = build_agent(&args, &workspace, &agent_config, tracing_manager, middleware_config, acp_config).await?;
 
     Ok((agent, args, _log_guard))
 }
 
-/// Create the ChatAgent and attach all extensions (MCP, skills, subagents, filters).
+/// Create the ChatAgent and attach all extensions (MCP, skills, subagents, ACP, filters).
 async fn build_agent(
     args: &cli::CliArgs,
     workspace: &workspace::Workspace,
     agent_config: &config::AgentConfig,
     tracing_manager: Arc<agent_tracing::TracingManager>,
     middleware_config: middleware::config::MiddlewareConfig,
+    acp_config: acp::AcpConfig,
 ) -> Result<agent::ChatAgent> {
     let skip_extensions = args.bare;
 
@@ -175,6 +176,11 @@ async fn build_agent(
         load_subagents(&mut agent, workspace, agent_config);
     } else {
         tracing::info!("Bare mode: skipping skills and subagents discovery");
+    }
+
+    // Initialize ACP agents (if configured and not in bare mode)
+    if !skip_extensions && acp_config.has_agents() {
+        load_acp_agents(&mut agent, &acp_config).await;
     }
 
     // Apply tool filtering from CLI args
@@ -379,6 +385,31 @@ fn load_subagents(
                 error = %e,
                 "Failed to load subagents, continuing without subagents"
             );
+        }
+    }
+}
+
+/// Initialize ACP agents from configuration and install the ACP tool.
+///
+/// Connects to configured remote ACP agents and registers the `call_acp_agent`
+/// built-in tool so the LLM can delegate tasks to ACP-compatible agents.
+async fn load_acp_agents(
+    agent: &mut agent::ChatAgent,
+    config: &acp::AcpConfig,
+) {
+    match acp::init_acp_client(config).await {
+        Some((client, cards)) => {
+            if let Some(acp_tool) = acp::build_acp_tool(client, cards.clone()) {
+                agent.install_acp_tool(acp_tool);
+                tracing::info!(
+                    agents = cards.len(),
+                    names = ?cards.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+                    "ACP agents loaded successfully"
+                );
+            }
+        }
+        None => {
+            tracing::debug!("No ACP agents available");
         }
     }
 }

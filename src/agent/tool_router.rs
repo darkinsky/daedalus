@@ -170,6 +170,18 @@ impl ToolRouter {
         );
     }
 
+    /// Register a single built-in tool dynamically.
+    ///
+    /// Used by the ACP integration to install the `call_acp_agent` tool
+    /// at runtime after ACP agents are discovered.
+    pub fn register_builtin_tool(&mut self, tool: Box<dyn crate::tools::BuiltinTool>) {
+        tracing::info!(
+            tool = tool.name(),
+            "Registered dynamic tool into ToolRouter"
+        );
+        self.builtin.register_tool(tool);
+    }
+
     /// Return the subagent registry reference (for CLI display).
     pub fn subagent_registry(&self) -> &SubagentRegistry {
         &self.subagents
