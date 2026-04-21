@@ -29,6 +29,7 @@ pub use coding::EnvironmentContext;
 /// * `prompt_override` — Custom system prompt (from CLI `--system-prompt`).
 /// * `agent_name` — Optional custom agent name.
 /// * `soul` — Optional personality content (from SOUL.md).
+/// * `project_rules` — Optional project rules content (from DAEDALUS.md files).
 /// * `tools` — Available tool descriptions for prompt injection.
 /// * `style` — Which prompt architecture to use (Default vs Coding).
 /// * `cwd` — Current working directory (used by Coding style for environment detection).
@@ -36,6 +37,7 @@ pub fn build_system_prompt(
     prompt_override: Option<&str>,
     agent_name: Option<&str>,
     soul: Option<&str>,
+    project_rules: Option<&str>,
     tools: &[ToolInfo],
     style: &PromptStyle,
     cwd: Option<&str>,
@@ -53,6 +55,9 @@ pub fn build_system_prompt(
             }
             if let Some(soul_content) = soul {
                 builder = builder.soul(soul_content);
+            }
+            if let Some(rules) = project_rules {
+                builder = builder.project_rules(rules);
             }
             builder.build()
         }
@@ -78,6 +83,9 @@ pub fn build_system_prompt(
             }
             if let Some(soul_content) = soul {
                 builder = builder.soul(soul_content);
+            }
+            if let Some(rules) = project_rules {
+                builder = builder.project_rules(rules);
             }
 
             builder.build()
@@ -136,6 +144,9 @@ pub struct PromptBuilder<'a> {
     /// Optional custom preamble to prepend (e.g., loaded from SOUL.md).
     /// This is injected right after the role section.
     soul: Option<&'a str>,
+    /// Optional project rules (loaded from DAEDALUS.md files).
+    /// Injected before critical reminders for high salience.
+    project_rules: Option<&'a str>,
 }
 
 impl<'a> PromptBuilder<'a> {
@@ -146,6 +157,7 @@ impl<'a> PromptBuilder<'a> {
             tools: &[],
             memory_context: None,
             soul: None,
+            project_rules: None,
         }
     }
 
@@ -173,6 +185,12 @@ impl<'a> PromptBuilder<'a> {
     /// Set a custom soul/personality preamble (e.g., from SOUL.md).
     pub fn soul(mut self, soul: &'a str) -> Self {
         self.soul = Some(soul);
+        self
+    }
+
+    /// Set project-level rules (loaded from DAEDALUS.md files).
+    pub fn project_rules(mut self, rules: &'a str) -> Self {
+        self.project_rules = Some(rules);
         self
     }
 
@@ -216,7 +234,20 @@ impl<'a> PromptBuilder<'a> {
         // 6. Dynamic context (date, memory)
         sections.push(build_context_section(self.memory_context));
 
-        // 7. Critical reminders (always last — highest salience)
+        // 7. Project rules from DAEDALUS.md (optional, high salience)
+        if let Some(rules) = self.project_rules {
+            if !rules.trim().is_empty() {
+                sections.push(format!(
+                    "<project_rules>\n\
+                     The following rules are specific to this project. Follow them strictly.\n\n\
+                     {}\n\
+                     </project_rules>",
+                    rules.trim()
+                ));
+            }
+        }
+
+        // 8. Critical reminders (always last — highest salience)
         sections.push(build_reminders_section(has_tools));
 
         sections.join("\n\n")

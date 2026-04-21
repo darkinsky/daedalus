@@ -122,6 +122,9 @@ async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard
     if let Some(base_url) = agent_config.api_base() {
         tracing::info!("Using API base URL: {}", base_url);
     }
+    if agent_config.project_rules.is_some() {
+        tracing::info!("Project rules loaded from DAEDALUS.md");
+    }
 
     // Build the agent with all extensions
     let agent = build_agent(&args, &workspace, &agent_config, tracing_manager, middleware_config, acp_config).await?;

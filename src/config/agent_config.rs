@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -201,6 +202,9 @@ pub struct AgentConfig {
     pub agent_name: Option<String>,
     /// Loaded soul content (read from SOUL.md file at startup).
     pub soul: Option<String>,
+    /// Loaded project rules content (read from DAEDALUS.md files at startup).
+    /// Merged from multiple locations: CWD > workspace > global.
+    pub project_rules: Option<String>,
     /// Prompt assembly style (default vs coding).
     pub prompt_style: PromptStyle,
     /// Selected memory strategy.
@@ -239,12 +243,16 @@ impl AgentConfig {
         // Load soul content
         let soul = Self::load_soul(agent.soul_file.as_deref(), workspace);
 
+        // Load project rules from DAEDALUS.md files (multi-level merge)
+        let project_rules = Self::load_project_rules(workspace);
+
         Self {
             llm,
             system_prompt,
             is_custom_prompt,
             agent_name,
             soul,
+            project_rules,
             prompt_style: agent.prompt_style,
             memory_strategy: memory.strategy.clone(),
             memory_config: memory,
@@ -308,6 +316,67 @@ impl AgentConfig {
         None
     }
 
+    /// Load project rules from DAEDALUS.md files.
+    ///
+    /// Searches multiple locations and merges all found content (higher
+    /// priority first). This mirrors Claude Code's CLAUDE.md convention:
+    ///
+    /// 1. `CWD/DAEDALUS.md` — project root (highest priority)
+    /// 2. `<workspace>/DAEDALUS.md` — workspace level
+    /// 3. `~/.daedalus/DAEDALUS.md` — global level (lowest priority)
+    ///
+    /// All found files are concatenated with section headers. If no files
+    /// are found, returns `None`.
+    fn load_project_rules(workspace: Option<&Workspace>) -> Option<String> {
+        let mut sections: Vec<String> = Vec::new();
+
+        // 1. CWD/DAEDALUS.md (project root)
+        if let Ok(cwd) = std::env::current_dir() {
+            let cwd_path = cwd.join("DAEDALUS.md");
+            if let Some(content) = Self::read_trimmed_file(&cwd_path.to_string_lossy()) {
+                tracing::info!(path = %cwd_path.display(), "Loaded project-level DAEDALUS.md");
+                sections.push(content);
+            }
+        }
+
+        // 2. <workspace>/DAEDALUS.md
+        if let Some(ws) = workspace {
+            let ws_path = ws.root().join("DAEDALUS.md");
+            // Avoid loading the same file twice if workspace root == cwd/.daedalus
+            let already_loaded = std::env::current_dir().ok().map_or(false, |cwd| {
+                let cwd_path = cwd.join("DAEDALUS.md");
+                same_file(&cwd_path, &ws_path)
+            });
+            if !already_loaded {
+                if let Some(content) = Self::read_trimmed_file(&ws_path.to_string_lossy()) {
+                    tracing::info!(path = %ws_path.display(), "Loaded workspace-level DAEDALUS.md");
+                    sections.push(content);
+                }
+            }
+        }
+
+        // 3. ~/.daedalus/DAEDALUS.md (global)
+        if let Some(home) = home_dir() {
+            let global_path = home.join(".daedalus/DAEDALUS.md");
+            // Avoid loading the same file twice if workspace is the global dir
+            let already_loaded = workspace.map_or(false, |ws| {
+                same_file(&ws.root().join("DAEDALUS.md"), &global_path)
+            });
+            if !already_loaded {
+                if let Some(content) = Self::read_trimmed_file(&global_path.to_string_lossy()) {
+                    tracing::info!(path = %global_path.display(), "Loaded global DAEDALUS.md");
+                    sections.push(content);
+                }
+            }
+        }
+
+        if sections.is_empty() {
+            None
+        } else {
+            Some(sections.join("\n\n"))
+        }
+    }
+
     /// Read a file and return its trimmed content, or `None` if the file
     /// doesn't exist, can't be read, or is empty after trimming.
     fn read_trimmed_file(path: &str) -> Option<String> {
@@ -324,5 +393,25 @@ impl AgentConfig {
     /// Convenience accessor for the API base URL.
     pub fn api_base(&self) -> Option<&str> {
         self.llm.api_base.as_deref()
+    }
+}
+
+// ── Module-level helpers ──
+
+/// Get the user's home directory from environment variables.
+fn home_dir() -> Option<PathBuf> {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .map(PathBuf::from)
+}
+
+/// Check if two paths refer to the same file (by canonical path comparison).
+///
+/// Returns `false` if either path doesn't exist or can't be canonicalized.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => false,
     }
 }
