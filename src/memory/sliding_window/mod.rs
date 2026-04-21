@@ -4,6 +4,7 @@ mod factory;
 mod history;
 mod long_term;
 mod memory;
+mod prompts;
 
 #[cfg(test)]
 mod tests;

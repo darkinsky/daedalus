@@ -66,6 +66,9 @@ pub struct ChatAgent {
     middleware_config: MiddlewareConfig,
     /// Shared session cost tracker (accessible by CLI for /cost display).
     session_cost: SharedSessionCost,
+    /// Updatable memory handle for the recall_history tool.
+    /// `None` if the memory strategy doesn't support history search.
+    memory_handle: Option<crate::tools::recall_history::MemoryHandle>,
 }
 
 impl ChatAgent {
@@ -125,6 +128,7 @@ impl ChatAgent {
             session_cost: Arc::new(std::sync::Mutex::new(
 SessionCost::new(),
             )),
+            memory_handle: None,
         }
     }
 
@@ -145,6 +149,21 @@ SessionCost::new(),
         );
         let mut agent = Self::with_memory_factory(llm, config, factory);
         agent.workspace = Some(workspace);
+
+        // Register the recall_history tool for memory strategies that support
+        // history search (currently SlidingWindow). This gives the LLM the
+        // ability to search past conversation summaries on demand.
+        let shared_memory = agent.session.shared_memory();
+        let is_sliding_window = shared_memory.try_lock()
+            .map(|m| m.strategy_name() == "sliding_window")
+            .unwrap_or(false);
+        if is_sliding_window {
+            let handle = crate::tools::recall_history::new_memory_handle(shared_memory);
+            let tool = crate::tools::recall_history::RecallHistoryTool::new(handle.clone());
+            agent.memory_handle = Some(handle);
+            agent.router_mut_exclusive().register_builtin_tool(Box::new(tool));
+        }
+
         agent
     }
 
@@ -293,7 +312,16 @@ SessionCost::new(),
         if let Some(state) = persistent_state {
             memory.restore_persistent_state(state);
         }
-        Session::new(memory)
+        let new_session = Session::new(memory);
+
+        // Update the memory handle so the recall_history tool sees the new session's memory.
+        if let Some(ref handle) = self.memory_handle {
+            if let Ok(mut guard) = handle.write() {
+                *guard = new_session.shared_memory();
+            }
+        }
+
+        new_session
     }
 
     // ── Pipeline construction ──
@@ -540,5 +568,15 @@ impl AgentMode for ChatAgent {
             mgr.flush().await;
         }
         Ok(())
+    }
+
+    async fn persist_memory(&self) {
+        if let Some(ref workspace) = self.workspace {
+            let shared = self.session.shared_memory();
+            let mem = shared.lock().await;
+            if let Err(e) = mem.persist(workspace) {
+                tracing::warn!(error = %e, "Failed to persist memory after turn");
+            }
+        }
     }
 }

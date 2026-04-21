@@ -157,6 +157,10 @@ async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &SharedSessio
 
             render::response(&result.content);
 
+            // Persist memory to disk after each successful turn
+            // to ensure conversation history survives process crashes.
+            agent.persist_memory().await;
+
             // Token usage is now automatically tracked by CostTurnMiddleware.
             // We only need to handle subagent stats for the turn summary.
 

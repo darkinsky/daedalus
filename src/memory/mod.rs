@@ -241,6 +241,21 @@ pub trait Memory: Send + Sync {
         false
     }
 
+    /// Search the history log by keyword (case-insensitive).
+    ///
+    /// Memory strategies that maintain a history log (e.g., `SlidingWindowMemory`)
+    /// override this to search past conversation summaries. Returns matching
+    /// entries formatted as human-readable log lines.
+    ///
+    /// The default implementation returns an empty vector (no history support).
+    ///
+    /// # Arguments
+    /// * `query` - The keyword to search for in summaries and keywords.
+    /// * `limit` - Maximum number of results to return (`None` = all matches).
+    fn search_history(&self, _query: &str, _limit: Option<usize>) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Return the number of conversation turns (user + assistant pairs) stored.
     #[allow(dead_code)]
     fn turn_count(&self) -> usize;
@@ -301,6 +316,26 @@ pub trait Memory: Send + Sync {
         &'a mut self,
         _user_input: &'a str,
         _assistant_response: &'a str,
+        _llm: &'a dyn LlmApi,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async {})
+    }
+
+    /// Run automatic consolidation if the memory strategy supports it.
+    ///
+    /// Called by the memory middleware after each turn. Memory strategies
+    /// that support consolidation (e.g., `SlidingWindowMemory`) override
+    /// this to check whether the consolidation threshold has been reached
+    /// and, if so, call the LLM to generate a summary and update long-term
+    /// memory.
+    ///
+    /// The default implementation is a no-op. Consolidation failures should
+    /// be handled gracefully (logged, not propagated).
+    ///
+    /// # Arguments
+    /// * `llm` - The LLM provider for making consolidation calls.
+    fn maybe_consolidate<'a>(
+        &'a mut self,
         _llm: &'a dyn LlmApi,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
@@ -447,5 +482,5 @@ fn sliding_window_factory(workspace: &crate::workspace::Workspace) -> Box<dyn Me
     Box::new(SlidingWindowFactory::with_workspace(
         workspace.long_term_memory_path(),
         workspace.history_log_path(),
-    ))
+    ).with_session_messages_path(workspace.session_messages_path()))
 }

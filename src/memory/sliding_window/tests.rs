@@ -484,4 +484,84 @@ mod tests {
         assert_eq!(memory.strategy_name(), "sliding_window");
         assert_eq!(memory.turn_count(), 0);
     }
+
+    // ── Consolidation response parsing ──
+
+    #[test]
+    fn test_parse_consolidation_response_full() {
+        let response = "\
+SUMMARY: User discussed Rust project setup and decided to use tokio for async runtime.
+KEYWORDS: rust, tokio, async, project setup
+
+MEMORY:
+### Project Context
+- Using Rust with tokio async runtime
+- Project name is daedalus
+
+### User Preferences
+- Prefers explicit error handling with anyhow
+- Uses 4-space indentation
+
+### Important Decisions
+- Chose tokio over async-std for the async runtime";
+
+        let result = SlidingWindowMemory::parse_consolidation_response(response);
+        assert!(result.is_some());
+
+        let result = result.unwrap();
+        assert!(result.history_entry.summary.contains("tokio"));
+        assert_eq!(result.history_entry.keywords.len(), 4);
+        assert!(result.history_entry.keywords.contains(&"rust".to_string()));
+        assert!(result.history_entry.keywords.contains(&"tokio".to_string()));
+
+        assert_eq!(result.memory_update.section("Project Context").len(), 2);
+        assert_eq!(result.memory_update.section("User Preferences").len(), 2);
+        assert_eq!(result.memory_update.section("Important Decisions").len(), 1);
+    }
+
+    #[test]
+    fn test_parse_consolidation_response_no_memory() {
+        let response = "\
+SUMMARY: Brief chat about nothing important.
+KEYWORDS: chat, casual
+
+MEMORY:";
+
+        let result = SlidingWindowMemory::parse_consolidation_response(response);
+        assert!(result.is_some());
+
+        let result = result.unwrap();
+        assert!(result.history_entry.summary.contains("nothing important"));
+        assert!(result.memory_update.is_empty());
+    }
+
+    #[test]
+    fn test_parse_consolidation_response_missing_summary() {
+        let response = "\
+KEYWORDS: something
+
+MEMORY:
+### Notes
+- A note";
+
+        let result = SlidingWindowMemory::parse_consolidation_response(response);
+        assert!(result.is_none(), "Should return None when SUMMARY is missing");
+    }
+
+    #[test]
+    fn test_parse_consolidation_response_no_keywords() {
+        let response = "\
+SUMMARY: User asked about memory consolidation.
+
+MEMORY:
+### Important Notes
+- Consolidation is triggered automatically";
+
+        let result = SlidingWindowMemory::parse_consolidation_response(response);
+        assert!(result.is_some());
+
+        let result = result.unwrap();
+        assert!(result.history_entry.keywords.is_empty());
+        assert_eq!(result.memory_update.section("Important Notes").len(), 1);
+    }
 }

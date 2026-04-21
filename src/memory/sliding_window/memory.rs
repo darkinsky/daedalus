@@ -1,12 +1,108 @@
 use crate::llm::{ChatMessage, LlmApi};
 use crate::memory::dynamic_cheatsheet::DynamicCheatsheet;
-use crate::memory::persistence::MemoryPersistence;
+use crate::memory::persistence::{MemoryPersistence, atomic_write};
 
 use super::config::SlidingWindowConfig;
 use super::consolidation::ConsolidationResult;
 use super::history::HistoryEntry;
 use super::long_term::LongTermMemory;
 use crate::memory::{Memory, PersistentState};
+
+// ── Session state serialization ──
+
+/// Serializable representation of a ChatMessage for disk persistence.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SerializableMessage {
+    role: String,
+    content: String,
+}
+
+impl From<&ChatMessage> for SerializableMessage {
+    fn from(msg: &ChatMessage) -> Self {
+        Self {
+            role: msg.role.to_string(),
+            content: msg.content.clone(),
+        }
+    }
+}
+
+impl SerializableMessage {
+    fn to_chat_message(&self) -> ChatMessage {
+        match self.role.as_str() {
+            "system" => ChatMessage::system(&self.content),
+            "user" => ChatMessage::user(&self.content),
+            "assistant" => ChatMessage::assistant(&self.content),
+            "tool" => ChatMessage::tool(&self.content),
+            _ => ChatMessage::user(&self.content), // fallback
+        }
+    }
+}
+
+/// Serializable session state: messages + consolidation cursor.
+///
+/// The `consolidation_cursor` must be persisted alongside messages so that
+/// after a restart we know which messages have already been consolidated.
+/// Without it, all messages would appear unconsolidated, causing duplicate
+/// consolidation.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SessionState {
+    /// Index of the first unconsolidated message.
+    consolidation_cursor: usize,
+    /// All conversation messages in chronological order.
+    messages: Vec<SerializableMessage>,
+}
+
+/// Save session state (messages + consolidation cursor) to a JSON file atomically.
+fn save_session_state(
+    messages: &[ChatMessage],
+    consolidation_cursor: usize,
+    path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let state = SessionState {
+        consolidation_cursor,
+        messages: messages.iter().map(SerializableMessage::from).collect(),
+    };
+    let json = serde_json::to_string(&state)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize session state: {}", e))?;
+    atomic_write(path, json.as_bytes())?;
+    Ok(())
+}
+
+/// Loaded session state from disk.
+struct LoadedSessionState {
+    messages: Vec<ChatMessage>,
+    consolidation_cursor: usize,
+}
+
+/// Load session state from a JSON file.
+/// Returns empty state if the file doesn't exist.
+/// Handles backward compatibility with the old format (plain message array).
+fn load_session_state(path: &std::path::Path) -> anyhow::Result<LoadedSessionState> {
+    if !path.exists() {
+        return Ok(LoadedSessionState {
+            messages: Vec::new(),
+            consolidation_cursor: 0,
+        });
+    }
+    let data = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("Failed to read session state: {}", e))?;
+
+    // Try new format first (object with consolidation_cursor + messages)
+    if let Ok(state) = serde_json::from_str::<SessionState>(&data) {
+        return Ok(LoadedSessionState {
+            messages: state.messages.iter().map(|m| m.to_chat_message()).collect(),
+            consolidation_cursor: state.consolidation_cursor,
+        });
+    }
+
+    // Fallback: old format (plain array of messages, no cursor)
+    let serializable: Vec<SerializableMessage> = serde_json::from_str(&data)
+        .map_err(|e| anyhow::anyhow!("Failed to deserialize session state: {}", e))?;
+    Ok(LoadedSessionState {
+        messages: serializable.iter().map(|m| m.to_chat_message()).collect(),
+        consolidation_cursor: 0,
+    })
+}
 
 /// Aggregated persistent components that survive across sessions.
 ///
@@ -193,6 +289,139 @@ impl SlidingWindowMemory {
         self.consolidation_cursor = 0;
     }
 
+    /// Run automatic consolidation if the threshold is reached.
+    ///
+    /// This is the main entry point for triggering consolidation from the
+    /// middleware layer. It checks `should_consolidate()`, and if true:
+    /// 1. Extracts the messages to consolidate
+    /// 2. Calls the LLM to generate a summary and updated long-term memory
+    /// 3. Applies the consolidation result
+    ///
+    /// Consolidation failures are logged but never propagated — they must not
+    /// disrupt the main conversation flow.
+    pub async fn maybe_consolidate(&mut self, llm: &dyn LlmApi) {
+        if !self.should_consolidate() {
+            return;
+        }
+
+        let to_consolidate = self.messages_to_consolidate();
+        if to_consolidate.is_empty() {
+            return;
+        }
+
+        let consolidated_up_to = self.messages.len().saturating_sub(self.config.retention_window);
+
+        // Build text representation of messages to consolidate
+        let messages_text = to_consolidate
+            .iter()
+            .map(|msg| format!("[{}]: {}", msg.role, msg.content))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        // Get current long-term memory state for context
+        let current_memory = self.persistent.long_term_memory
+            .to_markdown()
+            .unwrap_or_default();
+
+        let user_prompt = super::prompts::consolidation_user_prompt(
+            &messages_text,
+            &current_memory,
+        );
+
+        let messages = vec![
+            ChatMessage::system(super::prompts::CONSOLIDATION_SYSTEM_PROMPT),
+            ChatMessage::user(user_prompt),
+        ];
+
+        match llm.chat(&messages, None).await {
+            Ok(response) => {
+                match Self::parse_consolidation_response(&response.content) {
+                    Some(result) => {
+                        tracing::info!(
+                            consolidated_messages = consolidated_up_to - self.consolidation_cursor,
+                            history_entries = self.persistent.history_log.len() + 1,
+                            "Consolidation complete"
+                        );
+                        self.apply_consolidation(result, consolidated_up_to);
+                    }
+                    None => {
+                        tracing::warn!(
+                            "Failed to parse consolidation response, skipping this cycle"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Consolidation LLM call failed, continuing without consolidation"
+                );
+            }
+        }
+    }
+
+    /// Parse the LLM's consolidation response into a `ConsolidationResult`.
+    ///
+    /// Expected format:
+    /// ```text
+    /// SUMMARY: <summary text>
+    /// KEYWORDS: <kw1, kw2, kw3>
+    ///
+    /// MEMORY:
+    /// ### Section Name
+    /// - fact 1
+    /// - fact 2
+    /// ```
+    pub(crate) fn parse_consolidation_response(response: &str) -> Option<ConsolidationResult> {
+        let response = response.trim();
+
+        // Extract SUMMARY
+        let summary = response
+            .lines()
+            .find(|line| line.starts_with("SUMMARY:"))
+            .map(|line| line.trim_start_matches("SUMMARY:").trim().to_string())?;
+
+        // Extract KEYWORDS
+        let keywords: Vec<String> = response
+            .lines()
+            .find(|line| line.starts_with("KEYWORDS:"))
+            .map(|line| {
+                line.trim_start_matches("KEYWORDS:")
+                    .split(',')
+                    .map(|kw| kw.trim().to_string())
+                    .filter(|kw| !kw.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Extract MEMORY sections
+        let mut new_ltm = LongTermMemory::default();
+        if let Some(memory_start) = response.find("MEMORY:") {
+            let memory_text = &response[memory_start + "MEMORY:".len()..];
+            let mut current_section: Option<String> = None;
+
+            for line in memory_text.lines() {
+                let line = line.trim();
+                if line.starts_with("### ") {
+                    current_section = Some(line.trim_start_matches("### ").trim().to_string());
+                } else if line.starts_with("- ") {
+                    if let Some(ref section) = current_section {
+                        let item = line.trim_start_matches("- ").trim().to_string();
+                        if !item.is_empty() {
+                            new_ltm.section_mut(section).push(item);
+                        }
+                    }
+                }
+            }
+        }
+
+        let history_entry = HistoryEntry::new(summary, keywords);
+        Some(ConsolidationResult {
+            history_entry,
+            memory_update: new_ltm,
+        })
+    }
+
     // ── Workspace persistence ──
 
     /// Save all persistent memory state to the workspace.
@@ -200,14 +429,21 @@ impl SlidingWindowMemory {
     /// Saves:
     /// - LongTermMemory → `memory/long_term.json`
     /// - HistoryLog → `memory/history.jsonl`
+    /// - SessionState (messages + consolidation_cursor) → `memory/session_messages.json`
     pub fn save_to_workspace(
         &self,
         ltm_path: &std::path::Path,
         history_path: &std::path::Path,
+        session_state_path: &std::path::Path,
     ) -> anyhow::Result<()> {
         self.persistent.long_term_memory.save(ltm_path)?;
         HistoryEntry::save_all(&self.persistent.history_log, history_path)?;
-        tracing::info!("SlidingWindowMemory persisted to workspace");
+        save_session_state(&self.messages, self.consolidation_cursor, session_state_path)?;
+        tracing::info!(
+            messages = self.messages.len(),
+            consolidation_cursor = self.consolidation_cursor,
+            "SlidingWindowMemory persisted to workspace"
+        );
         Ok(())
     }
 
@@ -216,16 +452,23 @@ impl SlidingWindowMemory {
     /// Loads:
     /// - LongTermMemory from `memory/long_term.json`
     /// - HistoryLog from `memory/history.jsonl`
+    /// - SessionState (messages + consolidation_cursor) from `memory/session_messages.json`
     pub fn load_from_workspace(
         &mut self,
         ltm_path: &std::path::Path,
         history_path: &std::path::Path,
+        session_state_path: &std::path::Path,
     ) -> anyhow::Result<()> {
         self.persistent.long_term_memory = LongTermMemory::load(ltm_path)?;
         self.persistent.history_log = HistoryEntry::load_all(history_path)?;
+        let loaded = load_session_state(session_state_path)?;
+        self.messages = loaded.messages;
+        self.consolidation_cursor = loaded.consolidation_cursor;
         tracing::info!(
             ltm_sections = self.persistent.long_term_memory.section_count(),
             history_entries = self.persistent.history_log.len(),
+            session_messages = self.messages.len(),
+            consolidation_cursor = self.consolidation_cursor,
             "SlidingWindowMemory loaded from workspace"
         );
         Ok(())
@@ -294,6 +537,21 @@ impl Memory for SlidingWindowMemory {
         self.unconsolidated_count() >= self.config.consolidation_threshold
     }
 
+    fn search_history(&self, query: &str, limit: Option<usize>) -> Vec<String> {
+        let query_lower = query.to_lowercase();
+        let iter = self.persistent.history_log
+            .iter()
+            .filter(|entry| {
+                entry.summary.to_lowercase().contains(&query_lower)
+                    || entry.keywords.iter().any(|kw| kw.to_lowercase().contains(&query_lower))
+            })
+            .map(|entry| entry.to_log_line());
+        match limit {
+            Some(n) => iter.take(n).collect(),
+            None => iter.collect(),
+        }
+    }
+
     fn turn_count(&self) -> usize {
         self.messages.len() / 2
     }
@@ -328,6 +586,7 @@ impl Memory for SlidingWindowMemory {
         self.save_to_workspace(
             &workspace.long_term_memory_path(),
             &workspace.history_log_path(),
+            &workspace.session_messages_path(),
         )?;
 
         // Persist dynamic cheatsheet if enabled.
@@ -348,6 +607,15 @@ impl Memory for SlidingWindowMemory {
             if let Some(ref mut cheatsheet) = self.persistent.cheatsheet {
                 cheatsheet.reflect(user_input, assistant_response, llm).await;
             }
+        })
+    }
+
+    fn maybe_consolidate<'a>(
+        &'a mut self,
+        llm: &'a dyn LlmApi,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            self.maybe_consolidate(llm).await;
         })
     }
 }

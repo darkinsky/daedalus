@@ -132,4 +132,11 @@ pub trait AgentMode: AgentMetadata + Send + Sync {
     async fn shutdown(&mut self) -> Result<()> {
         Ok(())
     }
+
+    /// Persist memory state to disk after each turn.
+    ///
+    /// Called by the REPL after each successful chat turn to ensure
+    /// conversation history survives process crashes. The default
+    /// implementation does nothing (for modes without persistence).
+    async fn persist_memory(&self) {}
 }

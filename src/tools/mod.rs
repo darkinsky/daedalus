@@ -5,6 +5,7 @@ mod get_file_info;
 mod grep_search;
 mod list_directory;
 mod multi_edit;
+pub(crate) mod recall_history;
 mod read_file;
 mod search_files;
 pub(crate) mod text_utils;

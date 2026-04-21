@@ -209,6 +209,11 @@ impl Workspace {
         self.root.join("memory/history.jsonl")
     }
 
+    /// Path to the session conversation messages persistence file.
+    pub fn session_messages_path(&self) -> PathBuf {
+        self.root.join("memory/session_messages.json")
+    }
+
     /// Path to the A-MEM knowledge graph persistence file.
     pub fn agentic_notes_path(&self) -> PathBuf {
         self.root.join("memory/agentic/notes.json")
@@ -372,6 +377,7 @@ mod tests {
         assert_eq!(ws.soul_file_path(), PathBuf::from("/tmp/test_ws/config/soul.md"));
         assert_eq!(ws.long_term_memory_path(), PathBuf::from("/tmp/test_ws/memory/long_term.json"));
         assert_eq!(ws.history_log_path(), PathBuf::from("/tmp/test_ws/memory/history.jsonl"));
+        assert_eq!(ws.session_messages_path(), PathBuf::from("/tmp/test_ws/memory/session_messages.json"));
         assert_eq!(ws.agentic_notes_path(), PathBuf::from("/tmp/test_ws/memory/agentic/notes.json"));
         assert_eq!(ws.cheatsheet_path(), PathBuf::from("/tmp/test_ws/memory/cheatsheet.json"));
         assert_eq!(ws.wiki_dir(), PathBuf::from("/tmp/test_ws/memory/wiki"));

@@ -11,7 +11,7 @@ use super::memory::SlidingWindowMemory;
 /// sliding window memories with the default consolidation settings.
 ///
 /// When workspace paths are configured, the factory will automatically
-/// load persisted LongTermMemory and HistoryLog from disk.
+/// load persisted LongTermMemory, HistoryLog, and session messages from disk.
 pub struct SlidingWindowFactory {
     /// Path to the LongTermMemory persistence file (from workspace).
     ltm_path: Option<PathBuf>,
@@ -19,6 +19,8 @@ pub struct SlidingWindowFactory {
     history_path: Option<PathBuf>,
     /// Path to the DynamicCheatsheet persistence file (from workspace).
     cheatsheet_path: Option<PathBuf>,
+    /// Path to the session messages persistence file (from workspace).
+    session_messages_path: Option<PathBuf>,
 }
 
 impl SlidingWindowFactory {
@@ -29,6 +31,7 @@ impl SlidingWindowFactory {
             ltm_path: None,
             history_path: None,
             cheatsheet_path: None,
+            session_messages_path: None,
         }
     }
 
@@ -45,6 +48,7 @@ impl SlidingWindowFactory {
             ltm_path: Some(ltm_path),
             history_path: Some(history_path),
             cheatsheet_path: None,
+            session_messages_path: None,
         }
     }
 
@@ -62,7 +66,18 @@ impl SlidingWindowFactory {
             ltm_path: Some(ltm_path),
             history_path: Some(history_path),
             cheatsheet_path: Some(cheatsheet_path),
+            session_messages_path: None,
         }
+    }
+
+    /// Set the session messages persistence path.
+    ///
+    /// When set, newly created memories will automatically load
+    /// persisted session messages from this path.
+    #[allow(dead_code)]
+    pub fn with_session_messages_path(mut self, path: PathBuf) -> Self {
+        self.session_messages_path = Some(path);
+        self
     }
 }
 
@@ -72,11 +87,23 @@ impl MemoryFactory for SlidingWindowFactory {
 
         // Load persisted state from workspace if paths are configured
         if let (Some(ltm_path), Some(history_path)) = (&self.ltm_path, &self.history_path) {
-            if let Err(e) = memory.load_from_workspace(ltm_path, history_path) {
-                tracing::warn!(
-                    error = %e,
-                    "Failed to load persisted memory from workspace, starting fresh"
-                );
+            let session_messages_path = self.session_messages_path.as_deref()
+                .unwrap_or(std::path::Path::new(""));
+            if self.session_messages_path.is_some() {
+                if let Err(e) = memory.load_from_workspace(ltm_path, history_path, session_messages_path) {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to load persisted memory from workspace, starting fresh"
+                    );
+                }
+            } else {
+                // Legacy path: load without session messages
+                if let Err(e) = memory.load_from_workspace(ltm_path, history_path, std::path::Path::new("")) {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to load persisted memory from workspace, starting fresh"
+                    );
+                }
             }
         }
 

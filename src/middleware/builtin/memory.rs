@@ -82,6 +82,11 @@ impl TurnMiddleware for MemoryTurnMiddleware {
                 &*self.llm,
             )
             .await;
+
+            // Trigger automatic consolidation if threshold is reached.
+            // This extracts key facts into long-term memory and appends
+            // a summary to the history log.
+            mem.maybe_consolidate(&*self.llm).await;
         }
 
         Ok(response)
