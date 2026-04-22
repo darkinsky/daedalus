@@ -384,6 +384,65 @@ pub enum CacheControl {
     Ephemeral,
 }
 
+// ── Streaming types ──
+
+/// A single chunk from a streaming LLM response.
+///
+/// The streaming protocol emits a sequence of these chunks, each carrying
+/// an incremental piece of the response. The consumer accumulates them
+/// into a full `ChatResponse`.
+#[derive(Debug, Clone)]
+pub enum StreamChunk {
+    /// Incremental text content (the main response body).
+    ContentDelta(String),
+    /// Incremental reasoning/thinking content.
+    ReasoningDelta(String),
+    /// A complete tool call (emitted once fully parsed from the stream).
+    ToolCall(ToolCall),
+    /// Token usage statistics (typically the last chunk in a stream).
+    Usage(TokenUsage),
+    /// The stream has ended. No more chunks will follow.
+    Done,
+}
+
+/// Accumulator that assembles `StreamChunk`s into a final `ChatResponse`.
+///
+/// Used by the tool loop and CLI layer to collect streaming output.
+#[derive(Debug, Default)]
+pub struct StreamAccumulator {
+    pub content: String,
+    pub reasoning_content: String,
+    pub tool_calls: Vec<ToolCall>,
+    pub usage: Option<TokenUsage>,
+}
+
+impl StreamAccumulator {
+    /// Apply a single chunk to the accumulator.
+    pub fn apply(&mut self, chunk: &StreamChunk) {
+        match chunk {
+            StreamChunk::ContentDelta(delta) => self.content.push_str(delta),
+            StreamChunk::ReasoningDelta(delta) => self.reasoning_content.push_str(delta),
+            StreamChunk::ToolCall(tc) => self.tool_calls.push(tc.clone()),
+            StreamChunk::Usage(u) => self.usage = Some(u.clone()),
+            StreamChunk::Done => {}
+        }
+    }
+
+    /// Convert the accumulated state into a `ChatResponse`.
+    pub fn into_response(self) -> ChatResponse {
+        ChatResponse {
+            content: self.content,
+            reasoning_content: if self.reasoning_content.is_empty() {
+                None
+            } else {
+                Some(self.reasoning_content)
+            },
+            usage: self.usage,
+            tool_calls: self.tool_calls,
+        }
+    }
+}
+
 // NOTE: `ToolInfo` has been moved to `crate::tools::ToolInfo` where it
 // semantically belongs (it describes tools, not LLM concepts).
 

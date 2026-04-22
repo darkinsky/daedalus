@@ -185,3 +185,4 @@ main()
 12. **记忆持久化**：LongTermMemory（JSON）、HistoryLog（JSONL 追加写入）、AgenticMemoryStore（JSON）、DynamicCheatsheet（JSON）均支持磁盘持久化。通过 `MemoryPersistence` trait 统一接口，启动时自动加载、退出时自动保存。持久化使用原子写入（write-to-temp-then-rename）防止进程崩溃导致数据损坏。`Memory` trait 提供 `persist()` 方法，shutdown 时无需 downcast 到具体类型。
 13. **三策略互斥记忆**：用户通过 `memory.strategy` YAML 配置选择记忆策略（`sliding_window` | `dynamic_cheatsheet` | `agentic`）。每种策略都是独立的 `Memory` trait 实现，配有对应的 `MemoryFactory`。`ChatAgent::create_memory_factory()` 根据配置选择 factory，Agentic 策略在 embedding 创建失败时优雅降级到 sliding_window。
 14. **优雅关闭**：`agent.shutdown()` 依次执行记忆持久化和 MCP 子进程关闭，防止孤儿进程。
+15. **LLM 响应流式输出**：`LlmApi` trait 提供 `chat_with_tools_stream()` 方法，返回 `mpsc::Receiver<StreamChunk>` 实现逐 token 流式输出。`VenusProvider` 原生支持 SSE 流解析（OpenAI streaming format），`GenAiProvider` 通过默认实现回退到非流式模式。`tool_loop` 在有 `ToolEventCallback` 时自动使用流式路径，通过 `StreamText`/`StreamReasoning`/`StreamDone` 事件将文本实时推送到 CLI 层。CLI 层的 `StreamingState` 跟踪流式状态，避免最终响应的重复渲染。

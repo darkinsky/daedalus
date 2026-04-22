@@ -38,7 +38,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::llm::{
-    ChatMessage, ChatResponse, LlmApi, TokenUsage, ToolCall, ToolResponse, ToolRound,
+    ChatMessage, ChatResponse, LlmApi, StreamAccumulator, StreamChunk,
+    TokenUsage, ToolCall, ToolResponse, ToolRound,
 };
 use crate::middleware::{Extensions, ToolNext, ToolRequest};
 use crate::middleware::pipeline::ToolPipeline;
@@ -198,9 +199,53 @@ pub async fn run_tool_loop(
             None
         };
 
-        let response = llm
-            .chat_with_tools(ctx.messages, ctx.tools, &tool_history, None)
-            .await?;
+        // Use streaming if:
+        // 1. A tool event callback is available (interactive mode), AND
+        // 2. A tool pipeline is present (lead agent only, not subagents).
+        //
+        // Subagents pass `on_tool_event` for tool progress display but should
+        // NOT stream LLM text to the terminal — their output is collected and
+        // returned as a tool result to the lead agent.
+        let use_streaming = ctx.on_tool_event.is_some() && ctx.tool_pipeline.is_some();
+
+        let response = if use_streaming {
+            // Streaming path: emit chunks to CLI in real time
+            let mut rx = llm
+                .chat_with_tools_stream(ctx.messages, ctx.tools, &tool_history, None)
+                .await?;
+            let mut accumulator = StreamAccumulator::default();
+            let mut has_emitted_reasoning_header = false;
+
+            while let Some(chunk) = rx.recv().await {
+                match &chunk {
+                    StreamChunk::ContentDelta(text) => {
+                        emit(ctx.on_tool_event, ToolEvent::StreamText {
+                            text: text.clone(),
+                        });
+                    }
+                    StreamChunk::ReasoningDelta(text) => {
+                        if !has_emitted_reasoning_header {
+                            has_emitted_reasoning_header = true;
+                        }
+                        emit(ctx.on_tool_event, ToolEvent::StreamReasoning {
+                            text: text.clone(),
+                        });
+                    }
+                    StreamChunk::Done => {
+                        emit(ctx.on_tool_event, ToolEvent::StreamDone);
+                    }
+                    _ => {}
+                }
+                accumulator.apply(&chunk);
+            }
+
+            accumulator.into_response()
+        } else {
+            // Non-streaming path (print mode, subagent runner)
+            llm.chat_with_tools(ctx.messages, ctx.tools, &tool_history, None)
+                .await?
+        };
+
         let llm_elapsed_ms = llm_start.elapsed().as_millis() as u64;
 
         // Finish LLM call tracing span
@@ -238,10 +283,13 @@ pub async fn run_tool_loop(
 
         // Emit intermediate LLM response so the CLI can display
         // reasoning/content in real time during tool-calling rounds.
+        // When streaming was used, reasoning/content were already displayed
+        // via StreamText/StreamReasoning events, so we emit empty values
+        // to avoid duplicate display. Usage and elapsed are still useful.
         emit(ctx.on_tool_event, ToolEvent::LlmResponse {
             round: round_number,
-            reasoning: response.reasoning_content.clone(),
-            content: response.content.clone(),
+            reasoning: if use_streaming { None } else { response.reasoning_content.clone() },
+            content: if use_streaming { String::new() } else { response.content.clone() },
             usage: response.usage.clone(),
             elapsed_ms: llm_elapsed_ms,
         });

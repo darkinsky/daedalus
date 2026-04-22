@@ -95,6 +95,21 @@ pub enum ToolEvent {
         /// The task description (truncated).
         task_preview: String,
     },
+    /// A streaming text chunk from the LLM response.
+    ///
+    /// Emitted during streaming mode so the CLI can render text
+    /// incrementally (typewriter effect) as it arrives from the LLM.
+    StreamText {
+        /// The incremental text content.
+        text: String,
+    },
+    /// A streaming reasoning/thinking chunk from the LLM.
+    StreamReasoning {
+        /// The incremental reasoning text.
+        text: String,
+    },
+    /// The streaming response has completed.
+    StreamDone,
     /// A subagent has completed execution.
     SubagentComplete {
         /// The subagent name.

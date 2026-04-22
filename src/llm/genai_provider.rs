@@ -5,6 +5,7 @@ use genai::adapter::AdapterKind;
 use genai::chat::{
     ChatMessage as GenAiChatMessage,
     ChatRequest,
+    ChatStreamEvent,
     Tool as GenAiTool,
     ToolCall as GenAiToolCall,
     ToolResponse as GenAiToolResponse,
@@ -16,7 +17,7 @@ use genai::chat::ReasoningEffort as GenAiReasoningEffort;
 
 use super::{
     ChatMessage, ChatOptions, ChatResponse, ChatRole, LlmApi, LlmConfig,
-    ReasoningEffort, TokenUsage, ToolCall, ToolResponse, ToolRound,
+    ReasoningEffort, StreamChunk, TokenUsage, ToolCall, ToolResponse, ToolRound,
 };
 
 /// LLM provider implementation backed by the `genai` crate.
@@ -193,6 +194,39 @@ impl GenAiProvider {
         }
     }
 
+    /// Build a ChatRequest from messages, tools, and tool history.
+    ///
+    /// Shared between `chat_with_tools` and `chat_with_tools_stream` to avoid
+    /// duplicating the request construction logic.
+    fn build_chat_request(
+        messages: &[ChatMessage],
+        tools: &[serde_json::Value],
+        tool_history: &[ToolRound],
+    ) -> ChatRequest {
+        let genai_messages = Self::convert_messages(messages);
+        let mut chat_req = ChatRequest::from_messages(genai_messages);
+
+        if !tools.is_empty() {
+            let genai_tools: Vec<GenAiTool> = tools
+                .iter()
+                .filter_map(Self::json_to_genai_tool)
+                .collect();
+            chat_req = chat_req.with_tools(genai_tools);
+        }
+
+        for round in tool_history {
+            let genai_calls: Vec<GenAiToolCall> = round.calls.iter().map(Self::to_genai_tool_call).collect();
+            chat_req = chat_req.append_message(GenAiChatMessage::from(genai_calls));
+
+            for resp in &round.responses {
+                let genai_resp = Self::to_genai_tool_response(resp);
+                chat_req = chat_req.append_message(GenAiChatMessage::from(genai_resp));
+            }
+        }
+
+        chat_req
+    }
+
     /// Build a ChatResponse from a genai ChatResponse.
     fn build_response(chat_res: &genai::chat::ChatResponse) -> ChatResponse {
         let content = chat_res.first_text().unwrap_or("").to_string();
@@ -230,32 +264,7 @@ impl LlmApi for GenAiProvider {
         tool_history: &[ToolRound],
         options: Option<&ChatOptions>,
     ) -> Result<ChatResponse> {
-        // Build the initial request from conversation messages
-        let genai_messages = Self::convert_messages(messages);
-        let mut chat_req = ChatRequest::from_messages(genai_messages);
-
-        // Only attach tool definitions if tools are provided.
-        // Sending an empty tools array can cause errors with some API backends.
-        if !tools.is_empty() {
-            let genai_tools: Vec<GenAiTool> = tools
-                .iter()
-                .filter_map(Self::json_to_genai_tool)
-                .collect();
-            chat_req = chat_req.with_tools(genai_tools);
-        }
-
-        // Replay tool history: for each prior round, append the assistant's
-        // tool calls and the corresponding tool responses.
-        for round in tool_history {
-            let genai_calls: Vec<GenAiToolCall> = round.calls.iter().map(Self::to_genai_tool_call).collect();
-            chat_req = chat_req.append_message(GenAiChatMessage::from(genai_calls));
-
-            for resp in &round.responses {
-                let genai_resp = Self::to_genai_tool_response(resp);
-                chat_req = chat_req.append_message(GenAiChatMessage::from(genai_resp));
-            }
-        }
-
+        let chat_req = Self::build_chat_request(messages, tools, tool_history);
         let genai_options = self.build_options(options);
 
         let chat_res = self
@@ -265,6 +274,83 @@ impl LlmApi for GenAiProvider {
             .map_err(|e| anyhow::anyhow!("GenAI chat error: {}", e))?;
 
         Ok(Self::build_response(&chat_res))
+    }
+
+    async fn chat_with_tools_stream(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[serde_json::Value],
+        tool_history: &[ToolRound],
+        options: Option<&ChatOptions>,
+    ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
+        use futures::StreamExt;
+
+        let chat_req = Self::build_chat_request(messages, tools, tool_history);
+
+        // Build options with capture enabled so the End event includes
+        // usage and tool calls.
+        let mut genai_opts = self.build_options(options);
+        genai_opts = genai_opts
+            .with_capture_content(true)
+            .with_capture_usage(true);
+
+        let stream_res = self
+            .client
+            .exec_chat_stream(&self.config.model, chat_req, Some(&genai_opts))
+            .await
+            .map_err(|e| anyhow::anyhow!("GenAI chat stream error: {}", e))?;
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<StreamChunk>(64);
+
+        tokio::spawn(async move {
+            let mut stream = stream_res.stream;
+
+            while let Some(event_result) = stream.next().await {
+                match event_result {
+                    Ok(event) => match event {
+                        ChatStreamEvent::Chunk(chunk) => {
+                            if !chunk.content.is_empty() {
+                                let _ = tx.send(StreamChunk::ContentDelta(chunk.content)).await;
+                            }
+                        }
+                        ChatStreamEvent::ReasoningChunk(chunk) => {
+                            if !chunk.content.is_empty() {
+                                let _ = tx.send(StreamChunk::ReasoningDelta(chunk.content)).await;
+                            }
+                        }
+                        ChatStreamEvent::ToolCallChunk(tc_chunk) => {
+                            let tc = Self::from_genai_tool_call(&tc_chunk.tool_call);
+                            let _ = tx.send(StreamChunk::ToolCall(tc)).await;
+                        }
+                        ChatStreamEvent::End(end) => {
+                            if let Some(usage) = end.captured_usage {
+                                let token_usage = TokenUsage {
+                                    prompt_tokens: usage.prompt_tokens.map(|v| v as u64),
+                                    completion_tokens: usage.completion_tokens.map(|v| v as u64),
+                                    total_tokens: usage.total_tokens.map(|v| v as u64),
+                                    cached_tokens: None,
+                                };
+                                let _ = tx.send(StreamChunk::Usage(token_usage)).await;
+                            }
+                            let _ = tx.send(StreamChunk::Done).await;
+                            return;
+                        }
+                        ChatStreamEvent::Start
+                        | ChatStreamEvent::ThoughtSignatureChunk(_) => {}
+                    },
+                    Err(e) => {
+                        tracing::warn!(error = %e, "GenAI stream error");
+                        let _ = tx.send(StreamChunk::Done).await;
+                        return;
+                    }
+                }
+            }
+
+            // Stream ended without End event
+            let _ = tx.send(StreamChunk::Done).await;
+        });
+
+        Ok(rx)
     }
 
     fn supports_tools(&self) -> bool {

@@ -154,6 +154,8 @@ impl CoreTurnHandler {
     }
 
     /// Simple chat path: direct LLM call without tools.
+    ///
+    /// Supports streaming when a tool event callback is available (interactive mode).
     async fn run_simple_chat(
         &self,
         request: TurnRequest<'_>,
@@ -172,7 +174,46 @@ impl CoreTurnHandler {
             _ => None,
         };
 
-        let llm_result = self.llm.chat(&request.messages, None).await;
+        // Use streaming if a tool event callback is available (interactive mode)
+        let llm_result = if let Some(ref callback) = self.on_tool_event {
+            use crate::llm::{StreamAccumulator, StreamChunk};
+            use crate::tools::ToolEvent;
+
+            let stream_result = self.llm
+                .chat_with_tools_stream(&request.messages, &[], &[], None)
+                .await;
+
+            match stream_result {
+                Ok(mut rx) => {
+                    let mut accumulator = StreamAccumulator::default();
+
+                    while let Some(chunk) = rx.recv().await {
+                        match &chunk {
+                            StreamChunk::ContentDelta(text) => {
+                                (callback)(ToolEvent::StreamText {
+                                    text: text.clone(),
+                                });
+                            }
+                            StreamChunk::ReasoningDelta(text) => {
+                                (callback)(ToolEvent::StreamReasoning {
+                                    text: text.clone(),
+                                });
+                            }
+                            StreamChunk::Done => {
+                                (callback)(ToolEvent::StreamDone);
+                            }
+                            _ => {}
+                        }
+                        accumulator.apply(&chunk);
+                    }
+
+                    Ok(accumulator.into_response())
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            self.llm.chat(&request.messages, None).await
+        };
 
         match llm_result {
             Err(e) => {

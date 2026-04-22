@@ -248,6 +248,10 @@ fn build_stream_json_callback() -> ToolEventCallback {
                     reasoning,
                 }
             }
+            // Streaming events are not emitted in print mode (non-interactive)
+            ToolEvent::StreamText { .. }
+            | ToolEvent::StreamReasoning { .. }
+            | ToolEvent::StreamDone => return,
         };
         emit_stream_event(&stream_event);
     })
@@ -267,6 +271,11 @@ fn build_text_stderr_callback() -> ToolEventCallback {
 
     let formatter = Arc::new(Mutex::new(ToolEventFormatter::new()));
     Arc::new(move |event: ToolEvent| {
+        // Skip streaming events in print mode — they are handled by the
+        // non-streaming path since print mode doesn't need real-time output.
+        if matches!(event, ToolEvent::StreamText { .. } | ToolEvent::StreamReasoning { .. } | ToolEvent::StreamDone) {
+            return;
+        }
         let rendered = {
             let mut fmt = formatter.lock().expect("tool event formatter poisoned");
             fmt.format(&event)

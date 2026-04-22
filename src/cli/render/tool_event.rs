@@ -78,6 +78,11 @@ impl ToolEventFormatter {
                 usage.as_ref(),
                 *elapsed_ms,
             ),
+            // Streaming events are handled directly by the REPL callback,
+            // not through the formatter. Return empty lines if called here.
+            ToolEvent::StreamText { .. }
+            | ToolEvent::StreamReasoning { .. }
+            | ToolEvent::StreamDone => vec![],
         }
     }
 

@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use super::{
     ChatMessage, ChatOptions, ChatResponse, LlmApi, LlmConfig,
-    TokenUsage, ToolCall, ToolRound, VenusExtensions,
+    StreamChunk, TokenUsage, ToolCall, ToolRound, VenusExtensions,
 };
 
 /// LLM provider that directly calls the Venus API proxy via HTTP.
@@ -387,6 +387,161 @@ impl VenusProvider {
 
         Ok(response_body)
     }
+
+    /// Send a streaming HTTP request to the Venus API.
+    ///
+    /// Returns a channel receiver that yields `StreamChunk`s parsed from
+    /// the SSE event stream. The stream follows the OpenAI SSE format:
+    /// `data: {json}\n\n` with `data: [DONE]` as the terminal sentinel.
+    async fn send_chat_request_stream(
+        &self,
+        body: Value,
+    ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
+        let url = format!("{}/chat/completions", self.base_url);
+
+        tracing::debug!(
+            url = %url,
+            model = %self.config.model,
+            "Venus API streaming request"
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("Venus HTTP streaming request error: {}", e))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            let error_body: Value = serde_json::from_str(&error_text).unwrap_or(json!({}));
+            let error_msg = error_body
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("Unknown error");
+            return Err(anyhow::anyhow!(
+                "Venus API streaming error (HTTP {}): {}",
+                status.as_u16(),
+                error_msg
+            ));
+        }
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<StreamChunk>(64);
+
+        // Spawn a task to read the SSE stream and parse chunks
+        tokio::spawn(async move {
+            use tokio_stream::StreamExt;
+
+            let mut byte_stream = response.bytes_stream();
+            let mut buffer = String::new();
+            // Track tool call state for incremental assembly
+            let mut tool_call_builders: std::collections::HashMap<usize, PartialToolCall> = std::collections::HashMap::new();
+
+            while let Some(chunk_result) = byte_stream.next().await {
+                let bytes = match chunk_result {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "SSE stream read error");
+                        break;
+                    }
+                };
+
+                buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+                // Process complete SSE lines from the buffer
+                while let Some(line_end) = buffer.find('\n') {
+                    let line = buffer[..line_end].trim_end_matches('\r').to_string();
+                    buffer = buffer[line_end + 1..].to_string();
+
+                    if line.is_empty() {
+                        continue;
+                    }
+
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        if data.trim() == "[DONE]" {
+                            // Emit any remaining partial tool calls
+                            for (_, ptc) in tool_call_builders.drain() {
+                                if let Some(tc) = ptc.into_tool_call() {
+                                    let _ = tx.send(StreamChunk::ToolCall(tc)).await;
+                                }
+                            }
+                            let _ = tx.send(StreamChunk::Done).await;
+                            return;
+                        }
+
+                        let parsed: Value = match serde_json::from_str(data) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+
+                        // Parse the SSE chunk (OpenAI streaming format)
+                        if let Some(choices) = parsed.get("choices").and_then(|c| c.as_array()) {
+                            for choice in choices {
+                                let delta = match choice.get("delta") {
+                                    Some(d) => d,
+                                    None => continue,
+                                };
+
+                                // Content delta
+                                if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                                    if !content.is_empty() {
+                                        let _ = tx.send(StreamChunk::ContentDelta(content.to_string())).await;
+                                    }
+                                }
+
+                                // Reasoning content delta
+                                if let Some(reasoning) = delta.get("reasoning_content").and_then(|r| r.as_str()) {
+                                    if !reasoning.is_empty() {
+                                        let _ = tx.send(StreamChunk::ReasoningDelta(reasoning.to_string())).await;
+                                    }
+                                }
+
+                                // Tool calls (streamed incrementally)
+                                if let Some(tool_calls) = delta.get("tool_calls").and_then(|tc| tc.as_array()) {
+                                    for tc_delta in tool_calls {
+                                        let index = tc_delta.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                                        let builder = tool_call_builders.entry(index).or_insert_with(PartialToolCall::new);
+
+                                        if let Some(id) = tc_delta.get("id").and_then(|v| v.as_str()) {
+                                            builder.call_id = Some(id.to_string());
+                                        }
+                                        if let Some(func) = tc_delta.get("function") {
+                                            if let Some(name) = func.get("name").and_then(|n| n.as_str()) {
+                                                builder.function_name = Some(name.to_string());
+                                            }
+                                            if let Some(args) = func.get("arguments").and_then(|a| a.as_str()) {
+                                                builder.arguments_buffer.push_str(args);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Usage (typically in the last chunk)
+                        if let Some(usage) = Self::parse_usage(&parsed) {
+                            let _ = tx.send(StreamChunk::Usage(usage)).await;
+                        }
+                    }
+                }
+            }
+
+            // Stream ended without [DONE] — emit remaining tool calls and Done
+            for (_, ptc) in tool_call_builders.drain() {
+                if let Some(tc) = ptc.into_tool_call() {
+                    let _ = tx.send(StreamChunk::ToolCall(tc)).await;
+                }
+            }
+            let _ = tx.send(StreamChunk::Done).await;
+        });
+
+        Ok(rx)
+    }
 }
 
 #[async_trait]
@@ -403,6 +558,21 @@ impl LlmApi for VenusProvider {
         Self::parse_response(&response_body)
     }
 
+    async fn chat_with_tools_stream(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[Value],
+        tool_history: &[ToolRound],
+        options: Option<&ChatOptions>,
+    ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
+        let mut body = self.build_request_body(messages, tools, tool_history, options);
+        // Enable streaming in the request body
+        body["stream"] = json!(true);
+        // Request usage stats in the stream (OpenAI extension)
+        body["stream_options"] = json!({ "include_usage": true });
+        self.send_chat_request_stream(body).await
+    }
+
     fn supports_tools(&self) -> bool {
         true
     }
@@ -413,6 +583,37 @@ impl LlmApi for VenusProvider {
 
     fn provider_name(&self) -> &str {
         "Venus"
+    }
+}
+
+/// Helper for incrementally assembling a tool call from SSE stream deltas.
+///
+/// OpenAI streams tool calls as incremental JSON fragments across multiple
+/// SSE chunks. This struct accumulates the fragments until the tool call
+/// is complete.
+#[derive(Debug, Default)]
+struct PartialToolCall {
+    call_id: Option<String>,
+    function_name: Option<String>,
+    arguments_buffer: String,
+}
+
+impl PartialToolCall {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Convert to a complete `ToolCall` if we have enough data.
+    fn into_tool_call(self) -> Option<ToolCall> {
+        let call_id = self.call_id?;
+        let function_name = self.function_name?;
+        let arguments: Value = serde_json::from_str(&self.arguments_buffer)
+            .unwrap_or(json!({}));
+        Some(ToolCall {
+            call_id,
+            function_name,
+            arguments,
+        })
     }
 }
 

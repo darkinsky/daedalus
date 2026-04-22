@@ -9,6 +9,7 @@ pub use types::{
     CacheControl, ChatMessage, ChatOptions, ChatRole, ChatResponse,
     LlmConfig, ReasoningEffort, VenusExtensions,
     TokenUsage, ToolCall, ToolResponse, ToolRound,
+    StreamChunk, StreamAccumulator,
     format_messages_for_log,
 };
 
@@ -18,6 +19,7 @@ pub use types::{
 
 use anyhow::Result;
 use async_trait::async_trait;
+use tokio::sync::mpsc;
 
 /// The core LLM API trait — provider-agnostic interface for chat completion.
 ///
@@ -55,6 +57,42 @@ pub trait LlmApi: Send + Sync {
         tool_history: &[ToolRound],
         options: Option<&ChatOptions>,
     ) -> Result<ChatResponse>;
+
+    /// Send a streaming chat completion request with tool definitions.
+    ///
+    /// Returns a receiver that yields `StreamChunk`s as they arrive from the
+    /// LLM. The stream ends with a `StreamChunk::Done` sentinel.
+    ///
+    /// The default implementation falls back to the non-streaming
+    /// `chat_with_tools`, emitting the full response as a single chunk.
+    /// Providers that support native streaming should override this.
+    async fn chat_with_tools_stream(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[serde_json::Value],
+        tool_history: &[ToolRound],
+        options: Option<&ChatOptions>,
+    ) -> Result<mpsc::Receiver<StreamChunk>> {
+        // Fallback: call non-streaming and emit as single chunks
+        let response = self.chat_with_tools(messages, tools, tool_history, options).await?;
+        let (tx, rx) = mpsc::channel(16);
+        tokio::spawn(async move {
+            if let Some(reasoning) = response.reasoning_content {
+                let _ = tx.send(StreamChunk::ReasoningDelta(reasoning)).await;
+            }
+            if !response.content.is_empty() {
+                let _ = tx.send(StreamChunk::ContentDelta(response.content)).await;
+            }
+            for tc in response.tool_calls {
+                let _ = tx.send(StreamChunk::ToolCall(tc)).await;
+            }
+            if let Some(usage) = response.usage {
+                let _ = tx.send(StreamChunk::Usage(usage)).await;
+            }
+            let _ = tx.send(StreamChunk::Done).await;
+        });
+        Ok(rx)
+    }
 
     /// Return true if this provider supports tool/function calling.
     fn supports_tools(&self) -> bool {

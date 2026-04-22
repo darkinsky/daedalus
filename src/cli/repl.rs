@@ -82,10 +82,14 @@ struct TurnStatsCollector {
 fn build_tool_event_callback(
     spinner: &Arc<indicatif::ProgressBar>,
     stats_collector: &Arc<Mutex<TurnStatsCollector>>,
+    streaming_state: &Arc<Mutex<StreamingState>>,
 ) -> ToolEventCallback {
     let spinner = Arc::clone(spinner);
     let formatter = Arc::new(Mutex::new(ToolEventFormatter::new()));
     let collector = Arc::clone(stats_collector);
+    // Track streaming state: whether we've started streaming and need
+    // to handle the transition between streaming output and tool events.
+    let streaming_state = Arc::clone(streaming_state);
     Arc::new(move |event| {
         // Capture subagent completion stats before rendering
         if let ToolEvent::SubagentComplete {
@@ -108,6 +112,56 @@ fn build_tool_event_callback(
             }
         }
 
+        // Handle streaming events without clearing the spinner
+        match &event {
+            ToolEvent::StreamText { text } => {
+                let mut state = streaming_state.lock().expect("streaming state poisoned");
+                if !state.header_printed {
+                    // First streaming chunk: clear spinner and print header
+                    spinner.finish_and_clear();
+                    state.header_printed = true;
+                    state.is_streaming = true;
+                    state.content_was_streamed = true;
+                    render::stream_response_header();
+                }
+                render::stream_text_chunk(text);
+                return;
+            }
+            ToolEvent::StreamReasoning { text } => {
+                let mut state = streaming_state.lock().expect("streaming state poisoned");
+                if !state.reasoning_header_printed {
+                    spinner.finish_and_clear();
+                    state.reasoning_header_printed = true;
+                    state.is_streaming = true;
+                    state.reasoning_was_streamed = true;
+                    render::stream_reasoning_header();
+                }
+                render::stream_reasoning_chunk(text);
+                return;
+            }
+            ToolEvent::StreamDone => {
+                let mut state = streaming_state.lock().expect("streaming state poisoned");
+                if state.is_streaming {
+                    render::stream_done();
+                    state.is_streaming = false;
+                    // Reset for next round (tool calls may follow)
+                    state.header_printed = false;
+                    state.reasoning_header_printed = false;
+                }
+                return;
+            }
+            _ => {
+                // Non-streaming event: if we were streaming, finish the stream first
+                let mut state = streaming_state.lock().expect("streaming state poisoned");
+                if state.is_streaming {
+                    render::stream_done();
+                    state.is_streaming = false;
+                    state.header_printed = false;
+                    state.reasoning_header_printed = false;
+                }
+            }
+        }
+
         // Pause the spinner so tool output is not interleaved
         spinner.finish_and_clear();
         let rendered = {
@@ -123,6 +177,22 @@ fn build_tool_event_callback(
         spinner.enable_steady_tick(std::time::Duration::from_millis(80));
     })
 }
+
+/// Tracks the state of streaming output within a single turn.
+#[derive(Debug, Default)]
+struct StreamingState {
+    /// Whether the response header has been printed for the current stream.
+    header_printed: bool,
+    /// Whether the reasoning header has been printed.
+    reasoning_header_printed: bool,
+    /// Whether we are currently in the middle of streaming output.
+    is_streaming: bool,
+    /// Whether any content was streamed during this turn.
+    /// Used by `handle_chat` to decide whether to re-render with markdown.
+    content_was_streamed: bool,
+    /// Whether any reasoning was streamed during this turn.
+    reasoning_was_streamed: bool,
+}
 /// Send user input to the agent and render the response.
 async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &SharedSessionCost) {
     tracing::debug!("User input: {}", input);
@@ -134,8 +204,11 @@ async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &SharedSessio
     // Collector for subagent statistics
     let stats_collector = Arc::new(Mutex::new(TurnStatsCollector::default()));
 
+    // Shared streaming state so handle_chat can check if content was streamed
+    let streaming_state = Arc::new(Mutex::new(StreamingState::default()));
+
     // Build tool event callback for real-time tool progress display
-    let tool_callback = build_tool_event_callback(&spinner, &stats_collector);
+    let tool_callback = build_tool_event_callback(&spinner, &stats_collector, &streaming_state);
 
     // Set the subagent event callback so subagent tool events are also rendered
     agent.set_subagent_event_callback(Some(Arc::clone(&tool_callback)));
@@ -148,14 +221,31 @@ async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &SharedSessio
             // Clear the subagent event callback
             agent.set_subagent_event_callback(None);
 
-            // Show reasoning/thinking process if present
-            if let Some(ref reasoning) = result.reasoning_content
-                && !reasoning.is_empty()
-            {
-                render::reasoning_content(reasoning);
-            }
+            // In streaming mode, the response text was already printed
+            // incrementally via StreamText events. We skip the full markdown
+            // re-render to avoid duplicate output. The streamed text is raw
+            // (no markdown), which is acceptable for real-time display.
+            let was_streamed = streaming_state
+                .lock()
+                .map(|s| s.content_was_streamed)
+                .unwrap_or(false);
+            let reasoning_was_streamed = streaming_state
+                .lock()
+                .map(|s| s.reasoning_was_streamed)
+                .unwrap_or(false);
 
-            render::response(&result.content);
+            // Show reasoning/thinking process if present (non-streamed path)
+            if !was_streamed {
+                if !reasoning_was_streamed {
+                    if let Some(ref reasoning) = result.reasoning_content
+                        && !reasoning.is_empty()
+                    {
+                        render::reasoning_content(reasoning);
+                    }
+                }
+
+                render::response(&result.content);
+            }
 
             // Persist memory to disk after each successful turn
             // to ensure conversation history survives process crashes.
