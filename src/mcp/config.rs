@@ -72,8 +72,8 @@ impl McpConfig {
     ///
     /// Returns `Some(config)` if `~/.config/daedalus/mcp.json` exists.
     fn try_legacy_home_path() -> Result<Option<Self>> {
-        if let Some(home) = home_dir() {
-            let config_path = format!("{}/.config/daedalus/mcp.json", home);
+        if let Some(home) = crate::workspace::home_dir() {
+            let config_path = format!("{}/.config/daedalus/mcp.json", home.display());
             if std::path::Path::new(&config_path).exists() {
                 tracing::info!("Loading MCP config from: {}", config_path);
                 return Ok(Some(Self::from_file(&config_path)?));
@@ -105,11 +105,4 @@ impl McpConfig {
         tracing::debug!("No MCP config found, running without MCP servers");
         Ok(Self::default())
     }
-}
-
-/// Get the user's home directory from environment variables.
-fn home_dir() -> Option<String> {
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok()
 }

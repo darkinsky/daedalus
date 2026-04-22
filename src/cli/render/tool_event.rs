@@ -165,15 +165,11 @@ impl ToolEventFormatter {
 
         // Show per-round token usage and LLM elapsed time
         {
-            let mut parts = Vec::new();
-            if let Some(u) = usage {
-                if let Some(pt) = u.prompt_tokens {
-                    parts.push(format!("{}↑", pt));
-                }
-                if let Some(ct) = u.completion_tokens {
-                    parts.push(format!("{}↓", ct));
-                }
-            }
+            let mut parts: Vec<String> = if let Some(u) = usage {
+                super::format_token_parts(u)
+            } else {
+                Vec::new()
+            };
             parts.push(format!("llm {}", elapsed_str));
             lines.push(format!(
                 "  {}",
@@ -304,16 +300,7 @@ impl ToolEventFormatter {
 
         // Build token info string
         let token_info = if let Some(u) = usage {
-            let mut parts = Vec::new();
-            if let Some(pt) = u.prompt_tokens {
-                parts.push(format!("{}↑", pt));
-            }
-            if let Some(ct) = u.completion_tokens {
-                parts.push(format!("{}↓", ct));
-            }
-            if let Some(tt) = u.total_tokens {
-                parts.push(format!("{}total", tt));
-            }
+            let parts = super::format_token_parts(u);
             if parts.is_empty() {
                 String::new()
             } else {

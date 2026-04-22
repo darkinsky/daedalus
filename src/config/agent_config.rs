@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use crate::embedding::Embedding;
 use crate::llm::LlmConfig;
 use crate::prompt::PromptStyle;
-use crate::workspace::Workspace;
+use crate::workspace::{self, Workspace};
 
 // ── Shared constants ──
 
@@ -356,7 +356,7 @@ impl AgentConfig {
         }
 
         // 3. ~/.daedalus/DAEDALUS.md (global)
-        if let Some(home) = home_dir() {
+        if let Some(home) = workspace::home_dir() {
             let global_path = home.join(".daedalus/DAEDALUS.md");
             // Avoid loading the same file twice if workspace is the global dir
             let already_loaded = workspace.map_or(false, |ws| {
@@ -397,14 +397,6 @@ impl AgentConfig {
 }
 
 // ── Module-level helpers ──
-
-/// Get the user's home directory from environment variables.
-fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok()
-        .map(PathBuf::from)
-}
 
 /// Check if two paths refer to the same file (by canonical path comparison).
 ///

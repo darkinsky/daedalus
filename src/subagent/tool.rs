@@ -51,10 +51,10 @@ impl SubagentEventSink {
         }
     }
 
-    /// Read the currently bound callback, if any.
+    /// Get the currently bound callback, if any.
     ///
     /// Returns `None` if the lock is poisoned or no callback is set.
-    pub fn read(&self) -> Option<ToolEventCallback> {
+    pub fn get(&self) -> Option<ToolEventCallback> {
         self.inner.read().ok().and_then(|guard| guard.clone())
     }
 }
@@ -77,7 +77,7 @@ impl SubagentToolContext {
     ///
     /// Returns `None` if the lock is poisoned or no callback is set.
     fn read_callback(&self) -> Option<ToolEventCallback> {
-        self.event_sink.read()
+        self.event_sink.get()
     }
 
     /// Emit a `SubagentStart` event via the current callback (if present).

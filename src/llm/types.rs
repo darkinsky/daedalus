@@ -69,6 +69,15 @@ impl VenusExtensions {
             || self.reasoning_effort.is_some()
     }
 
+    /// Return true if Venus-specific parameters are configured that require
+    /// the `VenusProvider` (raw HTTP) instead of the `GenAiProvider`.
+    ///
+    /// Only `thinking_enabled` and `thinking_tokens` require Venus — the
+    /// `reasoning_effort` parameter is handled natively by genai.
+    pub fn needs_venus_provider(&self) -> bool {
+        self.thinking_enabled.is_some() || self.thinking_tokens.is_some()
+    }
+
     /// Merge with another `VenusExtensions`, using `other` as the
     /// higher-priority source (request-level overrides config-level).
     ///

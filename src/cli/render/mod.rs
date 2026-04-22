@@ -41,6 +41,52 @@ pub(in crate::cli) use tool_event::ToolEventFormatter;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+// ── Token usage formatting helpers ──
+
+/// Format token usage into a list of human-readable parts (e.g. `["100↑", "20↓", "120total"]`).
+///
+/// Used by `response_footer`, `turn_summary`, and `tool_event` to avoid
+/// duplicating the same `if let Some(pt) = ...` pattern everywhere.
+pub(super) fn format_token_parts(usage: &TokenUsage) -> Vec<String> {
+    let mut parts = Vec::new();
+    if let Some(pt) = usage.prompt_tokens {
+        parts.push(format!("{}↑", pt));
+    }
+    if let Some(cached) = usage.cached_tokens {
+        if cached > 0 {
+            parts.push(format!("{}cached", cached));
+        }
+    }
+    if let Some(ct) = usage.completion_tokens {
+        parts.push(format!("{}↓", ct));
+    }
+    if let Some(tt) = usage.total_tokens {
+        parts.push(format!("{}total", tt));
+    }
+    parts
+}
+
+/// Accumulate token usage from multiple sources into grand totals.
+///
+/// Returns `(prompt, completion, total, has_any_tokens)`.
+fn accumulate_usage<'a>(usages: impl Iterator<Item = Option<&'a TokenUsage>>) -> (u64, u64, u64, bool) {
+    let mut prompt: u64 = 0;
+    let mut completion: u64 = 0;
+    let mut total: u64 = 0;
+    let mut has_tokens = false;
+    for usage in usages {
+        if let Some(u) = usage {
+            prompt += u.prompt_tokens.unwrap_or(0);
+            completion += u.completion_tokens.unwrap_or(0);
+            total += u.total_tokens.unwrap_or(0);
+            if u.total_tokens.is_some() {
+                has_tokens = true;
+            }
+        }
+    }
+    (prompt, completion, total, has_tokens)
+}
+
 // ── Primitive helpers (used by submodules via `super::print_dim`) ──
 
 /// Print a dim/muted line to stdout (for secondary information).
@@ -234,24 +280,11 @@ pub fn response(content: &str) {
 
 /// Print a compact token-usage / elapsed-time line after each response.
 pub fn response_footer(usage: Option<&TokenUsage>, elapsed: f64) {
-    let mut parts: Vec<String> = Vec::new();
-
-    if let Some(u) = usage {
-        if let Some(pt) = u.prompt_tokens {
-            parts.push(format!("{}↑", pt));
-        }
-        if let Some(cached) = u.cached_tokens {
-            if cached > 0 {
-                parts.push(format!("{}cached", cached));
-            }
-        }
-        if let Some(ct) = u.completion_tokens {
-            parts.push(format!("{}↓", ct));
-        }
-        if let Some(tt) = u.total_tokens {
-            parts.push(format!("{}total", tt));
-        }
-    }
+    let mut parts: Vec<String> = if let Some(u) = usage {
+        format_token_parts(u)
+    } else {
+        Vec::new()
+    };
 
     parts.push(format!("{:.1}s", elapsed));
 
@@ -358,18 +391,11 @@ pub fn turn_summary(
 
     // Lead agent row
     {
-        let mut parts: Vec<String> = Vec::new();
-        if let Some(u) = lead_usage {
-            if let Some(pt) = u.prompt_tokens {
-                parts.push(format!("{}\u{2191}", pt));
-            }
-            if let Some(ct) = u.completion_tokens {
-                parts.push(format!("{}\u{2193}", ct));
-            }
-            if let Some(tt) = u.total_tokens {
-                parts.push(format!("{}total", tt));
-            }
-        }
+        let mut parts: Vec<String> = if let Some(u) = lead_usage {
+            format_token_parts(u)
+        } else {
+            Vec::new()
+        };
         parts.push(format!("{:.1}s", total_elapsed));
         println!(
             "    {} {}",
@@ -385,18 +411,11 @@ pub fn turn_summary(
         } else {
             "\u{2717}".with(Color::Red)
         };
-        let mut parts: Vec<String> = Vec::new();
-        if let Some(ref u) = sa.usage {
-            if let Some(pt) = u.prompt_tokens {
-                parts.push(format!("{}\u{2191}", pt));
-            }
-            if let Some(ct) = u.completion_tokens {
-                parts.push(format!("{}\u{2193}", ct));
-            }
-            if let Some(tt) = u.total_tokens {
-                parts.push(format!("{}total", tt));
-            }
-        }
+        let mut parts: Vec<String> = if let Some(ref u) = sa.usage {
+            format_token_parts(u)
+        } else {
+            Vec::new()
+        };
         parts.push(format!("{} rounds", sa.tool_rounds));
         parts.push(format!("{:.1}s", sa.elapsed_secs));
         println!(
@@ -409,29 +428,9 @@ pub fn turn_summary(
 
     // Grand total row
     {
-        let mut grand_prompt: u64 = 0;
-        let mut grand_completion: u64 = 0;
-        let mut grand_total: u64 = 0;
-        let mut has_tokens = false;
-
-        if let Some(u) = lead_usage {
-            grand_prompt += u.prompt_tokens.unwrap_or(0);
-            grand_completion += u.completion_tokens.unwrap_or(0);
-            grand_total += u.total_tokens.unwrap_or(0);
-            if u.total_tokens.is_some() {
-                has_tokens = true;
-            }
-        }
-        for sa in subagents {
-            if let Some(ref u) = sa.usage {
-                grand_prompt += u.prompt_tokens.unwrap_or(0);
-                grand_completion += u.completion_tokens.unwrap_or(0);
-                grand_total += u.total_tokens.unwrap_or(0);
-                if u.total_tokens.is_some() {
-                    has_tokens = true;
-                }
-            }
-        }
+        let all_usages = std::iter::once(lead_usage)
+            .chain(subagents.iter().map(|sa| sa.usage.as_ref()));
+        let (grand_prompt, grand_completion, grand_total, has_tokens) = accumulate_usage(all_usages);
 
         if has_tokens {
             println!(

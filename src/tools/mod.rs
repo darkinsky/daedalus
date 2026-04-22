@@ -21,6 +21,9 @@ use async_trait::async_trait;
 pub(crate) use text_utils::{truncate_at_char_boundary, truncate_chars};
 pub(crate) use text_utils::maybe_truncate_for_display;
 
+// Re-export format_size for human-readable byte formatting.
+pub(crate) use fs_utils::format_size;
+
 // Re-export rg pre-initialization for eager startup outside async context.
 pub(crate) use grep_search::ensure_rg_init;
 

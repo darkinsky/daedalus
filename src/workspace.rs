@@ -324,7 +324,11 @@ impl Workspace {
 }
 
 /// Get the user's home directory from environment variables.
-fn home_dir() -> Option<PathBuf> {
+///
+/// Checks `HOME` (Unix) with `USERPROFILE` (Windows) fallback.
+/// This is the single canonical implementation — all other modules
+/// should use `crate::workspace::home_dir()` instead of duplicating.
+pub(crate) fn home_dir() -> Option<PathBuf> {
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .ok()

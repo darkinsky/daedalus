@@ -7,6 +7,7 @@
 use crossterm::style::{Color, Stylize};
 
 use crate::tools::truncate_chars;
+use crate::tools::format_size;
 
 use super::tool_output::unfold_bash_command;
 
@@ -18,16 +19,16 @@ pub(super) fn summarize_tool_args(
     tool_name: &str,
     args: &serde_json::Value,
 ) -> Option<String> {
-    let s = |key: &str| -> Option<String> {
+    let str_field = |key: &str| -> Option<String> {
         args.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
     };
-    let u = |key: &str| -> Option<u64> { args.get(key).and_then(|v| v.as_u64()) };
-    let b = |key: &str| -> Option<bool> { args.get(key).and_then(|v| v.as_bool()) };
+    let u64_field = |key: &str| -> Option<u64> { args.get(key).and_then(|v| v.as_u64()) };
+    let bool_field = |key: &str| -> Option<bool> { args.get(key).and_then(|v| v.as_bool()) };
 
     match tool_name {
         "read_file" => {
-            let path = s("path")?;
-            match (u("offset"), u("limit")) {
+            let path = str_field("path")?;
+            match (u64_field("offset"), u64_field("limit")) {
                 (Some(off), Some(lim)) => Some(format!("{}:{}-{}", path, off, off + lim)),
                 (Some(off), None) => Some(format!("{} (from line {})", path, off)),
                 (None, Some(lim)) => Some(format!("{} (first {} lines)", path, lim)),
@@ -35,15 +36,15 @@ pub(super) fn summarize_tool_args(
             }
         }
         "edit_file" => {
-            let path = s("path")?;
-            if b("replace_all").unwrap_or(false) {
+            let path = str_field("path")?;
+            if bool_field("replace_all").unwrap_or(false) {
                 Some(format!("{}  (replace_all)", path))
             } else {
                 Some(path)
             }
         }
         "multi_edit" => {
-            let path = s("path")?;
+            let path = str_field("path")?;
             let n = args
                 .get("edits")
                 .and_then(|v| v.as_array())
@@ -52,22 +53,22 @@ pub(super) fn summarize_tool_args(
             Some(format!("{}  ({} edit{})", path, n, if n == 1 { "" } else { "s" }))
         }
         "write_file" => {
-            let path = s("path")?;
+            let path = str_field("path")?;
             let bytes = args
                 .get("content")
                 .and_then(|v| v.as_str())
                 .map(|c| c.len())
                 .unwrap_or(0);
-            Some(format!("{}  ({})", path, human_bytes(bytes)))
+            Some(format!("{}  ({})", path, format_size(bytes as u64)))
         }
         "grep_search" => {
-            let pattern = s("pattern")?;
-            let scope = s("path").unwrap_or_else(|| ".".to_string());
+            let pattern = str_field("pattern")?;
+            let scope = str_field("path").unwrap_or_else(|| ".".to_string());
             let mut tags: Vec<&str> = Vec::new();
-            if !b("use_regex").unwrap_or(true) {
+            if !bool_field("use_regex").unwrap_or(true) {
                 tags.push("literal");
             }
-            if !b("case_sensitive").unwrap_or(true) {
+            if !bool_field("case_sensitive").unwrap_or(true) {
                 tags.push("icase");
             }
             let suffix = if tags.is_empty() {
@@ -78,11 +79,11 @@ pub(super) fn summarize_tool_args(
             Some(format!("{:?} in {}{}", truncate_chars(&pattern, 60), scope, suffix))
         }
         "search_files" => {
-            let pattern = s("pattern")?;
-            let scope = s("path").unwrap_or_else(|| ".".to_string());
+            let pattern = str_field("pattern")?;
+            let scope = str_field("path").unwrap_or_else(|| ".".to_string());
             Some(format!("{} in {}", pattern, scope))
         }
-        "list_directory" | "get_file_info" => s("path"),
+        "list_directory" | "get_file_info" => str_field("path"),
         "bash" => {
             let command = args.get("command").and_then(|v| v.as_str())?;
             let cwd = args.get("working_directory").and_then(|v| v.as_str()).map(String::from);
@@ -92,7 +93,7 @@ pub(super) fn summarize_tool_args(
                 .or_else(|| args.get("timeout").and_then(|v| v.as_u64()));
             Some(summarize_bash(command, cwd, timeout))
         }
-        "use_skill" => s("name").or_else(|| s("skill_name")),
+        "use_skill" => str_field("name").or_else(|| str_field("skill_name")),
         "spawn_subagent" | "spawn_team" => summarize_subagent(args),
         _ => {
             // Generic fallback: compact single-line JSON preview.
@@ -234,15 +235,4 @@ pub(super) fn edit_diff_preview(
     out
 }
 
-/// Human-readable byte size, e.g. `1.2 KB`, `345 B`, `7.8 MB`.
-fn human_bytes(n: usize) -> String {
-    const KB: usize = 1024;
-    const MB: usize = 1024 * 1024;
-    if n >= MB {
-        format!("{:.1} MB", n as f64 / MB as f64)
-    } else if n >= KB {
-        format!("{:.1} KB", n as f64 / KB as f64)
-    } else {
-        format!("{} B", n)
-    }
-}
+

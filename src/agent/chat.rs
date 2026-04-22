@@ -125,9 +125,7 @@ impl ChatAgent {
             max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
             tracing_manager: None,
             middleware_config: MiddlewareConfig::default(),
-            session_cost: Arc::new(std::sync::Mutex::new(
-SessionCost::new(),
-            )),
+            session_cost: Arc::new(std::sync::Mutex::new(SessionCost::new())),
             memory_handle: None,
         }
     }
@@ -528,17 +526,7 @@ impl AgentMode for ChatAgent {
     }
 
     fn new_session(&mut self) {
-        let tools = self.tool_router.tool_infos();
-        self.system_prompt = Self::build_prompt(
-            self.prompt_override.as_deref(),
-            self.agent_name.as_deref(),
-            self.soul.as_deref(),
-            self.project_rules.as_deref(),
-            &tools,
-            &self.prompt_style,
-            self.workspace.as_ref(),
-        );
-        self.session = self.create_session_with_migration();
+        self.reset_with_updated_prompt();
         tracing::info!(
             session_id = %self.session.id,
             "New session created with migrated persistent memory"

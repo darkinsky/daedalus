@@ -542,18 +542,11 @@ impl Memory for SlidingWindowMemory {
     }
 
     fn search_history(&self, query: &str, limit: Option<usize>) -> Vec<String> {
-        let query_lower = query.to_lowercase();
-        let iter = self.persistent.history_log
-            .iter()
-            .filter(|entry| {
-                entry.summary.to_lowercase().contains(&query_lower)
-                    || entry.keywords.iter().any(|kw| kw.to_lowercase().contains(&query_lower))
-            })
-            .map(|entry| entry.to_log_line());
-        match limit {
-            Some(n) => iter.take(n).collect(),
-            None => iter.collect(),
-        }
+        // Delegate to the typed internal method and convert to strings.
+        self.search_history(query, limit)
+            .into_iter()
+            .map(|entry| entry.to_log_line())
+            .collect()
     }
 
     fn turn_count(&self) -> usize {

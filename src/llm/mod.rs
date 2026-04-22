@@ -90,10 +90,7 @@ pub fn create_provider(mut config: LlmConfig) -> Result<Box<dyn LlmApi>> {
             ))?;
     }
 
-    let needs_venus = config.venus.thinking_enabled.is_some()
-        || config.venus.thinking_tokens.is_some();
-
-    if needs_venus {
+    if config.venus.needs_venus_provider() {
         tracing::info!("Using VenusProvider (thinking parameters detected)");
         let provider = venus_provider::VenusProvider::new(config)?;
         Ok(Box::new(provider))

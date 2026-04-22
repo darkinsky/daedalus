@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+use crate::workspace;
+
 /// Directories that are always off-limits, regardless of workspace root.
 ///
 /// Prevents LLM-driven file operations from accessing sensitive system paths.
@@ -76,7 +78,7 @@ pub fn resolve_path(path_str: &str) -> Result<PathBuf> {
     }
 
     // Check against blocked home-directory secrets
-    if let Some(home) = home_dir() {
+    if let Some(home) = workspace::home_dir() {
         let home_str = home.to_string_lossy();
         for suffix in BLOCKED_HOME_SUFFIXES {
             let blocked = format!("{}/{}", home_str, suffix);
@@ -90,11 +92,6 @@ pub fn resolve_path(path_str: &str) -> Result<PathBuf> {
     }
 
     Ok(resolved)
-}
-
-/// Get the user's home directory.
-fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME").ok().map(PathBuf::from)
 }
 
 /// Extract a required string parameter from JSON arguments.
