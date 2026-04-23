@@ -349,6 +349,57 @@ pub trait Memory: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
+
+    /// Check whether context compression (compact) should be triggered.
+    ///
+    /// Memory strategies that support compact (e.g., `SlidingWindowMemory`)
+    /// override this to check whether the estimated token count exceeds
+    /// the configured threshold.
+    ///
+    /// The default implementation returns `false`.
+    #[allow(dead_code)]
+    fn should_compact(&self) -> bool {
+        false
+    }
+
+    /// Run automatic context compression if the context window is approaching the budget.
+    ///
+    /// Called by the memory middleware after each turn. Memory strategies
+    /// that support compact (e.g., `SlidingWindowMemory`) override this
+    /// to compress older messages into a summary when the context grows too large.
+    ///
+    /// The default implementation is a no-op. Compact failures should
+    /// be handled gracefully (logged, not propagated).
+    ///
+    /// # Arguments
+    /// * `llm` - The LLM provider for making compact calls.
+    fn maybe_compact<'a>(
+        &'a mut self,
+        _llm: &'a dyn LlmApi,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async {})
+    }
+
+    /// Run context compression with an optional custom instruction.
+    ///
+    /// This is the manual entry point for `/compact [instruction]`.
+    /// Memory strategies that support compact override this to compress
+    /// the conversation history into a summary.
+    ///
+    /// Returns a human-readable status message describing what happened.
+    ///
+    /// # Arguments
+    /// * `llm` - The LLM provider for making compact calls.
+    /// * `instruction` - Optional user instruction to focus the summary.
+    fn compact<'a>(
+        &'a mut self,
+        _llm: &'a dyn LlmApi,
+        _instruction: Option<&'a str>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send + 'a>> {
+        Box::pin(async {
+            Ok("Compact is not supported by this memory strategy.".to_string())
+        })
+    }
 }
 
 /// Factory trait for creating `Memory` instances.

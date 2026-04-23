@@ -57,3 +57,70 @@ pub(crate) fn consolidation_user_prompt(
         messages_text,
     )
 }
+
+// ── Context Compression (Compact) Prompts ──
+
+/// System prompt for the compact LLM call.
+///
+/// Instructs the LLM to compress a conversation into a concise summary
+/// that preserves all information needed for the agent to continue working.
+/// This is different from consolidation — compact is about reducing the
+/// *active* context window, not extracting long-term facts.
+pub(crate) const COMPACT_SYSTEM_PROMPT: &str = "\
+You are a conversation compressor. Your job is to create a concise summary of a \
+conversation between a user and an AI assistant. This summary will REPLACE the \
+original messages in the AI's context window, so it must preserve all information \
+the AI needs to continue the conversation seamlessly.
+
+CRITICAL REQUIREMENTS:
+1. Preserve ALL technical details: file paths, function names, variable names, \
+   error messages, code snippets, and configuration values.
+2. Preserve the current state of any ongoing task: what has been done, what \
+   remains, and any blockers.
+3. Preserve user preferences and constraints mentioned in the conversation.
+4. Preserve any decisions made and their rationale.
+5. Do NOT include pleasantries, acknowledgments, or filler text.
+6. Use a structured format with clear sections.
+7. Be as concise as possible while retaining all actionable information.
+
+Output format:
+
+<compact_summary>
+## Conversation Summary
+
+### Task Context
+<What the user is working on and their goal>
+
+### Completed Actions
+<What has been done so far, with specific details>
+
+### Current State
+<Where things stand right now>
+
+### Key Details
+<Important technical details, file paths, decisions, preferences>
+
+### Pending Items
+<What still needs to be done, if anything>
+</compact_summary>";
+
+/// Build the compact user prompt.
+///
+/// Includes the messages to compress and an optional custom focus instruction.
+pub(crate) fn compact_user_prompt(
+    messages_text: &str,
+    custom_instruction: Option<&str>,
+) -> String {
+    let mut prompt = String::new();
+    if let Some(instruction) = custom_instruction {
+        prompt.push_str(&format!(
+            "## Additional Focus\n\n{}\n\n",
+            instruction,
+        ));
+    }
+    prompt.push_str(&format!(
+        "## Conversation to Compress\n\n{}",
+        messages_text,
+    ));
+    prompt
+}

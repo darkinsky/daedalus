@@ -11,6 +11,10 @@ mod tests;
 
 pub use factory::SlidingWindowFactory;
 
+// Re-export CompactResult for external use (e.g., by agent layer).
+#[allow(unused_imports)]
+pub use memory::CompactResult;
+
 // Re-exports for test use only. These types are internal implementation details
 // accessed by the integration tests in `tests.rs` via `crate::memory::sliding_window::*`.
 #[cfg(test)]

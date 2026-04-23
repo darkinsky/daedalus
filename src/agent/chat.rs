@@ -567,4 +567,19 @@ impl AgentMode for ChatAgent {
             }
         }
     }
+
+    async fn compact(&mut self, instruction: Option<&str>) -> anyhow::Result<String> {
+        let shared = self.session.shared_memory();
+        let mut mem = shared.lock().await;
+        let result = mem.compact(&*self.llm, instruction).await?;
+
+        // Persist after compact to save the compressed state
+        if let Some(ref workspace) = self.workspace {
+            if let Err(e) = mem.persist(workspace) {
+                tracing::warn!(error = %e, "Failed to persist memory after compact");
+            }
+        }
+
+        Ok(result)
+    }
 }

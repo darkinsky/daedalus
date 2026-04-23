@@ -1,12 +1,28 @@
 use crate::llm::{ChatMessage, LlmApi};
 use crate::memory::dynamic_cheatsheet::DynamicCheatsheet;
 use crate::memory::persistence::{MemoryPersistence, atomic_write};
+use crate::memory::CHARS_PER_TOKEN;
 
 use super::config::SlidingWindowConfig;
 use super::consolidation::ConsolidationResult;
 use super::history::HistoryEntry;
 use super::long_term::LongTermMemory;
 use crate::memory::{Memory, PersistentState};
+
+// ── Compact result ──
+
+/// Statistics from a context compression (compact) operation.
+#[derive(Debug, Clone)]
+pub struct CompactResult {
+    /// Number of messages before compact.
+    pub messages_before: usize,
+    /// Number of messages after compact.
+    pub messages_after: usize,
+    /// Estimated token count before compact.
+    pub estimated_tokens_before: usize,
+    /// Estimated token count after compact.
+    pub estimated_tokens_after: usize,
+}
 
 // ── Session state serialization ──
 
@@ -287,6 +303,229 @@ impl SlidingWindowMemory {
         self.persistent.history_log.push(result.history_entry);
         self.messages.clear();
         self.consolidation_cursor = 0;
+    }
+
+    // ── Context Compression (Compact) ──
+
+    /// Estimate the total token count for the messages that would be sent to the LLM.
+    ///
+    /// Uses a simple chars-per-token heuristic (shared `CHARS_PER_TOKEN` constant).
+    /// This is intentionally approximate — the goal is to detect when we're
+    /// approaching the context budget, not to be exact.
+    ///
+    /// The system prompt is counted separately from conversation messages
+    /// so that callers (like `should_compact`) can reason about which part
+    /// of the context is growing.
+    pub fn estimate_token_count(&self) -> usize {
+        let (system_tokens, message_tokens) = self.estimate_token_breakdown();
+        system_tokens + message_tokens
+    }
+
+    /// Estimate token counts broken down by system prompt vs conversation messages.
+    ///
+    /// Returns `(system_prompt_tokens, conversation_message_tokens)`.
+    /// The system prompt portion is largely cacheable (especially the static prefix),
+    /// so callers can use this to make cache-aware decisions about when to compact.
+    fn estimate_token_breakdown(&self) -> (usize, usize) {
+        let system_prompt = self.effective_system_prompt();
+        let window = self.windowed_messages();
+
+        let system_chars: usize = system_prompt.chars().count();
+        let message_chars: usize = window.iter().map(|m| m.content.chars().count()).sum();
+
+        (system_chars / CHARS_PER_TOKEN, message_chars / CHARS_PER_TOKEN)
+    }
+
+    /// Check whether auto-compact should be triggered based on token budget.
+    ///
+    /// Uses a cache-aware heuristic: the system prompt is largely served from
+    /// prompt cache (especially the static prefix before the cache boundary),
+    /// so we discount it by 75% when estimating effective context usage.
+    /// This prevents premature auto-compact when the system prompt is large
+    /// but mostly cached.
+    ///
+    /// Returns `true` when the cache-adjusted estimated token count exceeds
+    /// `compact_threshold_ratio * context_budget`.
+    pub fn should_compact(&self) -> bool {
+        let threshold = (self.config.context_budget as f64
+            * self.config.compact_threshold_ratio) as usize;
+
+        let (system_tokens, message_tokens) = self.estimate_token_breakdown();
+
+        // Discount system prompt tokens by 75% to account for prompt cache.
+        // The static prefix (identity, tools, rules) is almost always cached;
+        // only the dynamic suffix (LTM, cheatsheet) changes occasionally.
+        // This prevents unnecessary compact when the system prompt is large
+        // but effectively "free" due to caching.
+        let cache_adjusted = system_tokens / 4 + message_tokens;
+
+        cache_adjusted > threshold
+    }
+
+    /// Run context compression (compact).
+    ///
+    /// Compresses the conversation history into a summary, preserving the
+    /// most recent `compact_preserve_recent` messages verbatim. The summary
+    /// replaces all older messages, dramatically reducing context size.
+    ///
+    /// ## Algorithm
+    ///
+    /// 1. Split messages into two groups:
+    ///    - **To compress**: all messages except the most recent N
+    ///    - **To preserve**: the most recent N messages (kept verbatim)
+    /// 2. Call the LLM to generate a structured summary of the compressed messages
+    /// 3. Replace the message list with: `[compact_summary] + [preserved messages]`
+    /// 4. Reset the consolidation cursor (compressed messages are gone)
+    ///
+    /// ## Arguments
+    /// * `llm` — The LLM provider for generating the summary.
+    /// * `custom_instruction` — Optional user instruction to focus the summary
+    ///   (e.g., from `/compact focus on the auth refactoring`).
+    ///
+    /// ## Returns
+    /// * `Ok(CompactResult)` with statistics on success.
+    /// * `Err` if the LLM call fails (the original messages are NOT modified).
+    pub async fn compact(
+        &mut self,
+        llm: &dyn LlmApi,
+        custom_instruction: Option<&str>,
+    ) -> anyhow::Result<CompactResult> {
+        let total_messages = self.messages.len();
+        let preserve_count = self.config.compact_preserve_recent.min(total_messages);
+        let compress_count = total_messages - preserve_count;
+
+        if compress_count == 0 {
+            return Ok(CompactResult {
+                messages_before: total_messages,
+                messages_after: total_messages,
+                estimated_tokens_before: self.estimate_token_count(),
+                estimated_tokens_after: self.estimate_token_count(),
+            });
+        }
+
+        let estimated_tokens_before = self.estimate_token_count();
+
+        // Build text representation of messages to compress
+        let messages_to_compress = &self.messages[..compress_count];
+        let messages_text = messages_to_compress
+            .iter()
+            .map(|msg| format!("[{}]: {}", msg.role, msg.content))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        let user_prompt = super::prompts::compact_user_prompt(
+            &messages_text,
+            custom_instruction,
+        );
+
+        let llm_messages = vec![
+            ChatMessage::system(super::prompts::COMPACT_SYSTEM_PROMPT),
+            ChatMessage::user(user_prompt),
+        ];
+
+        let response = llm.chat(&llm_messages, None).await?;
+
+        // Extract the summary from the response
+        let summary = Self::parse_compact_response(&response.content);
+
+        // Build the new message list:
+        // 1. A single user message containing the compact summary (context injection)
+        // 2. The preserved recent messages (verbatim)
+        //
+        // We use `user` role (not `assistant`) for the summary because:
+        // - It avoids consecutive assistant messages if the first preserved
+        //   message is also assistant (some APIs reject this).
+        // - Semantically, the summary is injected context, not a model response.
+        // - It ensures the conversation flow remains valid: system → user → ...
+        let preserved_messages: Vec<ChatMessage> = self.messages[compress_count..].to_vec();
+
+        self.messages.clear();
+        self.messages.push(ChatMessage::user(format!(
+            "[Previous conversation context — {} messages compressed into summary]\n\n{}",
+            compress_count, summary,
+        )));
+        self.messages.extend(preserved_messages);
+
+        // Reset consolidation cursor: all old messages are gone,
+        // the compact summary message is already "consolidated" in spirit.
+        self.consolidation_cursor = 1; // skip the summary message
+
+        let estimated_tokens_after = self.estimate_token_count();
+
+        tracing::info!(
+            messages_before = total_messages,
+            messages_after = self.messages.len(),
+            tokens_before = estimated_tokens_before,
+            tokens_after = estimated_tokens_after,
+            compressed = compress_count,
+            preserved = preserve_count,
+            "Context compact complete"
+        );
+
+        Ok(CompactResult {
+            messages_before: total_messages,
+            messages_after: self.messages.len(),
+            estimated_tokens_before,
+            estimated_tokens_after,
+        })
+    }
+
+    /// Parse the compact LLM response, extracting the summary content.
+    ///
+    /// Tries to extract content between `<compact_summary>` tags.
+    /// Falls back to using the entire response if tags are not found.
+    fn parse_compact_response(response: &str) -> String {
+        let response = response.trim();
+
+        // Try to extract content between <compact_summary> tags
+        if let Some(start) = response.find("<compact_summary>") {
+            let content_start = start + "<compact_summary>".len();
+            if let Some(end) = response[content_start..].find("</compact_summary>") {
+                return response[content_start..content_start + end].trim().to_string();
+            }
+        }
+
+        // Fallback: use the entire response
+        response.to_string()
+    }
+
+    /// Run auto-compact if the context window is approaching the budget.
+    ///
+    /// This is called by the memory middleware after each turn. It checks
+    /// `should_compact()` and, if true, runs `compact()` with no custom
+    /// instruction.
+    ///
+    /// Compact failures are logged but never propagated — they must not
+    /// disrupt the main conversation flow.
+    pub async fn maybe_compact(&mut self, llm: &dyn LlmApi) {
+        if !self.should_compact() {
+            return;
+        }
+
+        tracing::info!(
+            estimated_tokens = self.estimate_token_count(),
+            budget = self.config.context_budget,
+            threshold_ratio = self.config.compact_threshold_ratio,
+            "Auto-compact triggered: context approaching budget"
+        );
+
+        match self.compact(llm, None).await {
+            Ok(result) => {
+                tracing::info!(
+                    messages_before = result.messages_before,
+                    messages_after = result.messages_after,
+                    tokens_before = result.estimated_tokens_before,
+                    tokens_after = result.estimated_tokens_after,
+                    "Auto-compact succeeded"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Auto-compact failed, continuing without compression"
+                );
+            }
+        }
     }
 
     /// Run automatic consolidation if the threshold is reached.
@@ -613,6 +852,36 @@ impl Memory for SlidingWindowMemory {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             self.maybe_consolidate(llm).await;
+        })
+    }
+
+    fn should_compact(&self) -> bool {
+        self.should_compact()
+    }
+
+    fn maybe_compact<'a>(
+        &'a mut self,
+        llm: &'a dyn LlmApi,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            self.maybe_compact(llm).await;
+        })
+    }
+
+    fn compact<'a>(
+        &'a mut self,
+        llm: &'a dyn LlmApi,
+        instruction: Option<&'a str>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send + 'a>> {
+        Box::pin(async move {
+            let result = self.compact(llm, instruction).await?;
+            Ok(format!(
+                "Compact complete: {} → {} messages, ~{} → ~{} tokens",
+                result.messages_before,
+                result.messages_after,
+                result.estimated_tokens_before,
+                result.estimated_tokens_after,
+            ))
         })
     }
 }

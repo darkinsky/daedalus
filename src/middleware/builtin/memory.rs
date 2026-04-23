@@ -86,7 +86,27 @@ impl TurnMiddleware for MemoryTurnMiddleware {
             // Trigger automatic consolidation if threshold is reached.
             // This extracts key facts into long-term memory and appends
             // a summary to the history log.
+            //
+            // Note: consolidation updates long-term memory which changes the
+            // system prompt's dynamic suffix, invalidating prompt cache.
+            // We track whether it ran so we can skip compact in the same turn
+            // to avoid a double cache invalidation.
+            let consolidation_ran = mem.should_consolidate();
             mem.maybe_consolidate(&*self.llm).await;
+
+            // Trigger automatic context compression if the context window
+            // is approaching the token budget. This compresses older messages
+            // into a summary to prevent context overflow.
+            //
+            // Skip if consolidation just ran in this turn: consolidation already
+            // changed the system prompt (LTM update), and compact would change
+            // the message list too — causing a double cache invalidation.
+            // Deferring compact to the next turn lets the new system prompt
+            // establish a cache entry first, so compact only invalidates the
+            // message-level cache (not both layers simultaneously).
+            if !consolidation_ran {
+                mem.maybe_compact(&*self.llm).await;
+            }
         }
 
         Ok(response)

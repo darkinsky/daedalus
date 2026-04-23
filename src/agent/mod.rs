@@ -139,4 +139,15 @@ pub trait AgentMode: AgentMetadata + Send + Sync {
     /// conversation history survives process crashes. The default
     /// implementation does nothing (for modes without persistence).
     async fn persist_memory(&self) {}
+
+    /// Run context compression (compact) on the conversation history.
+    ///
+    /// Compresses older messages into a summary while preserving recent
+    /// messages verbatim. Returns a human-readable status message.
+    ///
+    /// # Arguments
+    /// * `instruction` — Optional user instruction to focus the summary.
+    async fn compact(&mut self, _instruction: Option<&str>) -> anyhow::Result<String> {
+        Ok("Compact is not supported in this mode.".to_string())
+    }
 }

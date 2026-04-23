@@ -263,16 +263,17 @@ mod tests {
             max_messages: None,
             consolidation_threshold: 4,
             retention_window: 2,
+            ..Default::default()
         };
         let mut memory = SlidingWindowMemory::new("System", config);
 
         memory.add_user_message("Q1");
         memory.add_assistant_message("A1");
-        assert!(!memory.should_consolidate());
+        assert!(!Memory::should_consolidate(&memory));
 
         memory.add_user_message("Q2");
         memory.add_assistant_message("A2");
-        assert!(memory.should_consolidate());
+        assert!(Memory::should_consolidate(&memory));
     }
 
     #[test]
@@ -281,6 +282,7 @@ mod tests {
             max_messages: None,
             consolidation_threshold: 4,
             retention_window: 2,
+            ..Default::default()
         };
         let mut memory = SlidingWindowMemory::new("System", config);
 
@@ -301,6 +303,7 @@ mod tests {
             max_messages: None,
             consolidation_threshold: 100,
             retention_window: 10,
+            ..Default::default()
         };
         let mut memory = SlidingWindowMemory::new("System", config);
 
@@ -317,6 +320,7 @@ mod tests {
             max_messages: None,
             consolidation_threshold: 4,
             retention_window: 2,
+            ..Default::default()
         };
         let mut memory = SlidingWindowMemory::new("System", config);
 
@@ -440,6 +444,7 @@ mod tests {
             max_messages: Some(4),
             consolidation_threshold: 6,
             retention_window: 2,
+            ..Default::default()
         };
         let mut memory = SlidingWindowMemory::new("System", config);
 

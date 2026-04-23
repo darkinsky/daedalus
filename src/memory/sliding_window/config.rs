@@ -13,6 +13,22 @@ pub struct SlidingWindowConfig {
     /// Number of recent messages to retain (not consolidate) when consolidation
     /// runs. This is the "retention window" — these messages stay as-is.
     pub retention_window: usize,
+
+    // ── Context compression (compact) ──
+
+    /// Estimated token budget for the context window.
+    /// When the estimated token count of `build_messages()` exceeds
+    /// `compact_threshold_ratio * context_budget`, auto-compact triggers.
+    /// Default: 128_000 (128k context window).
+    pub context_budget: usize,
+    /// Ratio of context budget usage that triggers auto-compact.
+    /// E.g., 0.8 means compact when 80% of the budget is used.
+    /// Default: 0.8.
+    pub compact_threshold_ratio: f64,
+    /// Number of recent messages to preserve verbatim during compact.
+    /// These messages are NOT summarized — they stay as-is so the LLM
+    /// retains immediate context. Default: 10.
+    pub compact_preserve_recent: usize,
 }
 
 impl Default for SlidingWindowConfig {
@@ -21,6 +37,9 @@ impl Default for SlidingWindowConfig {
             max_messages: None,
             consolidation_threshold: 100,
             retention_window: 50,
+            context_budget: 128_000,
+            compact_threshold_ratio: 0.8,
+            compact_preserve_recent: 10,
         }
     }
 }
@@ -41,6 +60,9 @@ impl SlidingWindowConfig {
             max_messages: None,
             consolidation_threshold: usize::MAX,
             retention_window: 0,
+            context_budget: 128_000,
+            compact_threshold_ratio: 1.0, // never auto-compact
+            compact_preserve_recent: 10,
         }
     }
 }

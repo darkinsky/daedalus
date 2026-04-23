@@ -30,6 +30,11 @@ fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &SharedSess
             }
             render::new_session(agent);
         }
+        Command::Compact(_instruction) => {
+            // Compact is async — return false and let the caller handle it.
+            // This is a marker; actual handling is in the REPL loop.
+            // (We can't call async from here, so we handle it specially.)
+        }
         Command::Clear => {
             print!("\x1B[2J\x1B[1;1H");
             std::io::Write::flush(&mut std::io::stdout())?;
@@ -301,6 +306,33 @@ async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &SharedSessio
     }
 }
 
+/// Handle the `/compact` command — compress conversation history.
+async fn handle_compact(agent: &mut dyn AgentMode, instruction: Option<&str>) {
+    let spinner = Arc::new(render::spinner());
+    spinner.set_message("Compressing context\u{2026}");
+
+    match agent.compact(instruction).await {
+        Ok(message) => {
+            spinner.finish_and_clear();
+            println!(
+                "  {} {}",
+                "✓".with(Color::Green).attribute(Attribute::Bold),
+                message.with(Color::DarkGrey),
+            );
+            println!();
+        }
+        Err(e) => {
+            spinner.finish_and_clear();
+            println!(
+                "  {} Compact failed: {}",
+                "✗".with(Color::Red).attribute(Attribute::Bold),
+                e,
+            );
+            println!();
+        }
+    }
+}
+
 /// Run an interactive REPL loop in Claude Code style.
 pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
     // Use the agent's shared session cost (populated by CostTurnMiddleware)
@@ -338,6 +370,11 @@ pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
 
                 // ── Handle slash commands ──
                 if let Some(cmd) = commands::parse(input) {
+                    // /compact needs async handling — intercept it before handle_command
+                    if let Command::Compact(instruction) = cmd {
+                        handle_compact(agent, instruction).await;
+                        continue;
+                    }
                     if handle_command(cmd, agent, &cost)? {
                         break;
                     }
