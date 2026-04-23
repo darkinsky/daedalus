@@ -224,8 +224,9 @@ pub async fn run_tool_loop(
                         });
                     }
                     StreamChunk::ReasoningDelta(text) => {
-                        if !has_emitted_reasoning_header {
+        if !has_emitted_reasoning_header {
                             has_emitted_reasoning_header = true;
+                            // Reserved for a future "thinking…" header event.
                         }
                         emit(ctx.on_tool_event, ToolEvent::StreamReasoning {
                             text: text.clone(),

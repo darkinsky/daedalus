@@ -29,7 +29,8 @@ pub struct McpClient {
     /// The child process running the MCP server.
     child: Child,
     /// Writer to the child's stdin (wrapped in Mutex for safe async access).
-    stdin: Mutex<tokio::process::ChildStdin>,
+    /// Set to `None` after shutdown to signal that the pipe has been closed.
+    stdin: Mutex<Option<tokio::process::ChildStdin>>,
     /// Reader from the child's stdout.
     stdout: Mutex<BufReader<tokio::process::ChildStdout>>,
     /// Auto-incrementing JSON-RPC request ID counter.
@@ -87,7 +88,7 @@ impl McpClient {
         let mut client = Self {
             server_name,
             child,
-            stdin: Mutex::new(stdin),
+            stdin: Mutex::new(Some(stdin)),
             stdout: Mutex::new(BufReader::new(stdout)),
             request_id_counter: AtomicU64::new(1),
             tools: Vec::new(),
@@ -154,6 +155,8 @@ impl McpClient {
         // Write request + newline to stdin
         {
             let mut stdin = self.stdin.lock().await;
+            let stdin = stdin.as_mut()
+                .context("MCP server stdin is closed (shutdown already called?)")?;
             stdin.write_all(request_json.as_bytes()).await
                 .context("Failed to write to MCP server stdin")?;
             stdin.write_all(b"\n").await
@@ -212,9 +215,11 @@ impl McpClient {
             .context("Failed to serialize JSON-RPC notification")?;
 
         let mut stdin = self.stdin.lock().await;
-        stdin.write_all(json.as_bytes()).await?;
-        stdin.write_all(b"\n").await?;
-        stdin.flush().await?;
+        if let Some(ref mut s) = *stdin {
+            s.write_all(json.as_bytes()).await?;
+            s.write_all(b"\n").await?;
+            s.flush().await?;
+        }
 
         Ok(())
     }
@@ -350,10 +355,16 @@ impl McpClient {
     pub async fn shutdown(&mut self) -> Result<()> {
         tracing::info!(server = %self.server_name, "Shutting down MCP server");
 
-        // Close stdin to signal the server to exit gracefully
-        drop(self.stdin.lock().await);
+        // Take and drop the ChildStdin to close the write end of the pipe,
+        // sending EOF to the server process and signalling it to exit.
+        // Simply dropping the MutexGuard only releases the lock — we must
+        // move the ChildStdin out via `take()` so it is actually dropped.
+        {
+            let mut stdin_guard = self.stdin.lock().await;
+            let _ = stdin_guard.take(); // ChildStdin dropped here → pipe closed
+        }
 
-        // Give the server a moment to exit, then force-kill if needed
+        // Give the server a moment to exit gracefully, then force-kill if needed.
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             self.child.wait(),
