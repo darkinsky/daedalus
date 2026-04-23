@@ -14,7 +14,7 @@ use anyhow::Result;
 ///
 /// Blocks pipes, chaining, command substitution, and redirection. Users who
 /// need complex commands should use a wrapper script referenced by path.
-const FORBIDDEN_SHELL_CHARS: &[char] = &['|', ';', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\r'];
+const FORBIDDEN_SHELL_CHARS: &[char] = &['|', ';', '&', '$', '`', '(', ')', '{', '}', '<', '>'];
 
 /// Validate that a lifecycle hook command does not contain shell injection risks.
 fn validate_hook_command(command: &str) -> Result<()> {

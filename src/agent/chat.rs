@@ -538,40 +538,23 @@ impl AgentMode for ChatAgent {
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        // Persist memory and session ID, but do NOT early-return on failure.
-        // Router shutdown and tracing flush must always run, regardless of
-        // whether persist succeeds, to avoid MCP child process leaks.
-        let mut persist_error: Option<anyhow::Error> = None;
-
         if let Some(ref workspace) = self.workspace {
             tracing::info!("Persisting memory to workspace...");
             let shared = self.session.shared_memory();
             let mem = shared.lock().await;
-            match mem.persist(workspace) {
-                Ok(()) => {
-                    if let Err(e) = std::fs::write(workspace.last_session_id_path(), &self.session.id) {
-                        tracing::warn!(error = %e, "Failed to save last session ID");
-                    }
-                    tracing::info!(session_id = %self.session.id, "Memory persisted successfully");
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to persist memory to workspace");
-                    persist_error = Some(e);
-                }
+            if let Err(e) = mem.persist(workspace) {
+                tracing::error!(error = %e, "Failed to persist memory to workspace");
+                return Err(e);
             }
+            if let Err(e) = std::fs::write(workspace.last_session_id_path(), &self.session.id) {
+                tracing::warn!(error = %e, "Failed to save last session ID");
+            }
+            tracing::info!(session_id = %self.session.id, "Memory persisted successfully");
         }
-
-        // Always run cleanup, even if persist failed.
         self.router_mut_exclusive().shutdown().await;
         if let Some(ref mgr) = self.tracing_manager {
             mgr.flush().await;
         }
-
-        // Propagate the persist error only after all cleanup is done.
-        if let Some(e) = persist_error {
-            return Err(e);
-        }
-
         Ok(())
     }
 

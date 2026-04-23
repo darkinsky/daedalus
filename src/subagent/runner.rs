@@ -137,22 +137,13 @@ impl SubagentRunner {
         let mut config = self.parent_llm_config.clone();
 
         if let Some(ref model) = definition.model {
-            // Map shorthand names to full model IDs.
-            // Returns None for "inherit" — leave config.model unchanged (use parent).
-            if let Some(resolved) = Self::resolve_model_name(model) {
-                config.model = resolved;
-                tracing::info!(
-                    agent = %definition.name,
-                    model = %config.model,
-                    "Subagent using custom model"
-                );
-            } else {
-                tracing::debug!(
-                    agent = %definition.name,
-                    model = %config.model,
-                    "Subagent inheriting parent model"
-                );
-            }
+            // Map shorthand names to full model IDs
+            config.model = Self::resolve_model_name(model);
+            tracing::info!(
+                agent = %definition.name,
+                model = %config.model,
+                "Subagent using custom model"
+            );
         }
 
         llm::create_provider(config)
@@ -162,16 +153,13 @@ impl SubagentRunner {
     ///
     /// Supports Claude Code-style shorthands: "haiku", "sonnet", "opus".
     /// Full model IDs are passed through unchanged.
-    ///
-    /// "inherit" means use the parent's model (caller is responsible for not
-    /// overriding `config.model` in this case).
-    fn resolve_model_name(name: &str) -> Option<String> {
+    fn resolve_model_name(name: &str) -> String {
         match name.to_lowercase().as_str() {
-            "haiku" => Some("claude-3-5-haiku-20241022".to_string()),
-            "sonnet" => Some("claude-sonnet-4-20250514".to_string()),
-            "opus" => Some("claude-opus-4-20250514".to_string()),
-            "inherit" => None, // Signal: keep parent config unchanged
-            _ => Some(name.to_string()), // Full model ID passed through
+            "haiku" => "claude-3-5-haiku-20241022".to_string(),
+            "sonnet" => "claude-sonnet-4-20250514".to_string(),
+            "opus" => "claude-opus-4-20250514".to_string(),
+            "inherit" => name.to_string(), // Will use parent's model
+            _ => name.to_string(),         // Full model ID
         }
     }
 

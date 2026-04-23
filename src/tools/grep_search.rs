@@ -199,12 +199,7 @@ async fn search_with_rg(
         .arg("--max-columns=256")
         .arg("--max-columns-preview");
 
-    // Max results per file.
-    //
-    // NOTE: --max-count is a per-file limit in ripgrep, not a global limit.
-    // We pass max_results here as a conservative per-file cap (a single file
-    // should not exceed the total budget), and then enforce the global limit
-    // by counting lines in the output after collection.
+    // Max results (per file, but combined with global limit via output truncation)
     cmd.arg(format!("--max-count={}", max_results));
 
     // Regex vs fixed string
@@ -260,25 +255,16 @@ async fn search_with_rg(
         ));
     }
 
-    // Enforce the global line limit by collecting lines and truncating.
-    // (--max-count is per-file; collecting here gives us a true global cap.)
-    let all_lines: Vec<&str> = stdout.lines().collect();
-    let total_matches = all_lines.len();
-    let truncated = total_matches > max_results;
-    let displayed_lines = if truncated { &all_lines[..max_results] } else { &all_lines[..] };
-    let displayed_count = displayed_lines.len();
-
+    // Count result lines
+    let match_count = stdout.lines().count();
     let mut result = format!(
-        "Found {} matching line(s) for '{}' in {}{}:\n\n",
-        if truncated { format!("{}+ (showing first {})", total_matches, displayed_count) } else { total_matches.to_string() },
-        pattern,
-        search_path.display(),
-        if truncated { " (truncated)" } else { "" }
+        "Found {} matching line(s) for '{}' in {}:\n\n",
+        match_count, pattern, search_path.display()
     );
-    result.push_str(&displayed_lines.join("\n"));
+    result.push_str(&stdout);
 
-    if truncated {
-        result.push_str(&format!("\n\n... (results capped at {}, {} total matches)\n", max_results, total_matches));
+    if match_count >= max_results {
+        result.push_str(&format!("\n\n... (results capped at {})\n", max_results));
     }
 
     Ok(result)

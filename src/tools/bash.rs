@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use std::path::Path;
 use tokio::process::Command;
 
 use super::BuiltinTool;
@@ -86,11 +87,13 @@ impl BuiltinTool for BashTool {
         let mut cmd = Command::new("/bin/bash");
         cmd.arg("-c").arg(&command_str);
 
-        // Set working directory if specified.
-        // We set it and let Command::spawn return an error if it doesn't exist,
-        // rather than using Path::exists() which has a TOCTOU race condition.
+        // Set working directory if specified
         if let Some(ref dir) = working_dir {
-            cmd.current_dir(dir);
+            let dir_path = Path::new(dir);
+            if !dir_path.exists() {
+                anyhow::bail!("Working directory does not exist: {}", dir);
+            }
+            cmd.current_dir(dir_path);
         }
 
         // Prevent the child from inheriting stdin (avoid blocking on interactive commands)

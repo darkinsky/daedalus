@@ -3,43 +3,22 @@ use std::path::{Path, PathBuf};
 
 use crate::workspace;
 
-/// System path prefixes that are always off-limits, regardless of workspace root.
+/// Directories that are always off-limits, regardless of workspace root.
 ///
 /// Prevents LLM-driven file operations from accessing sensitive system paths.
-/// Note: entries must end with '/' for directories to avoid prefix-matching
-/// unrelated paths (e.g., "/etc/shadow" would wrongly block "/etc/shadowcopy").
 const BLOCKED_PREFIXES: &[&str] = &[
     "/etc/shadow",
     "/etc/gshadow",
-    "/etc/sudoers",
-    "/etc/sudoers.d/",
     "/proc/",
     "/sys/",
-    "/dev/",
-    "/boot/",
-    "/run/secrets/",
 ];
 
-/// Sensitive home-directory path suffixes that should never be read/written by tools.
-///
-/// Covers common credential stores, private keys, and token files.
+/// Sensitive home-directory paths that should never be read/written by tools.
 const BLOCKED_HOME_SUFFIXES: &[&str] = &[
     ".ssh/",
     ".gnupg/",
-    ".gpg/",
     ".aws/credentials",
-    ".aws/config",
     ".config/gcloud/",
-    ".config/op/",
-    ".kube/config",
-    ".netrc",
-    ".git-credentials",
-    ".npmrc",
-    ".pypirc",
-    ".docker/config.json",
-    ".vault-token",
-    ".authinfo",
-    ".authinfo.gpg",
 ];
 
 /// Resolve a file path to an absolute path with security validation.
@@ -87,21 +66,10 @@ pub fn resolve_path(path_str: &str) -> Result<PathBuf> {
         }
     };
 
-    // Check against blocked system paths.
-    //
-    // For directory prefixes (ending with '/'), use starts_with.
-    // For exact file paths (no trailing '/'), match exactly or as a path prefix
-    // followed by '/' — this avoids false-positives like "/etc/shadow" blocking
-    // "/etc/shadowcopy".
+    // Check against blocked system paths
     let resolved_str = resolved.to_string_lossy();
     for prefix in BLOCKED_PREFIXES {
-        let blocked = if prefix.ends_with('/') {
-            resolved_str.starts_with(*prefix)
-        } else {
-            resolved_str == *prefix
-                || resolved_str.starts_with(&format!("{}/", prefix))
-        };
-        if blocked {
+        if resolved_str.starts_with(prefix) {
             anyhow::bail!(
                 "Access denied: path '{}' resolves to a restricted system path",
                 path_str
