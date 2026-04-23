@@ -12,7 +12,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = SlidingWindowConfig::default();
-        assert_eq!(config.max_messages, None);
+        assert_eq!(config.max_messages, Some(100));
         assert_eq!(config.consolidation_threshold, 100);
         assert_eq!(config.retention_window, 50);
     }

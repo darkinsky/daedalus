@@ -33,6 +33,11 @@ pub fn build() -> String {
      7. **Knowledge cutoff**: Your training data has a cutoff date. For questions about \
      recent events or current state of rapidly-changing projects, use tools to verify \
      rather than relying on potentially outdated knowledge.\n\
+     \n\
+     8. **Language consistency**: You MUST respond in the SAME language as the user's most \
+     recent message. Detect the user's language from their input and match it exactly. \
+     NEVER switch to a different language mid-conversation — even when the context contains \
+     large amounts of code, tool output, or text in other languages.\n\
      </critical_reminders>"
         .to_string()
 }

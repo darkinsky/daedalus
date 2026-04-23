@@ -48,6 +48,13 @@ use crate::agent_tracing::{TracingHook, TraceContext};
 
 use super::duplicate_detector::{annotate_responses, DuplicateAction, DuplicateDetector};
 
+/// Number of recent tool rounds whose results are kept verbatim.
+/// Older rounds have their tool responses truncated to save context tokens.
+const FULL_RESULT_RECENT_ROUNDS: usize = 3;
+
+/// Maximum character length for tool responses in older (truncated) rounds.
+const TRUNCATED_RESULT_MAX_CHARS: usize = 500;
+
 // ── Injected abstractions ──
 
 /// Executes a single tool call and identifies its source for observability.
@@ -208,10 +215,15 @@ pub async fn run_tool_loop(
         // returned as a tool result to the lead agent.
         let use_streaming = ctx.on_tool_event.is_some() && ctx.tool_pipeline.is_some();
 
+        // Build a context-efficient view of tool history for the LLM.
+        // Recent rounds keep full results; older rounds are truncated to save tokens.
+        // The original `tool_history` is preserved intact for tracing and memory.
+        let truncated_history = truncate_tool_history(&tool_history);
+
         let response = if use_streaming {
             // Streaming path: emit chunks to CLI in real time
             let mut rx = llm
-                .chat_with_tools_stream(ctx.messages, ctx.tools, &tool_history, None)
+                .chat_with_tools_stream(ctx.messages, ctx.tools, &truncated_history, None)
                 .await?;
             let mut accumulator = StreamAccumulator::default();
             let mut has_emitted_reasoning_header = false;
@@ -243,7 +255,7 @@ pub async fn run_tool_loop(
             accumulator.into_response()
         } else {
             // Non-streaming path (print mode, subagent runner)
-            llm.chat_with_tools(ctx.messages, ctx.tools, &tool_history, None)
+            llm.chat_with_tools(ctx.messages, ctx.tools, &truncated_history, None)
                 .await?
         };
 
@@ -499,6 +511,61 @@ fn emit(callback: Option<&ToolEventCallback>, event: ToolEvent) {
     if let Some(cb) = callback {
         cb(event);
     }
+}
+
+/// Build a context-efficient copy of tool history for the LLM.
+///
+/// In a long tool-calling loop, early rounds accumulate large tool outputs
+/// (file contents, grep results, etc.) that are no longer critical for the
+/// LLM's next decision. Sending all of them verbatim wastes context tokens
+/// and can cause language drift in long conversations.
+///
+/// Strategy: keep the most recent `FULL_RESULT_RECENT_ROUNDS` rounds intact;
+/// truncate tool responses in older rounds to `TRUNCATED_RESULT_MAX_CHARS`.
+/// Tool calls (function name + arguments) are always kept in full — they're
+/// small and provide important structural context.
+fn truncate_tool_history(history: &[ToolRound]) -> Vec<ToolRound> {
+    if history.len() <= FULL_RESULT_RECENT_ROUNDS {
+        return history.to_vec();
+    }
+
+    let cutoff = history.len() - FULL_RESULT_RECENT_ROUNDS;
+    let mut result = Vec::with_capacity(history.len());
+
+    for (i, round) in history.iter().enumerate() {
+        if i < cutoff {
+            // Older round: truncate tool responses
+            let truncated_responses: Vec<ToolResponse> = round.responses.iter().map(|resp| {
+                if resp.content.len() > TRUNCATED_RESULT_MAX_CHARS {
+                    let truncated = crate::tools::truncate_at_char_boundary(
+                        &resp.content,
+                        TRUNCATED_RESULT_MAX_CHARS,
+                    );
+                    ToolResponse {
+                        call_id: resp.call_id.clone(),
+                        content: format!(
+                            "{}...(truncated, {} bytes total)",
+                            truncated,
+                            resp.content.len()
+                        ),
+                        success: resp.success,
+                    }
+                } else {
+                    resp.clone()
+                }
+            }).collect();
+
+            result.push(ToolRound {
+                calls: round.calls.clone(),
+                responses: truncated_responses,
+            });
+        } else {
+            // Recent round: keep verbatim
+            result.push(round.clone());
+        }
+    }
+
+    result
 }
 
 // ── ToolPipeline core adapter ──

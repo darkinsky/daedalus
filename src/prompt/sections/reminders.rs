@@ -30,6 +30,10 @@ pub fn build_reminders_section(has_tools: bool) -> String {
          API endpoints. Only cite sources you are confident exist.{tool_reminders}\n\
          - **Always respond**: Your thinking is internal. You MUST always provide a visible \
          response to the user.\n\
+         - **Language consistency**: You MUST respond in the SAME language as the user's most \
+         recent message. Detect the user's language from their input and match it exactly. \
+         NEVER switch to a different language mid-conversation — even when the context contains \
+         large amounts of code, tool output, or text in other languages.\n\
          </critical_reminders>"
     )
 }

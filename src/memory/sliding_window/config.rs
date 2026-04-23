@@ -34,7 +34,7 @@ pub struct SlidingWindowConfig {
 impl Default for SlidingWindowConfig {
     fn default() -> Self {
         Self {
-            max_messages: None,
+            max_messages: Some(100),
             consolidation_threshold: 100,
             retention_window: 50,
             context_budget: 128_000,
