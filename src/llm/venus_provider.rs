@@ -325,11 +325,17 @@ impl VenusProvider {
             "Venus API request"
         );
 
-        // Log full request body at trace level for deep debugging
-        tracing::trace!(
-            request_body = %body,
-            "Venus API request body (full)"
-        );
+        // Log full request body at trace level for deep debugging.
+        //
+        // NOTE: This may contain sensitive conversation content.
+        // Only enabled when DAEDALUS_TRACE_BODIES=1 is explicitly set,
+        // to prevent accidental exposure via RUST_LOG=trace.
+        if std::env::var("DAEDALUS_TRACE_BODIES").as_deref() == Ok("1") {
+            tracing::trace!(
+                request_body = %body,
+                "Venus API request body (full)"
+            );
+        }
 
         let start = std::time::Instant::now();
         let response = self
@@ -356,11 +362,13 @@ impl VenusProvider {
             "Venus API response received"
         );
 
-        // Log full response body at trace level for deep debugging
-        tracing::trace!(
-            response_body = %response_text,
-            "Venus API response body (full)"
-        );
+        // See note above — only emit full body when DAEDALUS_TRACE_BODIES=1.
+        if std::env::var("DAEDALUS_TRACE_BODIES").as_deref() == Ok("1") {
+            tracing::trace!(
+                response_body = %response_text,
+                "Venus API response body (full)"
+            );
+        }
 
         let response_body: Value = serde_json::from_str(&response_text)
             .map_err(|e| {

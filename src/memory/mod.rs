@@ -29,6 +29,11 @@ use crate::llm::{ChatMessage, LlmApi};
 ///
 /// Shared by memory strategies that render content for system prompt injection
 /// and need to respect a token budget (Playbook and DynamicCheatsheet).
+///
+/// NOTE: ASCII text averages ~4 chars/token. CJK text (Chinese/Japanese/Korean)
+/// averages ~1.5–2 chars/token, so this constant over-estimates available budget
+/// for CJK-heavy content. This is intentionally conservative (under-fills) —
+/// better to leave room than to exceed the context window.
 pub(crate) const CHARS_PER_TOKEN: usize = 4;
 
 /// Truncate rendered text to fit within a token budget, cutting at a line boundary.
