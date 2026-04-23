@@ -159,6 +159,21 @@ pub struct ChatMessage {
     /// Typically set on the system message that contains the static
     /// portion of the prompt (identity, rules, tool definitions).
     pub cache_control: Option<CacheControl>,
+    /// Whether this message is semantically preserved (not compressible).
+    ///
+    /// When `true`, the compact algorithm will skip this message during
+    /// compression, keeping it verbatim in the message list even if it
+    /// falls outside the `compact_preserve_recent` window.
+    ///
+    /// Use cases:
+    /// - User's initial task instruction (the "goal" message)
+    /// - Messages containing critical error information
+    /// - Important decision points
+    /// - Messages explicitly marked by the user or agent
+    ///
+    /// This field is memory-internal metadata and is NOT sent to the LLM
+    /// provider — it only affects the compact algorithm's behavior.
+    pub preserved: bool,
 }
 
 /// The role of a message sender.
@@ -206,15 +221,15 @@ pub fn format_messages_for_log(messages: &[ChatMessage]) -> String {
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::System, content: content.into(), cache_control: None }
+        Self { role: ChatRole::System, content: content.into(), cache_control: None, preserved: false }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::User, content: content.into(), cache_control: None }
+        Self { role: ChatRole::User, content: content.into(), cache_control: None, preserved: false }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::Assistant, content: content.into(), cache_control: None }
+        Self { role: ChatRole::Assistant, content: content.into(), cache_control: None, preserved: false }
     }
 
     /// Create a tool message.
@@ -223,7 +238,7 @@ impl ChatMessage {
     /// distinct message types in conversation memory.
     #[allow(dead_code)]
     pub fn tool(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::Tool, content: content.into(), cache_control: None }
+        Self { role: ChatRole::Tool, content: content.into(), cache_control: None, preserved: false }
     }
 
     /// Set cache control on this message (builder pattern).
@@ -232,6 +247,16 @@ impl ChatMessage {
     /// The provider will use this hint to enable API-level caching.
     pub fn with_cache_control(mut self, cc: CacheControl) -> Self {
         self.cache_control = Some(cc);
+        self
+    }
+
+    /// Mark this message as semantically preserved (builder pattern).
+    ///
+    /// Preserved messages are never compressed by the compact algorithm,
+    /// even if they fall outside the `compact_preserve_recent` window.
+    #[allow(dead_code)]
+    pub fn with_preserved(mut self, preserved: bool) -> Self {
+        self.preserved = preserved;
         self
     }
 }

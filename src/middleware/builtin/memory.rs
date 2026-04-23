@@ -98,14 +98,22 @@ impl TurnMiddleware for MemoryTurnMiddleware {
             // is approaching the token budget. This compresses older messages
             // into a summary to prevent context overflow.
             //
-            // Skip if consolidation just ran in this turn: consolidation already
-            // changed the system prompt (LTM update), and compact would change
-            // the message list too — causing a double cache invalidation.
-            // Deferring compact to the next turn lets the new system prompt
-            // establish a cache entry first, so compact only invalidates the
-            // message-level cache (not both layers simultaneously).
-            if !consolidation_ran {
+            // Multi-level threshold logic:
+            // - Normal/Warning: no compact needed
+            // - High: compact, but skip if consolidation just ran (avoid double cache miss)
+            // - Critical: FORCE compact even if consolidation just ran (context overflow risk)
+            let pressure = mem.context_pressure_level();
+            let should_force = pressure >= crate::memory::ContextPressureLevel::Critical;
+
+            if should_force || !consolidation_ran {
                 mem.maybe_compact(&*self.llm).await;
+
+                if should_force && consolidation_ran {
+                    tracing::warn!(
+                        ?pressure,
+                        "Forced compact despite consolidation in same turn (critical pressure)"
+                    );
+                }
             }
         }
 

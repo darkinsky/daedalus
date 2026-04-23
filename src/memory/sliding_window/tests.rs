@@ -569,4 +569,572 @@ MEMORY:
         assert!(result.history_entry.keywords.is_empty());
         assert_eq!(result.memory_update.section("Important Notes").len(), 1);
     }
+
+    // ── Micro-compact ──
+
+    #[test]
+    fn test_micro_compact_truncates_old_tool_context() {
+        let mut memory = SlidingWindowMemory::unlimited("System");
+
+        // Add some old tool context messages (these should be truncated)
+        let long_tool_context = format!(
+            "[Tool call round 1: read_file({{\"path\":\"/some/very/long/path/to/file.rs\"}}) -> {}]",
+            "x".repeat(1000)
+        );
+        memory.add_assistant_message(&long_tool_context);
+        memory.add_user_message("Q1");
+        memory.add_assistant_message("A1");
+
+        // Add enough recent messages to push the tool context outside the preservation window
+        for i in 2..=6 {
+            memory.add_user_message(&format!("Q{}", i));
+            memory.add_assistant_message(&format!("A{}", i));
+        }
+
+        let messages = memory.build_messages();
+
+        // The first conversation message (index 1) is the old tool context — should be truncated
+        let tool_msg = &messages[1];
+        assert!(
+            tool_msg.content.len() < 500,
+            "Old tool context should be truncated, got {} chars",
+            tool_msg.content.len()
+        );
+        assert!(
+            tool_msg.content.contains("truncated"),
+            "Truncated message should contain 'truncated' marker"
+        );
+        assert!(
+            tool_msg.content.contains("[Tool call round 1: read_file"),
+            "Truncated message should preserve tool name"
+        );
+    }
+
+    #[test]
+    fn test_micro_compact_preserves_recent_tool_context() {
+        let mut memory = SlidingWindowMemory::unlimited("System");
+
+        // Add a few messages first
+        for i in 0..3 {
+            memory.add_user_message(&format!("Q{}", i));
+            memory.add_assistant_message(&format!("A{}", i));
+        }
+
+        // Add a recent tool context message (within preservation window)
+        let long_tool_context = format!(
+            "[Tool call round 1: grep_search({{\"query\":\"test\"}}) -> {}]",
+            "result_line\n".repeat(100)
+        );
+        memory.add_assistant_message(&long_tool_context);
+        memory.add_user_message("Q_last");
+        memory.add_assistant_message("A_last");
+
+        let messages = memory.build_messages();
+
+        // The tool context is within the last 6 messages — should NOT be truncated
+        let tool_msg_idx = messages.len() - 3; // tool_context, Q_last, A_last
+        let tool_msg = &messages[tool_msg_idx];
+        assert!(
+            tool_msg.content.contains(&"result_line\n".repeat(10)),
+            "Recent tool context should be preserved in full"
+        );
+    }
+
+    #[test]
+    fn test_micro_compact_skips_user_messages() {
+        let mut memory = SlidingWindowMemory::unlimited("System");
+
+        // Add a long user message (should never be truncated)
+        let long_user_msg = "x".repeat(1000);
+        memory.add_user_message(&long_user_msg);
+        memory.add_assistant_message("A0");
+
+        // Add enough messages to push it outside the window
+        for i in 1..=6 {
+            memory.add_user_message(&format!("Q{}", i));
+            memory.add_assistant_message(&format!("A{}", i));
+        }
+
+        let messages = memory.build_messages();
+
+        // The old user message (index 1) should NOT be truncated
+        assert_eq!(
+            messages[1].content.len(),
+            1000,
+            "User messages should never be truncated by micro-compact"
+        );
+    }
+
+    #[test]
+    fn test_micro_compact_skips_non_tool_assistant_messages() {
+        let mut memory = SlidingWindowMemory::unlimited("System");
+
+        // Add a long assistant message that is NOT tool context
+        let long_assistant_msg = "Here is a very detailed explanation: ".to_string() + &"x".repeat(1000);
+        memory.add_user_message("Q0");
+        memory.add_assistant_message(&long_assistant_msg);
+
+        // Add enough messages to push it outside the window
+        for i in 1..=6 {
+            memory.add_user_message(&format!("Q{}", i));
+            memory.add_assistant_message(&format!("A{}", i));
+        }
+
+        let messages = memory.build_messages();
+
+        // The old assistant message (index 2) should NOT be truncated (no tool marker)
+        assert!(
+            messages[2].content.len() > 500,
+            "Non-tool assistant messages should not be truncated"
+        );
+    }
+
+    #[test]
+    fn test_micro_compact_no_op_when_few_messages() {
+        let mut memory = SlidingWindowMemory::unlimited("System");
+
+        let long_tool_context = format!(
+            "[Tool call round 1: bash({{\"cmd\":\"ls\"}}) -> {}]",
+            "x".repeat(1000)
+        );
+        memory.add_assistant_message(&long_tool_context);
+        memory.add_user_message("Q1");
+        memory.add_assistant_message("A1");
+
+        let messages = memory.build_messages();
+
+        // Only 4 messages total (system + 3) — below the preservation threshold
+        // so nothing should be truncated
+        assert!(
+            messages[1].content.len() > 500,
+            "With few messages, nothing should be truncated"
+        );
+    }
+
+    // ── CJK-aware token estimation ──
+
+    #[test]
+    fn test_estimate_tokens_ascii() {
+        use crate::memory::estimate_tokens;
+
+        // Pure ASCII: ~4 chars/token
+        let ascii = "hello world, this is a test string for token estimation";
+        let tokens = estimate_tokens(ascii);
+        // 55 chars / 4 = 13 tokens (approximately)
+        assert!(tokens > 10 && tokens < 20, "ASCII tokens: {}", tokens);
+    }
+
+    #[test]
+    fn test_estimate_tokens_cjk() {
+        use crate::memory::estimate_tokens;
+
+        // Pure CJK: ~1.5 chars/token → 10 chars ≈ 6-7 tokens
+        let cjk = "你好世界这是测试字符串";
+        let tokens = estimate_tokens(cjk);
+        assert!(tokens >= 6 && tokens <= 10, "CJK tokens: {}", tokens);
+    }
+
+    #[test]
+    fn test_estimate_tokens_mixed() {
+        use crate::memory::estimate_tokens;
+
+        // Mixed: "Hello 你好 World 世界" — 12 ASCII chars + 4 CJK chars
+        let mixed = "Hello 你好 World 世界";
+        let tokens = estimate_tokens(mixed);
+        // ASCII: 12/4 = 3, CJK: 4*2/3 ≈ 3 → total ≈ 6
+        assert!(tokens >= 4 && tokens <= 10, "Mixed tokens: {}", tokens);
+    }
+
+    #[test]
+    fn test_estimate_tokens_empty() {
+        use crate::memory::estimate_tokens;
+        assert_eq!(estimate_tokens(""), 0);
+    }
+
+    #[test]
+    fn test_estimate_tokens_cjk_higher_than_ascii_for_same_chars() {
+        use crate::memory::estimate_tokens;
+
+        // Same number of characters, but CJK should produce more tokens
+        let ascii = "abcdefghij"; // 10 chars → 10/4 = 2 tokens
+        let cjk = "你好世界测试字符串十"; // 10 chars → 10*2/3 ≈ 7 tokens
+
+        let ascii_tokens = estimate_tokens(ascii);
+        let cjk_tokens = estimate_tokens(cjk);
+
+        assert!(
+            cjk_tokens > ascii_tokens,
+            "CJK ({}) should produce more tokens than ASCII ({}) for same char count",
+            cjk_tokens,
+            ascii_tokens
+        );
+    }
+
+    // ── Compact circuit breaker ──
+
+    #[test]
+    fn test_should_compact_with_budget() {
+        let config = SlidingWindowConfig {
+            max_messages: None,
+            consolidation_threshold: usize::MAX,
+            retention_window: 0,
+            context_budget: 1000, // very small budget
+            compact_threshold_ratio: 0.5,
+            compact_preserve_recent: 2,
+            ..Default::default()
+        };
+        let mut memory = SlidingWindowMemory::new("System", config);
+
+        // Add enough messages to exceed the budget
+        for i in 0..50 {
+            memory.add_user_message(&format!("Question {} with some extra text to fill tokens", i));
+            memory.add_assistant_message(&format!("Answer {} with some extra text to fill tokens", i));
+        }
+
+        assert!(
+            memory.should_compact(),
+            "Should trigger compact when token count exceeds budget threshold"
+        );
+    }
+
+    // ── Multi-level context pressure ──
+
+    #[test]
+    fn test_context_pressure_level_normal() {
+        use crate::memory::sliding_window::config::ContextPressureLevel;
+
+        let config = SlidingWindowConfig {
+            max_messages: None,
+            consolidation_threshold: usize::MAX,
+            retention_window: 0,
+            context_budget: 100_000,
+            compact_warning_ratio: 0.8,
+            compact_threshold_ratio: 0.93,
+            compact_hard_limit_ratio: 0.97,
+            compact_preserve_recent: 2,
+        };
+        let memory = SlidingWindowMemory::new("System", config);
+
+        // Empty memory should be Normal
+        assert_eq!(memory.context_pressure_level(), ContextPressureLevel::Normal);
+    }
+
+    #[test]
+    fn test_context_pressure_level_warning() {
+        use crate::memory::sliding_window::config::ContextPressureLevel;
+
+        // With budget=100 and warning_ratio=0.3, warning threshold = 30 tokens.
+        // 5 Q&A pairs with ~20 chars each ≈ 5 tokens per message × 10 messages = 50 tokens.
+        // System prompt "System" ≈ 1 token (discounted by 75% → ~0).
+        // cache_adjusted ≈ 50 > 30 → Warning.
+        let config = SlidingWindowConfig {
+            max_messages: None,
+            consolidation_threshold: usize::MAX,
+            retention_window: 0,
+            context_budget: 100, // very small budget
+            compact_warning_ratio: 0.3,  // warning at 30 tokens
+            compact_threshold_ratio: 0.93,
+            compact_hard_limit_ratio: 0.97,
+            compact_preserve_recent: 2,
+        };
+        let mut memory = SlidingWindowMemory::new("System", config);
+
+        // Add messages to exceed warning but stay below threshold
+        for i in 0..5 {
+            memory.add_user_message(&format!("Question {} with text", i));
+            memory.add_assistant_message(&format!("Answer {} with text", i));
+        }
+
+        let level = memory.context_pressure_level();
+        assert!(
+            level >= ContextPressureLevel::Warning,
+            "Expected at least Warning, got {:?} (cache_adjusted_tokens={})",
+            level,
+            memory.cache_adjusted_tokens(),
+        );
+    }
+
+    #[test]
+    fn test_context_pressure_level_high_triggers_compact() {
+        use crate::memory::sliding_window::config::ContextPressureLevel;
+
+        let config = SlidingWindowConfig {
+            max_messages: None,
+            consolidation_threshold: usize::MAX,
+            retention_window: 0,
+            context_budget: 200, // very small budget
+            compact_warning_ratio: 0.3,
+            compact_threshold_ratio: 0.5,
+            compact_hard_limit_ratio: 0.9,
+            compact_preserve_recent: 2,
+        };
+        let mut memory = SlidingWindowMemory::new("System", config);
+
+        // Add enough messages to exceed threshold
+        for i in 0..20 {
+            memory.add_user_message(&format!("Question {} with some extra text to fill tokens", i));
+            memory.add_assistant_message(&format!("Answer {} with some extra text to fill tokens", i));
+        }
+
+        let level = memory.context_pressure_level();
+        assert!(
+            level >= ContextPressureLevel::High,
+            "Expected at least High, got {:?}",
+            level
+        );
+        assert!(memory.should_compact(), "should_compact should return true at High level");
+    }
+
+    #[test]
+    fn test_context_pressure_level_ordering() {
+        use crate::memory::sliding_window::config::ContextPressureLevel;
+
+        // Verify the ordering is correct
+        assert!(ContextPressureLevel::Normal < ContextPressureLevel::Warning);
+        assert!(ContextPressureLevel::Warning < ContextPressureLevel::High);
+        assert!(ContextPressureLevel::High < ContextPressureLevel::Critical);
+    }
+
+    #[test]
+    fn test_default_config_multi_level_thresholds() {
+        let config = SlidingWindowConfig::default();
+        assert_eq!(config.compact_warning_ratio, 0.8);
+        assert_eq!(config.compact_threshold_ratio, 0.93);
+        assert_eq!(config.compact_hard_limit_ratio, 0.97);
+    }
+
+    // ── Compact boundary (incremental compression) ──
+
+    #[test]
+    fn test_compact_boundary_prefix_detection() {
+        // Verify that the compact summary message starts with the expected prefix
+        let summary_msg = format!(
+            "[Previous conversation context \u{2014} 10 messages compressed into summary]\n\nSome summary",
+        );
+        assert!(
+            summary_msg.starts_with("[Previous conversation context \u{2014}"),
+            "Compact summary should start with the boundary prefix"
+        );
+    }
+
+    #[test]
+    fn test_compact_user_prompt_without_previous_summary() {
+        use super::super::prompts::compact_user_prompt;
+
+        let prompt = compact_user_prompt("some messages", None, None);
+        assert!(prompt.contains("## Conversation to Compress"));
+        assert!(prompt.contains("some messages"));
+        assert!(!prompt.contains("Previous Compact Summary"));
+    }
+
+    #[test]
+    fn test_compact_user_prompt_with_previous_summary() {
+        use super::super::prompts::compact_user_prompt;
+
+        let prompt = compact_user_prompt(
+            "new messages",
+            None,
+            Some("old summary content"),
+        );
+        assert!(prompt.contains("## Previous Compact Summary"));
+        assert!(prompt.contains("old summary content"));
+        assert!(prompt.contains("## Conversation to Compress"));
+        assert!(prompt.contains("new messages"));
+    }
+
+    #[test]
+    fn test_compact_user_prompt_with_instruction_and_summary() {
+        use super::super::prompts::compact_user_prompt;
+
+        let prompt = compact_user_prompt(
+            "messages",
+            Some("focus on auth"),
+            Some("old summary"),
+        );
+        assert!(prompt.contains("## Additional Focus"));
+        assert!(prompt.contains("focus on auth"));
+        assert!(prompt.contains("## Previous Compact Summary"));
+        assert!(prompt.contains("old summary"));
+        assert!(prompt.contains("## Conversation to Compress"));
+    }
+
+    // ── Preserved segment (semantic marking) ──
+
+    #[test]
+    fn test_chat_message_preserved_default_false() {
+        use crate::llm::ChatMessage;
+        let msg = ChatMessage::user("Hello");
+        assert!(!msg.preserved, "Messages should not be preserved by default");
+    }
+
+    #[test]
+    fn test_chat_message_with_preserved() {
+        use crate::llm::ChatMessage;
+        let msg = ChatMessage::user("Important task").with_preserved(true);
+        assert!(msg.preserved);
+    }
+
+    #[test]
+    fn test_mark_preserved() {
+        let mut memory = SlidingWindowMemory::unlimited("System");
+        memory.add_user_message("Task instruction");
+        memory.add_assistant_message("Got it");
+        memory.add_user_message("Follow up");
+
+        // Mark the first user message as preserved
+        assert!(memory.mark_preserved(0, true));
+        // Out of bounds should return false
+        assert!(!memory.mark_preserved(100, true));
+    }
+
+    #[test]
+    fn test_auto_mark_preserved_first_user_message() {
+        let mut memory = SlidingWindowMemory::unlimited("System");
+        memory.add_user_message("Build a login page");
+        memory.add_assistant_message("Sure, I'll help");
+        memory.add_user_message("Also add a signup form");
+        memory.add_assistant_message("Done");
+
+        memory.auto_mark_preserved();
+
+        // First user message should be preserved (task instruction)
+        let messages = &memory.messages;
+        assert!(messages[0].preserved, "First user message should be auto-preserved");
+        // Second user message should NOT be preserved (no decision language)
+        assert!(!messages[2].preserved, "Regular follow-up should not be preserved");
+    }
+
+    #[test]
+    fn test_auto_mark_preserved_decision_language() {
+        let mut memory = SlidingWindowMemory::unlimited("System");
+        memory.add_user_message("Help me with the project");
+        memory.add_assistant_message("What would you like?");
+        memory.add_user_message("I want to use React for the frontend");
+        memory.add_assistant_message("Good choice");
+        memory.add_user_message("Please implement the auth module");
+        memory.add_assistant_message("Working on it");
+
+        memory.auto_mark_preserved();
+
+        let messages = &memory.messages;
+        assert!(messages[0].preserved, "First user message should be preserved");
+        assert!(messages[2].preserved, "Decision message ('I want') should be preserved");
+        assert!(messages[4].preserved, "Instruction message ('Please implement') should be preserved");
+    }
+
+    #[test]
+    fn test_auto_mark_preserved_error_messages() {
+        let mut memory = SlidingWindowMemory::unlimited("System");
+        memory.add_user_message("Fix the bug");
+        memory.add_assistant_message("I found a compilation error in main.rs");
+        memory.add_user_message("What's the error?");
+        memory.add_assistant_message("The function signature is correct");
+
+        memory.auto_mark_preserved();
+
+        let messages = &memory.messages;
+        assert!(messages[1].preserved, "Error-containing assistant message should be preserved");
+        assert!(!messages[3].preserved, "Normal assistant message should not be preserved");
+    }
+
+    #[test]
+    fn test_auto_mark_preserved_skips_tool_context() {
+        let mut memory = SlidingWindowMemory::unlimited("System");
+        memory.add_user_message("Check the code");
+        memory.add_assistant_message(
+            "[Tool call round 1: bash({\"cmd\":\"cargo build\"}) -> error: compilation failed]"
+        );
+
+        memory.auto_mark_preserved();
+
+        let messages = &memory.messages;
+        // Tool context messages should NOT be preserved even if they contain "error"
+        assert!(!messages[1].preserved, "Tool context should not be preserved even with error keyword");
+    }
+
+    #[test]
+    fn test_auto_mark_preserved_idempotent() {
+        let mut memory = SlidingWindowMemory::unlimited("System");
+        memory.add_user_message("Build a login page");
+        memory.add_assistant_message("Done");
+
+        // Mark first time
+        memory.auto_mark_preserved();
+        assert!(memory.messages[0].preserved);
+
+        // Mark again — should not change anything
+        memory.auto_mark_preserved();
+        assert!(memory.messages[0].preserved);
+    }
+
+    #[test]
+    fn test_auto_mark_preserved_never_unmarks() {
+        let mut memory = SlidingWindowMemory::unlimited("System");
+        memory.add_user_message("Regular message");
+        memory.add_assistant_message("Response");
+
+        // Manually mark the assistant message as preserved
+        memory.mark_preserved(1, true);
+
+        // auto_mark_preserved should not un-mark it
+        memory.auto_mark_preserved();
+        assert!(memory.messages[1].preserved, "Manually preserved messages should never be un-marked");
+    }
+
+    // ── Partial compact command parsing ──
+
+    #[test]
+    fn test_parse_compact_no_args() {
+        use crate::cli::commands::{parse, Command};
+        if let Some(Command::Compact { instruction, range }) = parse("/compact") {
+            assert!(instruction.is_none());
+            assert!(range.is_none());
+        } else {
+            panic!("Expected Compact command");
+        }
+    }
+
+    #[test]
+    fn test_parse_compact_with_instruction() {
+        use crate::cli::commands::{parse, Command};
+        if let Some(Command::Compact { instruction, range }) = parse("/compact focus on auth") {
+            assert_eq!(instruction, Some("focus on auth"));
+            assert!(range.is_none());
+        } else {
+            panic!("Expected Compact command");
+        }
+    }
+
+    #[test]
+    fn test_parse_compact_before() {
+        use crate::cli::commands::{parse, Command};
+        if let Some(Command::Compact { instruction, range }) = parse("/compact --before 20") {
+            assert!(instruction.is_none());
+            assert_eq!(range, Some((0, 20)));
+        } else {
+            panic!("Expected Compact command with --before");
+        }
+    }
+
+    #[test]
+    fn test_parse_compact_after() {
+        use crate::cli::commands::{parse, Command};
+        if let Some(Command::Compact { instruction, range }) = parse("/compact --after 10") {
+            assert!(instruction.is_none());
+            assert_eq!(range, Some((10, usize::MAX)));
+        } else {
+            panic!("Expected Compact command with --after");
+        }
+    }
+
+    #[test]
+    fn test_parse_compact_range() {
+        use crate::cli::commands::{parse, Command};
+        if let Some(Command::Compact { instruction, range }) = parse("/compact --range 5-15") {
+            assert!(instruction.is_none());
+            assert_eq!(range, Some((5, 15)));
+        } else {
+            panic!("Expected Compact command with --range");
+        }
+    }
 }

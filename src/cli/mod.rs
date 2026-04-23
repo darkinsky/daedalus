@@ -1,5 +1,5 @@
 pub mod cli_args;
-mod commands;
+pub(crate) mod commands;
 mod completer;
 pub(crate) mod cost;
 mod output_format;

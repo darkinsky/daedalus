@@ -599,4 +599,23 @@ impl AgentMode for ChatAgent {
 
         Ok(result)
     }
+
+    async fn compact_range(
+        &mut self,
+        instruction: Option<&str>,
+        range: (usize, usize),
+    ) -> anyhow::Result<String> {
+        let shared = self.session.shared_memory();
+        let mut mem = shared.lock().await;
+        let result = mem.compact_range(&*self.llm, instruction, range).await?;
+
+        // Persist after compact to save the compressed state
+        if let Some(ref workspace) = self.workspace {
+            if let Err(e) = mem.persist(workspace) {
+                tracing::warn!(error = %e, "Failed to persist memory after partial compact");
+            }
+        }
+
+        Ok(result)
+    }
 }

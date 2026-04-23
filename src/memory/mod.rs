@@ -12,6 +12,7 @@ pub mod wiki;
 // convenience even if not all are currently referenced.
 pub use ace::AceFactory;
 pub use sliding_window::SlidingWindowFactory;
+pub use sliding_window::ContextPressureLevel;
 pub use dynamic_cheatsheet::CheatsheetFactory;
 pub use agentic::AgenticFactory;
 pub use mempalace::MemPalaceFactory;
@@ -25,30 +26,77 @@ use crate::llm::{ChatMessage, LlmApi};
 
 // ── Shared parsing utilities ──
 
-/// Approximate characters per token for budget estimation.
+/// Approximate characters per token for ASCII-heavy text.
 ///
-/// Shared by memory strategies that render content for system prompt injection
-/// and need to respect a token budget (Playbook and DynamicCheatsheet).
-///
-/// NOTE: ASCII text averages ~4 chars/token. CJK text (Chinese/Japanese/Korean)
-/// averages ~1.5–2 chars/token, so this constant over-estimates available budget
-/// for CJK-heavy content. This is intentionally conservative (under-fills) —
-/// better to leave room than to exceed the context window.
+/// Retained as a reference constant and for use by code paths that only
+/// deal with ASCII content. For accurate estimation of mixed CJK/ASCII
+/// content, prefer [`estimate_tokens`].
+#[allow(dead_code)]
 pub(crate) const CHARS_PER_TOKEN: usize = 4;
+
+/// Estimate the number of tokens in a text string, accounting for CJK characters.
+///
+/// CJK characters (Chinese, Japanese, Korean) average ~1.5 chars/token with
+/// most modern tokenizers (cl100k_base, o200k_base), while ASCII text averages
+/// ~4 chars/token. This function counts CJK vs non-CJK characters separately
+/// and applies the appropriate ratio to each.
+///
+/// This is intentionally approximate — the goal is to detect when we're
+/// approaching the context budget, not to be exact.
+pub(crate) fn estimate_tokens(text: &str) -> usize {
+    let mut cjk_chars: usize = 0;
+    let mut other_chars: usize = 0;
+
+    for c in text.chars() {
+        if is_cjk(c) {
+            cjk_chars += 1;
+        } else {
+            other_chars += 1;
+        }
+    }
+
+    // CJK: ~1.5 chars/token → multiply by 2/3 to get tokens
+    // ASCII: ~4 chars/token → divide by 4
+    // We use integer arithmetic: cjk_chars * 2 / 3 ≈ cjk_chars / 1.5
+    let cjk_tokens = (cjk_chars * 2 + 2) / 3; // round up
+    let other_tokens = other_chars / 4;
+
+    cjk_tokens + other_tokens
+}
+
+/// Check whether a character is in a CJK Unicode block.
+///
+/// Covers the most common blocks used in Chinese, Japanese, and Korean text.
+fn is_cjk(c: char) -> bool {
+    matches!(c,
+        '\u{4E00}'..='\u{9FFF}'   | // CJK Unified Ideographs
+        '\u{3400}'..='\u{4DBF}'   | // CJK Extension A
+        '\u{F900}'..='\u{FAFF}'   | // CJK Compatibility Ideographs
+        '\u{3040}'..='\u{309F}'   | // Hiragana
+        '\u{30A0}'..='\u{30FF}'   | // Katakana
+        '\u{AC00}'..='\u{D7AF}'   | // Hangul Syllables
+        '\u{1100}'..='\u{11FF}'   | // Hangul Jamo
+        '\u{3130}'..='\u{318F}'     // Hangul Compatibility Jamo
+    )
+}
 
 /// Truncate rendered text to fit within a token budget, cutting at a line boundary.
 ///
-/// If the text fits within `max_tokens * CHARS_PER_TOKEN` characters, it is
-/// returned as-is. Otherwise, it is truncated at the last newline before the
-/// budget limit, and `truncation_suffix` is appended.
+/// If the estimated token count (via [`estimate_tokens`]) is within budget,
+/// the text is returned as-is. Otherwise, it is truncated at the last newline
+/// before the budget limit, and `truncation_suffix` is appended.
 ///
 /// Shared by `Playbook::to_markdown` and `DynamicCheatsheet::to_markdown`.
 pub(crate) fn truncate_to_token_budget(text: String, max_tokens: usize, truncation_suffix: &str) -> String {
-    let max_chars = max_tokens * CHARS_PER_TOKEN;
-    // Use char count (not byte length) for correct multi-byte character handling.
-    if text.chars().count() <= max_chars {
+    // Use the CJK-aware estimator to check if we're within budget.
+    if estimate_tokens(&text) <= max_tokens {
         return text;
     }
+
+    // For truncation, use a conservative char limit.
+    // Worst case is all-CJK (~1.5 chars/token), so max_chars ≈ max_tokens * 1.5.
+    // We use max_tokens * 2 as a safe upper bound for the char scan.
+    let max_chars = max_tokens * 2;
 
     // Truncate at a line boundary to avoid cutting mid-entry.
     let truncated: String = text.chars().take(max_chars).collect();
@@ -367,6 +415,18 @@ pub trait Memory: Send + Sync {
         false
     }
 
+    /// Return the current context pressure level.
+    ///
+    /// Memory strategies that support compact override this to report
+    /// how close the context window is to capacity. The middleware uses
+    /// this to decide whether to override the consolidation/compact
+    /// mutual exclusion (at `Critical` level).
+    ///
+    /// The default implementation returns `Normal`.
+    fn context_pressure_level(&self) -> ContextPressureLevel {
+        ContextPressureLevel::Normal
+    }
+
     /// Run automatic context compression if the context window is approaching the budget.
     ///
     /// Called by the memory middleware after each turn. Memory strategies
@@ -403,6 +463,29 @@ pub trait Memory: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send + 'a>> {
         Box::pin(async {
             Ok("Compact is not supported by this memory strategy.".to_string())
+        })
+    }
+
+    /// Run partial context compression on a specific range of messages.
+    ///
+    /// `range` is `(start_index, end_index)` — inclusive start, exclusive end.
+    /// Messages within the range are compressed; messages outside are kept verbatim.
+    /// Semantically preserved messages within the range are still kept.
+    ///
+    /// Returns a human-readable status message describing what happened.
+    ///
+    /// # Arguments
+    /// * `llm` - The LLM provider for making compact calls.
+    /// * `instruction` - Optional user instruction to focus the summary.
+    /// * `range` - The `(start, end)` range of message indices to compress.
+    fn compact_range<'a>(
+        &'a mut self,
+        _llm: &'a dyn LlmApi,
+        _instruction: Option<&'a str>,
+        _range: (usize, usize),
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send + 'a>> {
+        Box::pin(async {
+            Ok("Partial compact is not supported by this memory strategy.".to_string())
         })
     }
 }

@@ -15,6 +15,9 @@ pub use factory::SlidingWindowFactory;
 #[allow(unused_imports)]
 pub use memory::CompactResult;
 
+// Re-export ContextPressureLevel for use by middleware and agent layers.
+pub use config::ContextPressureLevel;
+
 // Re-exports for test use only. These types are internal implementation details
 // accessed by the integration tests in `tests.rs` via `crate::memory::sliding_window::*`.
 #[cfg(test)]

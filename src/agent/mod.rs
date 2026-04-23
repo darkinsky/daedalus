@@ -150,4 +150,20 @@ pub trait AgentMode: AgentMetadata + Send + Sync {
     async fn compact(&mut self, _instruction: Option<&str>) -> anyhow::Result<String> {
         Ok("Compact is not supported in this mode.".to_string())
     }
+
+    /// Run partial context compression on a specific range of messages.
+    ///
+    /// `range` is `(start_index, end_index)` — inclusive start, exclusive end.
+    /// Messages within the range are compressed; messages outside are kept verbatim.
+    ///
+    /// # Arguments
+    /// * `instruction` — Optional user instruction to focus the summary.
+    /// * `range` — The `(start, end)` range of message indices to compress.
+    async fn compact_range(
+        &mut self,
+        _instruction: Option<&str>,
+        _range: (usize, usize),
+    ) -> anyhow::Result<String> {
+        Ok("Partial compact is not supported in this mode.".to_string())
+    }
 }

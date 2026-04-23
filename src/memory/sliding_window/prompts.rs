@@ -106,16 +106,32 @@ Output format:
 
 /// Build the compact user prompt.
 ///
-/// Includes the messages to compress and an optional custom focus instruction.
+/// Includes the messages to compress, an optional custom focus instruction,
+/// and an optional previous compact summary for incremental compression.
+///
+/// When `previous_summary` is provided, the LLM is instructed to merge
+/// the old summary with the new messages into a single cohesive summary.
+/// This enables O(ΔN) incremental compression instead of O(N) full compression.
 pub(crate) fn compact_user_prompt(
     messages_text: &str,
     custom_instruction: Option<&str>,
+    previous_summary: Option<&str>,
 ) -> String {
     let mut prompt = String::new();
     if let Some(instruction) = custom_instruction {
         prompt.push_str(&format!(
             "## Additional Focus\n\n{}\n\n",
             instruction,
+        ));
+    }
+    if let Some(summary) = previous_summary {
+        prompt.push_str(&format!(
+            "## Previous Compact Summary\n\n\
+             The following is a summary from a previous compression. \
+             Merge it with the new messages below into a single cohesive summary. \
+             Preserve all important details from both the old summary and new messages.\n\n\
+             {}\n\n",
+            summary,
         ));
     }
     prompt.push_str(&format!(

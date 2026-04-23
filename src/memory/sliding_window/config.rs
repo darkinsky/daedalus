@@ -1,3 +1,23 @@
+/// Context pressure level indicating how close the context window is to capacity.
+///
+/// Used by the middleware layer to make decisions about when to compact
+/// and whether to override the consolidation/compact mutual exclusion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ContextPressureLevel {
+    /// Context usage is within normal bounds. No action needed.
+    Normal,
+    /// Context usage exceeds the warning threshold.
+    /// The agent should be aware that compact may trigger soon.
+    Warning,
+    /// Context usage exceeds the auto-compact threshold.
+    /// Auto-compact should be triggered.
+    High,
+    /// Context usage exceeds the hard limit.
+    /// Compact MUST run immediately, even if consolidation just ran
+    /// (overrides the mutual exclusion rule).
+    Critical,
+}
+
 /// Configuration for the sliding window memory with consolidation.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
@@ -21,10 +41,19 @@ pub struct SlidingWindowConfig {
     /// `compact_threshold_ratio * context_budget`, auto-compact triggers.
     /// Default: 128_000 (128k context window).
     pub context_budget: usize,
-    /// Ratio of context budget usage that triggers auto-compact.
-    /// E.g., 0.8 means compact when 80% of the budget is used.
+    /// Ratio of context budget usage that triggers a warning log.
+    /// E.g., 0.8 means warn when 80% of the budget is used.
     /// Default: 0.8.
+    pub compact_warning_ratio: f64,
+    /// Ratio of context budget usage that triggers auto-compact.
+    /// E.g., 0.93 means compact when 93% of the budget is used.
+    /// Default: 0.93.
     pub compact_threshold_ratio: f64,
+    /// Ratio of context budget usage that forces immediate compact,
+    /// overriding the consolidation/compact mutual exclusion.
+    /// E.g., 0.97 means force compact when 97% of the budget is used.
+    /// Default: 0.97.
+    pub compact_hard_limit_ratio: f64,
     /// Number of recent messages to preserve verbatim during compact.
     /// These messages are NOT summarized — they stay as-is so the LLM
     /// retains immediate context. Default: 10.
@@ -38,7 +67,9 @@ impl Default for SlidingWindowConfig {
             consolidation_threshold: 100,
             retention_window: 50,
             context_budget: 128_000,
-            compact_threshold_ratio: 0.8,
+            compact_warning_ratio: 0.8,
+            compact_threshold_ratio: 0.93,
+            compact_hard_limit_ratio: 0.97,
             compact_preserve_recent: 10,
         }
     }
@@ -61,7 +92,9 @@ impl SlidingWindowConfig {
             consolidation_threshold: usize::MAX,
             retention_window: 0,
             context_budget: 128_000,
+            compact_warning_ratio: 1.0,
             compact_threshold_ratio: 1.0, // never auto-compact
+            compact_hard_limit_ratio: 1.0,
             compact_preserve_recent: 10,
         }
     }

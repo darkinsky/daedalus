@@ -30,7 +30,7 @@ fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &SharedSess
             }
             render::new_session(agent);
         }
-        Command::Compact(_instruction) => {
+        Command::Compact { .. } => {
             // Compact is async — return false and let the caller handle it.
             // This is a marker; actual handling is in the REPL loop.
             // (We can't call async from here, so we handle it specially.)
@@ -307,11 +307,22 @@ async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &SharedSessio
 }
 
 /// Handle the `/compact` command — compress conversation history.
-async fn handle_compact(agent: &mut dyn AgentMode, instruction: Option<&str>) {
+async fn handle_compact(agent: &mut dyn AgentMode, instruction: Option<&str>, range: Option<(usize, usize)>) {
     let spinner = Arc::new(render::spinner());
-    spinner.set_message("Compressing context\u{2026}");
+    let msg = if range.is_some() {
+        "Compressing partial context\u{2026}"
+    } else {
+        "Compressing context\u{2026}"
+    };
+    spinner.set_message(msg);
 
-    match agent.compact(instruction).await {
+    let result = if let Some(r) = range {
+        agent.compact_range(instruction, r).await
+    } else {
+        agent.compact(instruction).await
+    };
+
+    match result {
         Ok(message) => {
             spinner.finish_and_clear();
             println!(
@@ -371,8 +382,8 @@ pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
                 // ── Handle slash commands ──
                 if let Some(cmd) = commands::parse(input) {
                     // /compact needs async handling — intercept it before handle_command
-                    if let Command::Compact(instruction) = cmd {
-                        handle_compact(agent, instruction).await;
+                    if let Command::Compact { instruction, range } = cmd {
+                        handle_compact(agent, instruction, range).await;
                         continue;
                     }
                     if handle_command(cmd, agent, &cost)? {
