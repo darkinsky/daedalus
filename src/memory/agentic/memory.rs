@@ -15,23 +15,27 @@ struct AgenticPersistentState {
 ///
 /// This is a **full `Memory` implementation** that manages its own
 /// conversation messages and injects relevant memory context (retrieved
-/// via embedding similarity) into the system prompt.
+/// via graph-expanded agentic search) into the system prompt.
 ///
 /// Best suited for long-term knowledge accumulation across sessions,
 /// where semantic relationships between memories provide value.
 ///
 /// ## How it works
 ///
-/// 1. **After each turn** (`reflect_on_turn`): The assistant's response
-///    is stored as a new memory note, triggering the A-MEM lifecycle
-///    (note construction → link generation → memory evolution). Then,
-///    the user's input is used to pre-retrieve relevant memories for
-///    the *next* turn.
-/// 2. **On `build_messages`**: The pre-cached context is injected into
-///    the system prompt, so the LLM sees relevant past knowledge.
+/// 1. **After each turn** (`reflect_on_turn`):
+///    - The **combined user+assistant interaction** is stored as a new memory
+///      note, triggering the A-MEM lifecycle (note construction → unified
+///      process_memory with linking + selective evolution).
+///    - The user's input is used to pre-retrieve relevant memories for
+///      the *next* turn using `search_agentic()` (graph-expanded retrieval).
+/// 2. **On `build_messages`**: The pre-cached context (with injection
+///    preamble/epilogue) is injected into the system prompt.
 ///
-/// This design avoids calling async code from sync `add_user_message`,
-/// which would require `block_on` and risk deadlocking the tokio runtime.
+/// ## Key differences from the old implementation
+///
+/// - Stores **both user input and assistant response** (not just response)
+/// - Uses **`search_agentic()`** for graph-expanded retrieval (traverses links)
+/// - Context injection includes **preamble** guiding the LLM to use memories
 pub struct AgenticMemory {
     /// The original system prompt (without memory injection).
     base_system_prompt: String,
@@ -40,9 +44,6 @@ pub struct AgenticMemory {
     /// The A-MEM knowledge graph store.
     store: AgenticMemoryStore,
     /// Embedding provider for vector search.
-    ///
-    /// Wrapped in `Arc` because the `AgenticFactory` holds a shared reference
-    /// and distributes clones to each memory instance it creates.
     embedder: Arc<dyn Embedding>,
     /// Cached context from the most recent retrieval (injected into system prompt).
     /// Pre-populated at the end of `reflect_on_turn` for the *next* turn.
@@ -78,6 +79,9 @@ impl AgenticMemory {
     }
 
     /// Build the effective system prompt by injecting retrieved memory context.
+    ///
+    /// The context already includes the preamble/epilogue tags from
+    /// `retrieve_context()`, so we just append it to the base prompt.
     fn effective_system_prompt(&self) -> String {
         match &self.cached_context {
             Some(ctx) => format!("{}\n\n{}", self.base_system_prompt, ctx),
@@ -143,21 +147,35 @@ impl Memory for AgenticMemory {
         llm: &'a dyn LlmApi,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
-            // Step 1: Store the assistant's response as a new memory note.
-            // This triggers the full A-MEM lifecycle:
-            // note construction → link generation → memory evolution.
+            // Step 1: Store the combined interaction as a memory note.
+            //
+            // The paper stores any important information — not just responses.
+            // By combining user input + assistant response, we capture:
+            // - User preferences and constraints (from user_input)
+            // - Factual information and decisions (from assistant_response)
+            let combined_content = format!(
+                "User: {}\n\nAssistant: {}",
+                user_input, assistant_response
+            );
+
+            // Truncate very long responses to avoid oversized memory notes.
+            let content = if combined_content.len() > 4000 {
+                format!("{}...(truncated)", &combined_content[..4000])
+            } else {
+                combined_content
+            };
+
             if let Err(e) = self.store.add_memory(
-                assistant_response, llm, &*self.embedder,
+                &content, llm, &*self.embedder,
             ).await {
                 tracing::warn!(
                     error = %e,
-                    "Failed to add memory note from assistant response"
+                    "Failed to add memory note from conversation turn"
                 );
             }
 
             // Step 2: Pre-retrieve context for the *next* turn.
-            // Using the current user_input as the query gives the best
-            // approximation of what the next query might relate to.
+            // Using search_agentic for graph-expanded retrieval.
             match self.store.retrieve_context(
                 user_input, &*self.embedder, None,
             ).await {

@@ -9,10 +9,7 @@ use crate::llm::LlmApi;
 use crate::memory::persistence::MemoryPersistence;
 
 use super::note::MemoryNote;
-use super::prompts::{
-    evolution_prompt, link_validation_prompt, metadata_extraction_prompt,
-    EVOLUTION_SYSTEM_PROMPT, LINK_VALIDATION_SYSTEM_PROMPT, METADATA_SYSTEM_PROMPT,
-};
+use super::prompts;
 
 /// Default maximum number of candidate notes to retrieve for link generation.
 const DEFAULT_MAX_LINK_CANDIDATES: usize = 5;
@@ -27,9 +24,6 @@ const DEFAULT_RETRIEVAL_LIMIT: usize = 5;
 
 /// Strip a prefix from a string in a case-insensitive manner, returning
 /// the remainder from the *original* (non-lowercased) string.
-///
-/// This avoids the subtle `offset = line.len() - rest.len()` trick that
-/// relies on ASCII case-conversion preserving byte length.
 fn strip_prefix_case_insensitive<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
     if line.len() >= prefix.len()
         && line[..prefix.len()].eq_ignore_ascii_case(prefix)
@@ -53,17 +47,18 @@ fn parse_comma_separated(s: &str) -> Vec<String> {
 /// Agentic Memory Store — the core A-MEM engine.
 ///
 /// Implements the three-phase memory lifecycle from the A-MEM paper
-/// (arxiv:2502.12110):
+/// (arxiv:2502.12110, NeurIPS 2025):
 ///
 /// 1. **Note Construction**: New information → LLM extracts structured
-///    metadata (keywords, tags, context) → embedding model generates vector.
-/// 2. **Link Generation**: Cosine similarity retrieves candidate notes →
-///    LLM analyzes semantic relationships → bidirectional links established.
-/// 3. **Memory Evolution**: Related notes' metadata is updated by the LLM
-///    to reflect higher-order knowledge patterns.
+///    metadata (keywords, tags, category, context) → embedding model generates vector.
+/// 2. **Process Memory** (unified linking + evolution): Cosine similarity
+///    retrieves candidates → single LLM call decides links + whether to evolve
+///    + how to update neighbor metadata.
+/// 3. **Retrieval**: `search_agentic()` combines vector similarity with
+///    graph traversal along `links` for richer context.
 ///
 /// The store maintains an in-memory collection of `MemoryNote`s indexed by
-/// UUID, with embedding vectors for fast similarity search.
+/// UUID, with embedding vectors for similarity search.
 #[allow(dead_code)]
 pub struct AgenticMemoryStore {
     /// All memory notes, indexed by their unique ID.
@@ -89,7 +84,6 @@ impl AgenticMemoryStore {
     }
 
     /// Create a store with custom thresholds.
-    #[allow(dead_code)]
     pub fn with_config(
         similarity_threshold: f32,
         max_link_candidates: usize,
@@ -109,33 +103,31 @@ impl AgenticMemoryStore {
     }
 
     /// Check if the store is empty.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.notes.is_empty()
     }
 
     /// Get a reference to a note by ID.
-    #[allow(dead_code)]
     pub fn get_note(&self, id: &Uuid) -> Option<&MemoryNote> {
         self.notes.get(id)
     }
 
     /// Get all notes as a slice-like iterator.
-    #[allow(dead_code)]
     pub fn all_notes(&self) -> impl Iterator<Item = &MemoryNote> {
         self.notes.values()
     }
 
+    // ══════════════════════════════════════════════════════════════
     // ── Phase 1: Note Construction ──
+    // ══════════════════════════════════════════════════════════════
 
     /// Add a new memory from raw content.
     ///
     /// This is the main entry point for the A-MEM lifecycle:
-    /// 1. LLM extracts keywords, tags, and context from the content.
+    /// 1. LLM extracts keywords, tags, category, and context from the content.
     /// 2. Embedding model generates a vector for the content.
     /// 3. A new `MemoryNote` is created and stored.
-    /// 4. Link generation is performed against existing notes.
-    /// 5. Memory evolution updates related notes' metadata.
+    /// 4. Unified `process_memory` handles linking + selective evolution in one LLM call.
     ///
     /// Returns the ID of the newly created note.
     pub async fn add_memory(
@@ -145,7 +137,7 @@ impl AgenticMemoryStore {
         embedder: &dyn Embedding,
     ) -> Result<Uuid> {
         // Phase 1: Note Construction
-        let (keywords, tags, context) = self
+        let (keywords, tags, category, context) = self
             .extract_metadata(content, llm)
             .await
             .context("Failed to extract metadata for new memory")?;
@@ -155,11 +147,12 @@ impl AgenticMemoryStore {
             .await
             .context("Failed to generate embedding for new memory")?;
 
-        let note = MemoryNote::new(
+        let note = MemoryNote::with_category(
             content.to_string(),
             keywords,
             tags,
             context,
+            category,
             embedding,
         );
         let note_id = note.id;
@@ -168,26 +161,18 @@ impl AgenticMemoryStore {
             note_id = %note_id,
             keywords = ?note.keywords,
             tags = ?note.tags,
+            category = %note.category,
             "Created new memory note"
         );
 
         self.notes.insert(note_id, note);
 
-        // Phase 2: Link Generation
-        if let Err(e) = self.generate_links(note_id, llm).await {
+        // Phase 2+3: Unified process_memory (linking + selective evolution)
+        if let Err(e) = self.process_memory(note_id, llm).await {
             tracing::warn!(
                 note_id = %note_id,
                 error = %e,
-                "Link generation failed, note stored without links"
-            );
-        }
-
-        // Phase 3: Memory Evolution
-        if let Err(e) = self.evolve_related_notes(note_id, llm).await {
-            tracing::warn!(
-                note_id = %note_id,
-                error = %e,
-                "Memory evolution failed, related notes not updated"
+                "process_memory failed, note stored without links/evolution"
             );
         }
 
@@ -196,15 +181,15 @@ impl AgenticMemoryStore {
 
     /// Extract structured metadata from raw content using the LLM.
     ///
-    /// Returns (keywords, tags, context_description).
+    /// Returns (keywords, tags, category, context_description).
     async fn extract_metadata(
         &self,
         content: &str,
         llm: &dyn LlmApi,
-    ) -> Result<(Vec<String>, Vec<String>, String)> {
+    ) -> Result<(Vec<String>, Vec<String>, String, String)> {
         let messages = vec![
-            crate::llm::ChatMessage::system(METADATA_SYSTEM_PROMPT),
-            crate::llm::ChatMessage::user(metadata_extraction_prompt(content)),
+            crate::llm::ChatMessage::system(prompts::METADATA_SYSTEM_PROMPT),
+            crate::llm::ChatMessage::user(prompts::metadata_extraction_prompt(content)),
         ];
 
         let response = llm.chat(&messages, None).await?;
@@ -213,21 +198,22 @@ impl AgenticMemoryStore {
 
     /// Parse the LLM's metadata extraction response.
     ///
-    /// Supports case-insensitive prefix matching and common Markdown
-    /// formatting variants (e.g., `**KEYWORDS:**`, `Keywords:`).
-    fn parse_metadata_response(response: &str) -> Result<(Vec<String>, Vec<String>, String)> {
+    /// Now also extracts CATEGORY field.
+    pub fn parse_metadata_response(response: &str) -> Result<(Vec<String>, Vec<String>, String, String)> {
         let mut keywords = Vec::new();
         let mut tags = Vec::new();
+        let mut category = "uncategorized".to_string();
         let mut context = String::new();
 
         for line in response.lines() {
-            // Strip leading whitespace and common Markdown formatting
             let line = line.trim().trim_start_matches('*').trim_start_matches('#').trim();
 
             if let Some(rest) = strip_prefix_case_insensitive(line, "keywords:") {
                 keywords = parse_comma_separated(rest);
             } else if let Some(rest) = strip_prefix_case_insensitive(line, "tags:") {
                 tags = parse_comma_separated(rest);
+            } else if let Some(rest) = strip_prefix_case_insensitive(line, "category:") {
+                category = rest.trim_start_matches('*').trim().to_lowercase();
             } else if let Some(rest) = strip_prefix_case_insensitive(line, "context:") {
                 context = rest.trim_start_matches('*').trim().to_string();
             }
@@ -240,18 +226,21 @@ impl AgenticMemoryStore {
             );
         }
 
-        Ok((keywords, tags, context))
+        Ok((keywords, tags, category, context))
     }
 
-    // ── Phase 2: Link Generation ──
+    // ══════════════════════════════════════════════════════════════
+    // ── Phase 2+3: Unified Process Memory (Link + Evolve) ──
+    // ══════════════════════════════════════════════════════════════
 
-    /// Find candidate notes by cosine similarity and establish links.
+    /// Unified process_memory — combines linking and selective evolution
+    /// into a single LLM call.
     ///
-    /// 1. Compute cosine similarity between the new note and all existing notes.
-    /// 2. Select top-K candidates above the similarity threshold.
-    /// 3. Ask the LLM to validate which candidates are truly related.
-    /// 4. Establish bidirectional links.
-    async fn generate_links(
+    /// Aligned with the paper's `process_memory()` design:
+    /// 1. Find similar notes by cosine similarity
+    /// 2. Single LLM call decides: which to link + whether to evolve + how
+    /// 3. Apply decisions (create links, update neighbor metadata)
+    async fn process_memory(
         &mut self,
         note_id: Uuid,
         llm: &dyn LlmApi,
@@ -262,15 +251,16 @@ impl AgenticMemoryStore {
             return Ok(());
         }
 
-        // Collect candidate info for the LLM prompt
+        // Build prompt with new note + candidates
         let note_text = self.notes.get(&note_id)
             .map(|n| n.to_prompt_text())
             .unwrap_or_default();
 
-        let candidate_texts: Vec<(Uuid, String)> = candidates
+        let candidate_texts: Vec<(usize, Uuid, String)> = candidates
             .iter()
-            .filter_map(|&(id, _sim)| {
-                self.notes.get(&id).map(|n| (id, n.to_prompt_text()))
+            .enumerate()
+            .filter_map(|(i, &(id, _sim))| {
+                self.notes.get(&id).map(|n| (i + 1, id, n.to_prompt_text()))
             })
             .collect();
 
@@ -278,35 +268,123 @@ impl AgenticMemoryStore {
             return Ok(());
         }
 
-        // Ask LLM to validate links
-        let validated_ids = self
-            .validate_links(&note_text, &candidate_texts, llm)
-            .await?;
+        let candidates_formatted: String = candidate_texts
+            .iter()
+            .map(|(num, id, text)| format!("Candidate {} (ID: {}):\n{}", num, &id.to_string()[..8], text))
+            .collect::<Vec<_>>()
+            .join("\n\n");
 
-        // Establish bidirectional links
-        for linked_id in &validated_ids {
-            if let Some(note) = self.notes.get_mut(&note_id) {
-                note.add_link(*linked_id);
-            }
-            if let Some(linked_note) = self.notes.get_mut(linked_id) {
-                linked_note.add_link(note_id);
+        // Single LLM call for linking + evolution decisions
+        let messages = vec![
+            crate::llm::ChatMessage::system(prompts::PROCESS_MEMORY_SYSTEM_PROMPT),
+            crate::llm::ChatMessage::user(prompts::process_memory_prompt(&note_text, &candidates_formatted)),
+        ];
+
+        let response = llm.chat(&messages, None).await?;
+        let response_text = response.content.trim();
+
+        // Parse the unified response
+        let (linked_nums, should_evolve, evolutions) = Self::parse_process_memory_response(response_text);
+
+        // Apply linking decisions
+        let mut linked_ids = Vec::new();
+        for num in &linked_nums {
+            if let Some(&(_, id, _)) = candidate_texts.iter().find(|(n, _, _)| n == num) {
+                if let Some(note) = self.notes.get_mut(&note_id) {
+                    note.add_link(id);
+                }
+                if let Some(linked_note) = self.notes.get_mut(&id) {
+                    linked_note.add_link(note_id);
+                }
+                linked_ids.push(id);
             }
         }
 
         tracing::debug!(
             note_id = %note_id,
-            links_created = validated_ids.len(),
-            "Link generation complete"
+            links_created = linked_ids.len(),
+            should_evolve = should_evolve,
+            "process_memory: linking complete"
         );
+
+        // Apply selective evolution (only if LLM decided it's needed)
+        if should_evolve {
+            for (candidate_num, new_tags, new_context) in &evolutions {
+                if let Some(&(_, id, _)) = candidate_texts.iter().find(|(n, _, _)| n == candidate_num) {
+                    if linked_ids.contains(&id) {
+                        if let Some(note) = self.notes.get_mut(&id) {
+                            // Keep existing keywords, only update tags + context
+                            let keywords = note.keywords.clone();
+                            note.evolve(keywords, new_tags.clone(), new_context.clone());
+                            tracing::debug!(
+                                note_id = %id,
+                                "Memory note evolved via process_memory"
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(())
     }
 
-    /// Find notes most similar to the given note by cosine similarity.
+    /// Parse the unified process_memory LLM response.
     ///
-    /// Returns a list of (note_id, similarity_score) pairs, sorted by
-    /// descending similarity, limited to `max_link_candidates` entries above
-    /// the `similarity_threshold`.
+    /// Returns (linked_candidate_numbers, should_evolve, evolution_updates).
+    fn parse_process_memory_response(response: &str) -> (Vec<usize>, bool, Vec<(usize, Vec<String>, String)>) {
+        let mut linked_nums: Vec<usize> = Vec::new();
+        let mut should_evolve = false;
+        let mut evolutions: Vec<(usize, Vec<String>, String)> = Vec::new();
+
+        // Temporary state for parsing evolution blocks
+        let mut current_tags: HashMap<usize, Vec<String>> = HashMap::new();
+        let mut current_contexts: HashMap<usize, String> = HashMap::new();
+
+        for line in response.lines() {
+            let line = line.trim();
+            if line.is_empty() { continue; }
+
+            if let Some(rest) = strip_prefix_case_insensitive(line, "link:") {
+                let rest = rest.trim();
+                if !rest.eq_ignore_ascii_case("none") {
+                    linked_nums = rest.split(',')
+                        .filter_map(|s| s.trim().parse::<usize>().ok())
+                        .collect();
+                }
+            } else if let Some(rest) = strip_prefix_case_insensitive(line, "should_evolve:") {
+                should_evolve = rest.trim().eq_ignore_ascii_case("true");
+            } else if let Some(rest) = strip_prefix_case_insensitive(line, "candidate_") {
+                // Parse CANDIDATE_N_TAGS or CANDIDATE_N_CONTEXT
+                if let Some((num_and_field, value)) = rest.split_once(':') {
+                    let parts: Vec<&str> = num_and_field.split('_').collect();
+                    if parts.len() >= 2 {
+                        if let Ok(num) = parts[0].parse::<usize>() {
+                            let field = parts[1..].join("_").to_lowercase();
+                            if field == "tags" {
+                                current_tags.insert(num, parse_comma_separated(value));
+                            } else if field == "context" {
+                                current_contexts.insert(num, value.trim().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Assemble evolution entries
+        for num in &linked_nums {
+            let tags = current_tags.remove(num).unwrap_or_default();
+            let context = current_contexts.remove(num).unwrap_or_default();
+            if !tags.is_empty() || !context.is_empty() {
+                evolutions.push((*num, tags, context));
+            }
+        }
+
+        (linked_nums, should_evolve, evolutions)
+    }
+
+    /// Find notes most similar to the given note by cosine similarity.
     fn find_similar_notes(&self, note_id: Uuid) -> Vec<(Uuid, f32)> {
         let target_embedding = match self.notes.get(&note_id) {
             Some(note) if !note.embedding.is_empty() => &note.embedding,
@@ -330,132 +408,90 @@ impl AgenticMemoryStore {
         similarities
     }
 
-    /// Ask the LLM to validate which candidate notes should be linked.
-    async fn validate_links(
-        &self,
-        note_text: &str,
-        candidates: &[(Uuid, String)],
-        llm: &dyn LlmApi,
-    ) -> Result<Vec<Uuid>> {
-        let candidates_text: String = candidates
-            .iter()
-            .enumerate()
-            .map(|(i, (id, text))| format!("Candidate {}: (ID: {})\n{}", i + 1, &id.to_string()[..8], text))
-            .collect::<Vec<_>>()
-            .join("\n\n");
+    // ══════════════════════════════════════════════════════════════
+    // ── Retrieval: search_agentic (graph-expanded) ──
+    // ══════════════════════════════════════════════════════════════
 
-        let messages = vec![
-            crate::llm::ChatMessage::system(LINK_VALIDATION_SYSTEM_PROMPT),
-            crate::llm::ChatMessage::user(link_validation_prompt(note_text, &candidates_text)),
-        ];
-
-        let response = llm.chat(&messages, None).await?;
-        let response_text = response.content.trim();
-
-        if response_text.eq_ignore_ascii_case("NONE") {
+    /// Agentic search — vector similarity + graph link expansion.
+    ///
+    /// This is the paper's `search_agentic()`:
+    /// 1. Find top-k notes by cosine similarity (direct matches)
+    /// 2. Expand along `links` to include neighbor notes
+    /// 3. Mark each result as `is_neighbor` (true = reached via link)
+    /// 4. Update `retrieval_count` and `last_accessed` on accessed notes
+    ///
+    /// Returns (note_id, similarity_score, is_neighbor) tuples.
+    pub async fn search_agentic(
+        &mut self,
+        query: &str,
+        embedder: &dyn Embedding,
+        limit: Option<usize>,
+    ) -> Result<Vec<(Uuid, f32, bool)>> {
+        if self.notes.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Parse candidate numbers from response
-        let linked_ids: Vec<Uuid> = response_text
-            .split(',')
-            .filter_map(|s| {
-                let num: usize = s.trim().parse().ok()?;
-                if num >= 1 && num <= candidates.len() {
-                    Some(candidates[num - 1].0)
-                } else {
-                    None
-                }
+        let query_embedding = embedder
+            .embed(query)
+            .await
+            .context("Failed to generate query embedding")?;
+
+        let limit = limit.unwrap_or(self.retrieval_limit);
+
+        // Step 1: Direct similarity search
+        let mut direct_results: Vec<(Uuid, f32)> = self
+            .notes
+            .values()
+            .filter(|note| !note.embedding.is_empty())
+            .map(|note| {
+                let sim = cosine_similarity(&query_embedding, &note.embedding);
+                (note.id, sim)
             })
             .collect();
 
-        Ok(linked_ids)
-    }
+        direct_results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        direct_results.truncate(limit);
 
-    // ── Phase 3: Memory Evolution ──
+        // Step 2: Expand along links (add neighbors)
+        let mut seen: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+        let mut results: Vec<(Uuid, f32, bool)> = Vec::new();
 
-    /// Trigger evolution of notes linked to the newly added note.
-    ///
-    /// For each linked note, the LLM re-analyzes its metadata in light of
-    /// the new note, potentially updating keywords, tags, and context to
-    /// reflect higher-order knowledge patterns.
-    async fn evolve_related_notes(
-        &mut self,
-        note_id: Uuid,
-        llm: &dyn LlmApi,
-    ) -> Result<()> {
-        // Collect linked note IDs (clone to avoid borrow issues)
-        let linked_ids: Vec<Uuid> = self
-            .notes
-            .get(&note_id)
-            .map(|n| n.linked_notes.iter().copied().collect())
-            .unwrap_or_default();
-
-        if linked_ids.is_empty() {
-            return Ok(());
+        for (id, score) in &direct_results {
+            seen.insert(*id);
+            results.push((*id, *score, false)); // is_neighbor = false
         }
 
-        let new_note_text = self
-            .notes
-            .get(&note_id)
-            .map(|n| n.to_prompt_text())
-            .unwrap_or_default();
-
-        for linked_id in &linked_ids {
-            let existing_text = match self.notes.get(linked_id) {
-                Some(note) => note.to_prompt_text(),
-                None => continue,
-            };
-
-            match self
-                .evolve_single_note(&existing_text, &new_note_text, llm)
-                .await
-            {
-                Ok((keywords, tags, context)) => {
-                    if let Some(note) = self.notes.get_mut(linked_id) {
-                        note.evolve(keywords, tags, context);
-                        tracing::debug!(
-                            note_id = %linked_id,
-                            "Memory note evolved"
-                        );
+        // Expand neighbors from direct matches
+        for (id, parent_score) in &direct_results {
+            if let Some(note) = self.notes.get(id) {
+                for &neighbor_id in &note.linked_notes {
+                    if !seen.contains(&neighbor_id) {
+                        seen.insert(neighbor_id);
+                        // Neighbor score = parent_score * 0.8 (decay factor)
+                        let neighbor_score = parent_score * 0.8;
+                        results.push((neighbor_id, neighbor_score, true));
                     }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        note_id = %linked_id,
-                        error = %e,
-                        "Failed to evolve note, keeping original metadata"
-                    );
                 }
             }
         }
 
-        Ok(())
+        // Sort by score descending, truncate to limit
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(limit);
+
+        // Step 3: Update access tracking on retrieved notes
+        for (id, _, _) in &results {
+            if let Some(note) = self.notes.get_mut(id) {
+                note.record_access();
+            }
+        }
+
+        Ok(results)
     }
 
-    /// Ask the LLM to produce updated metadata for an existing note,
-    /// given a newly linked note as additional context.
-    async fn evolve_single_note(
-        &self,
-        existing_note_text: &str,
-        new_note_text: &str,
-        llm: &dyn LlmApi,
-    ) -> Result<(Vec<String>, Vec<String>, String)> {
-        let messages = vec![
-            crate::llm::ChatMessage::system(EVOLUTION_SYSTEM_PROMPT),
-            crate::llm::ChatMessage::user(evolution_prompt(existing_note_text, new_note_text)),
-        ];
-
-        let response = llm.chat(&messages, None).await?;
-        Self::parse_metadata_response(&response.content)
-    }
-
-    // ── Context-Aware Retrieval ──
-
-    /// Retrieve the most relevant memory notes for a given query.
+    /// Basic retrieve (cosine similarity only, no graph expansion).
     ///
-    /// Uses embedding cosine similarity to find the top-K most relevant
-    /// notes, then returns them sorted by relevance.
+    /// Kept for backward compatibility and simple use cases.
     pub async fn retrieve(
         &self,
         query: &str,
@@ -489,18 +525,19 @@ impl AgenticMemoryStore {
         Ok(results)
     }
 
-    /// Retrieve relevant memories and format them as context for the LLM.
+    /// Retrieve relevant memories using agentic search and format as context.
     ///
-    /// This is the primary interface for injecting agentic memory into
-    /// conversation context. Returns a Markdown-formatted string of
-    /// relevant memories, or `None` if no relevant memories are found.
+    /// Uses `search_agentic()` (graph-expanded retrieval) and wraps the
+    /// results with injection preamble/epilogue for the system prompt.
+    ///
+    /// Returns `None` if no relevant memories are found.
     pub async fn retrieve_context(
-        &self,
+        &mut self,
         query: &str,
         embedder: &dyn Embedding,
         limit: Option<usize>,
     ) -> Result<Option<String>> {
-        let results = self.retrieve(query, embedder, limit).await?;
+        let results = self.search_agentic(query, embedder, limit).await?;
 
         if results.is_empty() {
             return Ok(None);
@@ -508,29 +545,31 @@ impl AgenticMemoryStore {
 
         let sections: Vec<String> = results
             .iter()
-            .enumerate()
-            .map(|(i, (note, score))| {
-                format!(
-                    "### Memory {} (relevance: {:.2})\n{}\n**Keywords**: {}\n**Tags**: {}",
-                    i + 1,
+            .filter_map(|(id, score, is_neighbor)| {
+                let note = self.notes.get(id)?;
+                let source = if *is_neighbor { " (via link)" } else { "" };
+                Some(format!(
+                    "### Memory {} (relevance: {:.2}{})\n{}\n**Keywords**: {}\n**Tags**: {}\n**Category**: {}",
+                    &id.to_string()[..8],
                     score,
+                    source,
                     note.content,
                     note.keywords.join(", "),
                     note.tags.join(", "),
-                )
+                    note.category,
+                ))
             })
             .collect();
 
         Ok(Some(format!(
-            "## Relevant Memories\n\n{}",
-            sections.join("\n\n")
+            "{}\n\n## Retrieved Memories\n\n{}\n\n{}",
+            prompts::MEMORY_INJECTION_PREAMBLE,
+            sections.join("\n\n"),
+            prompts::MEMORY_INJECTION_EPILOGUE,
         )))
     }
 
     /// Render all notes as a compact Markdown summary for system prompt injection.
-    ///
-    /// Unlike `retrieve_context` which is query-based, this returns ALL
-    /// notes (useful for small memory stores or full context injection).
     #[allow(dead_code)]
     pub fn to_markdown(&self) -> Option<String> {
         if self.notes.is_empty() {
@@ -542,7 +581,7 @@ impl AgenticMemoryStore {
 
         let sections: Vec<String> = notes
             .iter()
-            .take(10) // Limit to most recent 10 for token budget
+            .take(10)
             .map(|note| {
                 format!(
                     "- **{}**: {} [{}]",
@@ -616,28 +655,36 @@ mod tests {
 
     #[test]
     fn test_parse_metadata_response() {
-        let response = "KEYWORDS: rust, memory, systems\nTAGS: language, preference\nCONTEXT: User prefers Rust for systems programming.";
-        let (keywords, tags, context) = AgenticMemoryStore::parse_metadata_response(response).unwrap();
+        let response = "KEYWORDS: rust, memory, systems\nTAGS: language, preference\nCATEGORY: user_preference\nCONTEXT: User prefers Rust for systems programming.";
+        let (keywords, tags, category, context) = AgenticMemoryStore::parse_metadata_response(response).unwrap();
 
         assert_eq!(keywords, vec!["rust", "memory", "systems"]);
         assert_eq!(tags, vec!["language", "preference"]);
+        assert_eq!(category, "user_preference");
         assert_eq!(context, "User prefers Rust for systems programming.");
+    }
+
+    #[test]
+    fn test_parse_metadata_response_no_category() {
+        let response = "KEYWORDS: rust, memory\nTAGS: lang\nCONTEXT: Some context";
+        let (keywords, tags, category, context) = AgenticMemoryStore::parse_metadata_response(response).unwrap();
+        assert_eq!(keywords, vec!["rust", "memory"]);
+        assert_eq!(tags, vec!["lang"]);
+        assert_eq!(category, "uncategorized");
+        assert_eq!(context, "Some context");
     }
 
     #[test]
     fn test_parse_metadata_response_with_whitespace() {
         let response = "  KEYWORDS:  rust , memory  \n  TAGS: lang \n  CONTEXT:  Some context  ";
-        let (keywords, tags, context) = AgenticMemoryStore::parse_metadata_response(response).unwrap();
-
-        assert_eq!(keywords, vec!["rust", "memory"]);
-        assert_eq!(tags, vec!["lang"]);
+        let (_keywords, _tags, _category, context) = AgenticMemoryStore::parse_metadata_response(response).unwrap();
         assert_eq!(context, "Some context");
     }
 
     #[test]
     fn test_parse_metadata_response_case_insensitive() {
         let response = "Keywords: rust, memory\nTags: lang\nContext: Some context";
-        let (keywords, tags, context) = AgenticMemoryStore::parse_metadata_response(response).unwrap();
+        let (keywords, tags, _category, context) = AgenticMemoryStore::parse_metadata_response(response).unwrap();
         assert_eq!(keywords, vec!["rust", "memory"]);
         assert_eq!(tags, vec!["lang"]);
         assert_eq!(context, "Some context");
@@ -646,7 +693,7 @@ mod tests {
     #[test]
     fn test_parse_metadata_response_markdown_bold() {
         let response = "**KEYWORDS:** rust, memory\n**TAGS:** lang\n**CONTEXT:** Some context";
-        let (keywords, tags, context) = AgenticMemoryStore::parse_metadata_response(response).unwrap();
+        let (keywords, tags, _category, context) = AgenticMemoryStore::parse_metadata_response(response).unwrap();
         assert_eq!(keywords, vec!["rust", "memory"]);
         assert_eq!(tags, vec!["lang"]);
         assert_eq!(context, "Some context");
@@ -660,10 +707,38 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_process_memory_response() {
+        let response = "LINK: 1, 3\nSHOULD_EVOLVE: true\nCANDIDATE_1_TAGS: rust, safety\nCANDIDATE_1_CONTEXT: Updated Rust safety context\nCANDIDATE_3_TAGS: systems\nCANDIDATE_3_CONTEXT: Systems programming context";
+        let (linked, should_evolve, evolutions) = AgenticMemoryStore::parse_process_memory_response(response);
+        assert_eq!(linked, vec![1, 3]);
+        assert!(should_evolve);
+        assert_eq!(evolutions.len(), 2);
+        assert_eq!(evolutions[0].0, 1);
+        assert!(evolutions[0].1.contains(&"rust".to_string()));
+        assert!(evolutions[0].2.contains("Rust safety"));
+    }
+
+    #[test]
+    fn test_parse_process_memory_response_no_evolve() {
+        let response = "LINK: 2\nSHOULD_EVOLVE: false";
+        let (linked, should_evolve, evolutions) = AgenticMemoryStore::parse_process_memory_response(response);
+        assert_eq!(linked, vec![2]);
+        assert!(!should_evolve);
+        assert!(evolutions.is_empty());
+    }
+
+    #[test]
+    fn test_parse_process_memory_response_none() {
+        let response = "LINK: NONE\nSHOULD_EVOLVE: false";
+        let (linked, should_evolve, _evolutions) = AgenticMemoryStore::parse_process_memory_response(response);
+        assert!(linked.is_empty());
+        assert!(!should_evolve);
+    }
+
+    #[test]
     fn test_find_similar_notes() {
         let mut store = AgenticMemoryStore::with_config(0.5, 3, 5);
 
-        // Add notes with known embeddings
         let note1 = MemoryNote::new(
             "Rust programming".to_string(),
             vec!["rust".to_string()],
@@ -676,14 +751,14 @@ mod tests {
             vec!["rust".to_string(), "safety".to_string()],
             vec!["lang".to_string()],
             "About Rust safety".to_string(),
-            vec![0.9, 0.1, 0.0], // Similar to note1
+            vec![0.9, 0.1, 0.0],
         );
         let note3 = MemoryNote::new(
             "Python scripting".to_string(),
             vec!["python".to_string()],
             vec!["lang".to_string()],
             "About Python".to_string(),
-            vec![0.0, 0.0, 1.0], // Orthogonal to note1
+            vec![0.0, 0.0, 1.0],
         );
 
         let id1 = note1.id;
@@ -693,7 +768,6 @@ mod tests {
         store.notes.insert(note3.id, note3);
 
         let similar = store.find_similar_notes(id1);
-        // note2 should be similar (cosine ~0.994), note3 should not (cosine ~0)
         assert_eq!(similar.len(), 1);
         assert_eq!(similar[0].0, id2);
         assert!(similar[0].1 > 0.9);

@@ -13,11 +13,14 @@ use uuid::Uuid;
 ///
 /// Each note contains:
 /// - **Raw content**: The original information that triggered this note.
-/// - **LLM-generated metadata**: Keywords, tags, and contextual description
-///   that capture the semantic essence of the content.
+/// - **LLM-generated metadata**: Keywords, tags, category, and contextual
+///   description that capture the semantic essence of the content.
 /// - **Embedding vector**: Dense vector representation for similarity search.
 /// - **Links**: Bidirectional connections to semantically related notes,
 ///   forming an evolving knowledge graph.
+/// - **Access tracking**: `retrieval_count` and `last_accessed` for
+///   frequency-based prioritization (matching the paper's design).
+/// - **Evolution history**: Audit trail of how the note has been refined.
 ///
 /// ## Lifecycle
 ///
@@ -37,12 +40,18 @@ pub struct MemoryNote {
     pub created_at: DateTime<Local>,
     /// Timestamp of the last update (evolution) to this note.
     pub updated_at: DateTime<Local>,
+    /// Timestamp of the last retrieval access.
+    pub last_accessed: DateTime<Local>,
     /// The original raw content that this note captures.
     pub content: String,
     /// LLM-generated keywords that capture the key concepts.
     pub keywords: Vec<String>,
     /// LLM-generated tags for categorical classification.
     pub tags: Vec<String>,
+    /// High-level category (e.g., "user_preference", "project_context",
+    /// "technical_decision"). Defaults to "uncategorized".
+    #[serde(default = "default_category")]
+    pub category: String,
     /// LLM-generated contextual description that summarizes the note's
     /// significance and relationship to broader knowledge.
     pub context: String,
@@ -53,6 +62,18 @@ pub struct MemoryNote {
     /// Uses `HashSet` for O(1) deduplication. The number of links per note
     /// can grow as the knowledge graph evolves.
     pub linked_notes: HashSet<Uuid>,
+    /// How many times this note has been retrieved in a search.
+    /// Used for frequency-based prioritization in retrieval ranking.
+    #[serde(default)]
+    pub retrieval_count: u32,
+    /// History of evolution events for this note (audit trail).
+    /// Each entry is a brief description of what changed and when.
+    #[serde(default)]
+    pub evolution_history: Vec<String>,
+}
+
+fn default_category() -> String {
+    "uncategorized".to_string()
 }
 
 #[allow(dead_code)]
@@ -74,13 +95,31 @@ impl MemoryNote {
             id: Uuid::new_v4(),
             created_at: now,
             updated_at: now,
+            last_accessed: now,
             content,
             keywords,
             tags,
+            category: "uncategorized".to_string(),
             context,
             embedding,
             linked_notes: HashSet::new(),
+            retrieval_count: 0,
+            evolution_history: Vec::new(),
         }
+    }
+
+    /// Create a new memory note with a specific category.
+    pub fn with_category(
+        content: String,
+        keywords: Vec<String>,
+        tags: Vec<String>,
+        context: String,
+        category: String,
+        embedding: Vec<f32>,
+    ) -> Self {
+        let mut note = Self::new(content, keywords, tags, context, embedding);
+        note.category = category;
+        note
     }
 
     /// Add a bidirectional link to another note.
@@ -90,16 +129,29 @@ impl MemoryNote {
         self.linked_notes.insert(other_id)
     }
 
+    /// Record a retrieval access (increment count and update timestamp).
+    pub fn record_access(&mut self) {
+        self.retrieval_count += 1;
+        self.last_accessed = Local::now();
+    }
+
     /// Update the note's metadata during memory evolution.
     ///
     /// When a new related note is added, the LLM may re-analyze this note
     /// and produce updated keywords, tags, and context that reflect
-    /// higher-order patterns.
+    /// higher-order patterns. The change is recorded in evolution_history.
     pub fn evolve(&mut self, keywords: Vec<String>, tags: Vec<String>, context: String) {
+        let history_entry = format!(
+            "[{}] Evolved: keywords {} → {}, context updated",
+            Local::now().format("%Y-%m-%d %H:%M"),
+            self.keywords.join(","),
+            keywords.join(","),
+        );
         self.keywords = keywords;
         self.tags = tags;
         self.context = context;
         self.updated_at = Local::now();
+        self.evolution_history.push(history_entry);
     }
 
     /// Format this note as a compact text representation for LLM prompts.
@@ -112,11 +164,12 @@ impl MemoryNote {
         let links_count = self.linked_notes.len();
 
         format!(
-            "[Note {}]\nContent: {}\nKeywords: {}\nTags: {}\nContext: {}\nLinks: {} connected notes",
+            "[Note {}]\nContent: {}\nKeywords: {}\nTags: {}\nCategory: {}\nContext: {}\nLinks: {} connected notes",
             &self.id.to_string()[..8],
             self.content,
             keywords_str,
             tags_str,
+            self.category,
             self.context,
             links_count,
         )
@@ -142,6 +195,9 @@ mod tests {
         assert_eq!(note.tags.len(), 2);
         assert!(note.linked_notes.is_empty());
         assert_eq!(note.embedding.len(), 3);
+        assert_eq!(note.retrieval_count, 0);
+        assert_eq!(note.category, "uncategorized");
+        assert!(note.evolution_history.is_empty());
     }
 
     #[test]
@@ -158,6 +214,18 @@ mod tests {
         assert!(note.add_link(other_id));
         assert!(!note.add_link(other_id)); // duplicate
         assert_eq!(note.linked_notes.len(), 1);
+    }
+
+    #[test]
+    fn test_record_access() {
+        let mut note = MemoryNote::new(
+            "test".to_string(), vec![], vec![], "ctx".to_string(), vec![],
+        );
+        assert_eq!(note.retrieval_count, 0);
+        note.record_access();
+        assert_eq!(note.retrieval_count, 1);
+        note.record_access();
+        assert_eq!(note.retrieval_count, 2);
     }
 
     #[test]
@@ -181,8 +249,9 @@ mod tests {
         assert_eq!(note.tags, vec!["new_tag"]);
         assert_eq!(note.context, "evolved context with new insights");
         assert_eq!(note.created_at, original_created);
-        // updated_at should be >= created_at
         assert!(note.updated_at >= note.created_at);
+        assert_eq!(note.evolution_history.len(), 1);
+        assert!(note.evolution_history[0].contains("Evolved"));
     }
 
     #[test]
@@ -201,5 +270,17 @@ mod tests {
         assert!(text.contains("lang"));
         assert!(text.contains("Strong Rust preference"));
         assert!(text.contains("0 connected notes"));
+        assert!(text.contains("Category:"));
+    }
+
+    #[test]
+    fn test_with_category() {
+        let note = MemoryNote::with_category(
+            "test".to_string(),
+            vec![], vec![], "ctx".to_string(),
+            "user_preference".to_string(),
+            vec![],
+        );
+        assert_eq!(note.category, "user_preference");
     }
 }
