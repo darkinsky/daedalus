@@ -15,6 +15,10 @@ struct CheatsheetPersistentState {
 /// its own conversation messages and injects the cheatsheet into the
 /// system prompt.
 ///
+/// The cheatsheet is injected with a Generator preamble that instructs
+/// the main LLM to actively review and apply strategies from the cheatsheet,
+/// matching the DC paper's two-role architecture (Generator + Curator).
+///
 /// Best suited for repetitive task patterns where accumulating
 /// problem-solving insights provides the most value.
 pub struct CheatsheetMemory {
@@ -47,9 +51,19 @@ impl CheatsheetMemory {
     }
 
     /// Build the effective system prompt by injecting the cheatsheet.
+    ///
+    /// The cheatsheet is wrapped with a Generator preamble/epilogue that
+    /// instructs the main LLM to actively consult and apply strategies
+    /// from the cheatsheet — matching the DC paper's generator prompt design.
     fn effective_system_prompt(&self) -> String {
         match self.cheatsheet.to_markdown() {
-            Some(cs_md) => format!("{}\n\n{}", self.base_system_prompt, cs_md),
+            Some(cs_md) => format!(
+                "{}\n\n{}\n\n{}\n{}",
+                self.base_system_prompt,
+                super::prompts::CHEATSHEET_INJECTION_PREAMBLE,
+                cs_md,
+                super::prompts::CHEATSHEET_INJECTION_EPILOGUE,
+            ),
             None => self.base_system_prompt.clone(),
         }
     }

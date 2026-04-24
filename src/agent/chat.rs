@@ -142,6 +142,7 @@ impl ChatAgent {
     ) -> Self {
         let factory = crate::memory::create_memory_factory(
             &config.memory_strategy,
+            &config.memory_config,
             &config.embedding,
             &workspace,
         );

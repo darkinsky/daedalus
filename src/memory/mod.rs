@@ -533,6 +533,7 @@ pub trait MemoryFactory: Send + Sync {
 /// missing or invalid, rather than panicking.
 pub fn create_memory_factory(
     strategy: &crate::config::MemoryStrategy,
+    memory_config: &crate::config::agent_config::MemorySection,
     embedding_config: &crate::config::EmbeddingConfig,
     workspace: &crate::workspace::Workspace,
 ) -> Box<dyn MemoryFactory> {
@@ -543,6 +544,7 @@ pub fn create_memory_factory(
         MemoryStrategy::DynamicCheatsheet => {
             let factory = CheatsheetFactory::with_workspace(
                 workspace.cheatsheet_path(),
+                memory_config.dynamic_cheatsheet.clone(),
             );
             Box::new(factory)
         }
@@ -593,6 +595,7 @@ pub fn create_memory_factory(
         MemoryStrategy::Ace => {
             let factory = AceFactory::with_workspace(
                 workspace.ace_playbook_path(),
+                memory_config.ace.clone(),
             );
             Box::new(factory)
         }

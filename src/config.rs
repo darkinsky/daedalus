@@ -6,7 +6,7 @@
 //! - `agent_config` — AgentConfig type and soul file resolution
 //! - `logging`      — LogConfig types and tracing subscriber initialization
 
-mod agent_config;
+pub(crate) mod agent_config;
 mod loader;
 pub(crate) mod logging;
 

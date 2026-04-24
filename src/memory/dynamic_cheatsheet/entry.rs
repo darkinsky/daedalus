@@ -4,18 +4,26 @@ use serde::{Deserialize, Serialize};
 /// A single entry in the dynamic cheatsheet.
 ///
 /// Each entry captures a specific insight, strategy, error pattern,
-/// or code snippet learned from past interactions. Entries are
-/// accumulated over time and injected into the system prompt to
-/// help the LLM avoid repeating mistakes and reuse proven strategies.
+/// code snippet, or worked example learned from past interactions.
+/// Entries are accumulated over time and injected into the system prompt
+/// to help the LLM avoid repeating mistakes and reuse proven strategies.
+///
+/// Content can be multi-line — including code blocks, worked solutions,
+/// and detailed edge-case descriptions — matching the DC paper's design
+/// of preserving actionable, reusable reference material.
 ///
 /// Inspired by the Dynamic Cheatsheet paper (arxiv:2504.07952).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheatsheetEntry {
-    /// Category of this entry (e.g., "strategy", "error_pattern", "code_snippet").
+    /// Category of this entry (free-form, e.g., "strategy", "code_snippet",
+    /// "edge_case", "meta_reasoning"). The LLM chooses categories naturally;
+    /// they are not restricted to a fixed set.
     pub category: String,
-    /// The insight content — a concise, actionable description.
+    /// The insight content — can be multi-line, including code blocks,
+    /// worked examples, and detailed explanations.
     pub content: String,
-    /// How many times this entry has been reinforced (used/validated).
+    /// How many times this entry has been reinforced (used/validated/updated).
+    /// Tracks the paper's "Usage Counter" concept for prioritization.
     pub reinforcement_count: u32,
     /// When this entry was first created.
     pub created_at: DateTime<Local>,
@@ -37,16 +45,33 @@ impl CheatsheetEntry {
     }
 
     /// Reinforce this entry (increment count and update timestamp).
-    #[allow(dead_code)]
+    ///
+    /// Called when the Curator confirms this entry was useful or when
+    /// an existing entry is updated/refined.
     pub fn reinforce(&mut self) {
         self.reinforcement_count += 1;
         self.updated_at = Local::now();
     }
 
-    /// Update the content of this entry and refresh the timestamp.
+    /// Update the content of this entry, refresh the timestamp,
+    /// and increment the reinforcement count (since an update implies
+    /// the entry is actively useful).
     pub fn update_content(&mut self, new_content: String) {
         self.content = new_content;
+        self.reinforcement_count += 1;
         self.updated_at = Local::now();
+    }
+
+    /// Format for display in the cheatsheet Markdown, including usage count.
+    ///
+    /// Matches the paper's format: each entry shows its usage/reinforcement
+    /// count so the LLM can prioritize frequently-validated strategies.
+    pub fn to_markdown_item(&self) -> String {
+        if self.reinforcement_count > 1 {
+            format!("- {} *(used {}×)*", self.content, self.reinforcement_count)
+        } else {
+            format!("- {}", self.content)
+        }
     }
 }
 
@@ -78,12 +103,34 @@ mod tests {
     }
 
     #[test]
-    fn test_update_content() {
+    fn test_update_content_increments_reinforcement() {
         let mut entry = CheatsheetEntry::new(
             "strategy".to_string(),
             "Old content".to_string(),
         );
+        assert_eq!(entry.reinforcement_count, 1);
         entry.update_content("New refined content".to_string());
         assert_eq!(entry.content, "New refined content");
+        assert_eq!(entry.reinforcement_count, 2);
+    }
+
+    #[test]
+    fn test_to_markdown_item_single_use() {
+        let entry = CheatsheetEntry::new(
+            "strategy".to_string(),
+            "Use memoization".to_string(),
+        );
+        assert_eq!(entry.to_markdown_item(), "- Use memoization");
+    }
+
+    #[test]
+    fn test_to_markdown_item_multi_use() {
+        let mut entry = CheatsheetEntry::new(
+            "strategy".to_string(),
+            "Use memoization".to_string(),
+        );
+        entry.reinforce();
+        entry.reinforce();
+        assert_eq!(entry.to_markdown_item(), "- Use memoization *(used 3×)*");
     }
 }

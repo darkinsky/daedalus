@@ -7,26 +7,30 @@ use crate::memory::persistence::MemoryPersistence;
 use crate::memory::strip_directive_prefix;
 use crate::memory::truncate_to_token_budget;
 
-use super::config::CheatsheetConfig;
+use super::config::{CheatsheetConfig, CuratorMode};
 use super::entry::CheatsheetEntry;
 
 /// Dynamic Cheatsheet — a persistent, evolving memory of problem-solving insights.
 ///
-/// Inspired by the DC paper (arxiv:2504.07952), this module maintains a
-/// structured collection of insights that the LLM accumulates across
-/// interactions. After each conversation turn, the LLM reflects on its
-/// response and extracts reusable strategies, error patterns, and code
-/// snippets into the cheatsheet.
+/// Implements the DC paper (arxiv:2504.07952) with two Curator modes:
+///
+/// - **FullRewrite** (default, paper-faithful): The Curator LLM outputs a complete
+///   updated cheatsheet each time, handling compression, merging, and eviction
+///   via LLM judgment. This preserves the paper's core design where the Curator
+///   decides what to keep, compress, merge, or discard.
+///
+/// - **Incremental**: The Curator outputs `NEW:`/`UPDATE:`/`REINFORCE:` directives
+///   and code handles merging. Lighter-weight but loses global reorganization.
 ///
 /// ## Lifecycle
 ///
 /// 1. **Inject**: Before each LLM call, the cheatsheet is rendered as
-///    Markdown and injected into the system prompt.
-/// 2. **Reflect**: After the LLM responds, a reflection call extracts
-///    new insights from the interaction.
-/// 3. **Update**: New insights are merged into the cheatsheet — duplicates
-///    are consolidated, outdated entries are refined, and reinforcement
-///    counts are incremented.
+///    Markdown and injected into the system prompt with a Generator preamble
+///    that instructs the LLM to actively consult it.
+/// 2. **Reflect**: After the LLM responds, the Curator analyzes the interaction.
+///    - FullRewrite: Curator outputs entire updated cheatsheet (with correctness verification).
+///    - Incremental: Curator outputs structured directives.
+/// 3. **Update**: The cheatsheet state is replaced (FullRewrite) or patched (Incremental).
 ///
 /// ## Integration with SlidingWindowMemory
 ///
@@ -37,6 +41,10 @@ use super::entry::CheatsheetEntry;
 pub struct DynamicCheatsheet {
     /// All cheatsheet entries, in insertion order.
     entries: Vec<CheatsheetEntry>,
+    /// Raw cheatsheet text (used in FullRewrite mode).
+    /// When present, this is the Curator's latest output and takes priority
+    /// over `entries` for rendering.
+    raw_text: Option<String>,
     /// Configuration parameters.
     config: CheatsheetConfig,
 }
@@ -47,6 +55,7 @@ impl DynamicCheatsheet {
     pub fn new(config: CheatsheetConfig) -> Self {
         Self {
             entries: Vec::new(),
+            raw_text: None,
             config,
         }
     }
@@ -63,7 +72,7 @@ impl DynamicCheatsheet {
 
     /// Check if the cheatsheet is empty.
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.is_empty() && self.raw_text.is_none()
     }
 
     /// Get a reference to the configuration.
@@ -76,19 +85,41 @@ impl DynamicCheatsheet {
         &self.entries
     }
 
+    /// Override the configuration.
+    ///
+    /// Used by the factory to apply YAML config after loading persisted
+    /// state (which doesn't include config). This ensures user-configured
+    /// values like `curator_mode` and `max_entries` take effect.
+    pub fn set_config(&mut self, config: CheatsheetConfig) {
+        self.config = config;
+    }
+
     // ── Rendering ──
 
     /// Render the cheatsheet as Markdown for system prompt injection.
     ///
-    /// Groups entries by category and formats them as a structured reference.
+    /// In FullRewrite mode, returns the raw Curator output (already formatted).
+    /// In Incremental mode, groups entries by category with usage counts.
+    ///
     /// Respects the `max_token_budget` by truncating if necessary.
     /// Returns `None` if the cheatsheet is empty.
     pub fn to_markdown(&self) -> Option<String> {
+        // FullRewrite mode: use the raw Curator output directly.
+        if let Some(ref raw) = self.raw_text {
+            if !raw.trim().is_empty() {
+                return Some(truncate_to_token_budget(
+                    raw.clone(),
+                    self.config.max_token_budget,
+                    "*(cheatsheet truncated for token budget)*",
+                ));
+            }
+        }
+
         if self.entries.is_empty() {
             return None;
         }
 
-        // Group entries by category, preserving order within each group.
+        // Incremental mode: group entries by category, include usage counts.
         let mut grouped: BTreeMap<&str, Vec<&CheatsheetEntry>> = BTreeMap::new();
         for entry in &self.entries {
             grouped.entry(entry.category.as_str()).or_default().push(entry);
@@ -98,7 +129,7 @@ impl DynamicCheatsheet {
         for (category, entries) in &grouped {
             let items: Vec<String> = entries
                 .iter()
-                .map(|e| format!("- {}", e.content))
+                .map(|e| e.to_markdown_item())
                 .collect();
             sections.push(format!("### {}\n{}", category, items.join("\n")));
         }
@@ -113,10 +144,35 @@ impl DynamicCheatsheet {
         ))
     }
 
-    /// Render the cheatsheet as a numbered list for the reflection prompt.
+    /// Render the cheatsheet as text for the Curator prompt.
+    ///
+    /// In FullRewrite mode, returns the raw text (so the Curator can see
+    /// its own previous output and build upon it).
+    /// In Incremental mode, returns a numbered list for directive references.
+    pub fn to_curator_text(&self) -> String {
+        // FullRewrite mode: return raw text or structured fallback.
+        if self.config.curator_mode == CuratorMode::FullRewrite {
+            if let Some(ref raw) = self.raw_text {
+                if !raw.trim().is_empty() {
+                    return raw.clone();
+                }
+            }
+            // Fall through to structured rendering if no raw text yet.
+            if self.entries.is_empty() {
+                return "(empty — no entries yet)".to_string();
+            }
+            // Render entries as markdown for the first FullRewrite cycle.
+            return self.to_markdown().unwrap_or_else(|| "(empty)".to_string());
+        }
+
+        // Incremental mode: numbered list.
+        self.to_numbered_text()
+    }
+
+    /// Render the cheatsheet as a numbered list for the incremental reflection prompt.
     ///
     /// Each entry is numbered so the LLM can reference entries by number
-    /// when suggesting updates.
+    /// when suggesting updates. Includes usage count.
     pub fn to_numbered_text(&self) -> String {
         if self.entries.is_empty() {
             return "(empty — no entries yet)".to_string();
@@ -124,21 +180,22 @@ impl DynamicCheatsheet {
         self.entries
             .iter()
             .enumerate()
-            .map(|(i, e)| format!("{}. [{}] {}", i + 1, e.category, e.content))
+            .map(|(i, e)| {
+                if e.reinforcement_count > 1 {
+                    format!("{}. [{}] {} (count: {})", i + 1, e.category, e.content, e.reinforcement_count)
+                } else {
+                    format!("{}. [{}] {}", i + 1, e.category, e.content)
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
 
     // ── LLM reflection ──
 
-    /// Perform a full reflection cycle: call the LLM and apply the response.
+    /// Perform a full reflection cycle: call the Curator LLM and apply the response.
     ///
-    /// This is the shared entry point for all memory strategies that use
-    /// Dynamic Cheatsheet reflection. It encapsulates the complete flow:
-    /// 1. Check `auto_reflect` config
-    /// 2. Build the reflection prompt (with current cheatsheet state)
-    /// 3. Call the LLM
-    /// 4. Parse and apply the response
+    /// Dispatches to the appropriate mode (FullRewrite vs Incremental).
     ///
     /// Reflection failures are logged but never propagated — they must not
     /// disrupt the main conversation flow.
@@ -152,19 +209,87 @@ impl DynamicCheatsheet {
             return;
         }
 
-        let current_cheatsheet = self.to_numbered_text();
-        let user_prompt = super::prompts::reflection_user_prompt(
+        match self.config.curator_mode {
+            CuratorMode::FullRewrite => {
+                self.reflect_full_rewrite(user_input, assistant_response, llm).await;
+            }
+            CuratorMode::Incremental => {
+                self.reflect_incremental(user_input, assistant_response, llm).await;
+            }
+        }
+    }
+
+    /// FullRewrite reflection: Curator outputs complete updated cheatsheet.
+    async fn reflect_full_rewrite(
+        &mut self,
+        user_input: &str,
+        assistant_response: &str,
+        llm: &dyn crate::llm::LlmApi,
+    ) {
+        let current_cheatsheet = self.to_curator_text();
+        let user_prompt = super::prompts::curator_full_rewrite_prompt(
             user_input, assistant_response, &current_cheatsheet,
         );
 
         let messages = vec![
-            crate::llm::ChatMessage::system(super::prompts::REFLECTION_SYSTEM_PROMPT),
+            crate::llm::ChatMessage::system(super::prompts::CURATOR_FULL_REWRITE_SYSTEM_PROMPT),
             crate::llm::ChatMessage::user(user_prompt),
         ];
 
         match llm.chat(&messages, None).await {
             Ok(response) => {
-                self.apply_reflection_response(&response.content);
+                let new_text = response.content.trim().to_string();
+                if new_text.is_empty() {
+                    tracing::debug!("Dynamic Cheatsheet Curator: empty response, keeping old cheatsheet");
+                    return;
+                }
+                // Safe fallback: if the new cheatsheet is drastically shorter
+                // than the old one (>80% reduction), it might be a truncation
+                // error. Keep the old one in that case.
+                let old_len = current_cheatsheet.len();
+                if old_len > 200 && new_text.len() < old_len / 5 {
+                    tracing::warn!(
+                        old_len = old_len,
+                        new_len = new_text.len(),
+                        "Dynamic Cheatsheet Curator: new cheatsheet is suspiciously short, \
+                         keeping old version (possible truncation)"
+                    );
+                    return;
+                }
+                self.raw_text = Some(new_text);
+                tracing::info!(
+                    "Dynamic Cheatsheet: full-rewrite reflection complete"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Dynamic Cheatsheet Curator LLM call failed, continuing without update"
+                );
+            }
+        }
+    }
+
+    /// Incremental reflection: Curator outputs NEW/UPDATE/REINFORCE directives.
+    async fn reflect_incremental(
+        &mut self,
+        user_input: &str,
+        assistant_response: &str,
+        llm: &dyn crate::llm::LlmApi,
+    ) {
+        let current_cheatsheet = self.to_numbered_text();
+        let user_prompt = super::prompts::curator_incremental_prompt(
+            user_input, assistant_response, &current_cheatsheet,
+        );
+
+        let messages = vec![
+            crate::llm::ChatMessage::system(super::prompts::CURATOR_INCREMENTAL_SYSTEM_PROMPT),
+            crate::llm::ChatMessage::user(user_prompt),
+        ];
+
+        match llm.chat(&messages, None).await {
+            Ok(response) => {
+                self.apply_incremental_response(&response.content);
             }
             Err(e) => {
                 tracing::warn!(
@@ -175,21 +300,15 @@ impl DynamicCheatsheet {
         }
     }
 
-    // ── Reflection response processing ──
+    // ── Reflection response processing (Incremental mode) ──
 
-    /// Apply a reflection response from the LLM.
+    /// Apply a reflection response from the incremental Curator.
     ///
-    /// This is the data-only counterpart of [`reflect()`](Self::reflect).
-    /// It parses the LLM's text response, applies updates to existing
-    /// entries, merges new entries, and evicts low-value entries if over
-    /// capacity.
-    ///
-    /// Call `reflect()` for the full cycle (including the LLM call), or
-    /// call this method directly when you already have the response text
-    /// (e.g., in tests).
+    /// Parses NEW/UPDATE/REINFORCE directives, applies them, and evicts
+    /// low-value entries if over capacity.
     ///
     /// Returns `true` if any changes were made, `false` otherwise.
-    pub fn apply_reflection_response(&mut self, response_text: &str) -> bool {
+    pub fn apply_incremental_response(&mut self, response_text: &str) -> bool {
         let response_text = response_text.trim();
 
         if response_text.eq_ignore_ascii_case("NO_NEW_INSIGHTS") {
@@ -197,13 +316,24 @@ impl DynamicCheatsheet {
             return false;
         }
 
-        let (new_entries, updates) = Self::parse_reflection_response(response_text);
+        let (new_entries, updates, reinforcements) = Self::parse_incremental_response(response_text);
 
-        if new_entries.is_empty() && updates.is_empty() {
+        if new_entries.is_empty() && updates.is_empty() && reinforcements.is_empty() {
             return false;
         }
 
-        // Apply updates to existing entries.
+        // Apply reinforcements first.
+        for index in &reinforcements {
+            if *index < self.entries.len() {
+                self.entries[*index].reinforce();
+                tracing::debug!(
+                    entry_index = index,
+                    "Dynamic Cheatsheet: reinforced existing entry"
+                );
+            }
+        }
+
+        // Apply updates to existing entries (also increments reinforcement_count).
         for (index, new_content) in &updates {
             if *index < self.entries.len() {
                 self.entries[*index].update_content(new_content.clone());
@@ -234,14 +364,21 @@ impl DynamicCheatsheet {
         true
     }
 
-    /// Parse the LLM's reflection response into new entries and updates.
+    /// Legacy alias for backward compatibility.
+    pub fn apply_reflection_response(&mut self, response_text: &str) -> bool {
+        self.apply_incremental_response(response_text)
+    }
+
+    /// Parse the incremental Curator's response into new entries, updates, and reinforcements.
     ///
     /// Expected format:
     /// - `NEW: <category> | <content>`
     /// - `UPDATE: <number> | <refined_content>`
-    fn parse_reflection_response(response: &str) -> (Vec<CheatsheetEntry>, Vec<(usize, String)>) {
+    /// - `REINFORCE: <number>`
+    fn parse_incremental_response(response: &str) -> (Vec<CheatsheetEntry>, Vec<(usize, String)>, Vec<usize>) {
         let mut new_entries = Vec::new();
         let mut updates = Vec::new();
+        let mut reinforcements = Vec::new();
 
         for line in response.lines() {
             let line = line.trim();
@@ -257,9 +394,19 @@ impl DynamicCheatsheet {
                 if let Some(update) = Self::parse_update_directive(rest) {
                     updates.push(update);
                 }
+            } else if let Some(rest) = strip_directive_prefix(line, "REINFORCE:") {
+                if let Some(index) = Self::parse_reinforce_directive(rest) {
+                    reinforcements.push(index);
+                }
             }
         }
 
+        (new_entries, updates, reinforcements)
+    }
+
+    /// Legacy alias for backward compatibility with tests.
+    pub fn parse_reflection_response(response: &str) -> (Vec<CheatsheetEntry>, Vec<(usize, String)>) {
+        let (new_entries, updates, _reinforcements) = Self::parse_incremental_response(response);
         (new_entries, updates)
     }
 
@@ -292,13 +439,20 @@ impl DynamicCheatsheet {
         Some((num - 1, content.to_string()))
     }
 
-    // ── Merging and eviction ──
+    /// Parse a `REINFORCE:` directive body into a 0-based index.
+    ///
+    /// Expected: `<1-based number>`
+    fn parse_reinforce_directive(body: &str) -> Option<usize> {
+        let num: usize = body.trim().parse().ok()?;
+        if num < 1 {
+            return None;
+        }
+        Some(num - 1)
+    }
+
+    // ── Merging and eviction (Incremental mode) ──
 
     /// Merge new entries into the cheatsheet.
-    ///
-    /// Simple append strategy — deduplication is handled by the LLM
-    /// during reflection (it sees the current cheatsheet and is instructed
-    /// to only extract NEW insights).
     fn merge_entries(&mut self, new_entries: Vec<CheatsheetEntry>) {
         self.entries.extend(new_entries);
     }
@@ -353,13 +507,19 @@ impl Default for DynamicCheatsheet {
 
 impl MemoryPersistence for DynamicCheatsheet {
     fn save(&self, path: &Path) -> Result<()> {
-        let json = serde_json::to_string_pretty(&self.entries)
+        // Persist both structured entries and raw text.
+        let data = CheatsheetPersistenceData {
+            entries: self.entries.clone(),
+            raw_text: self.raw_text.clone(),
+        };
+        let json = serde_json::to_string_pretty(&data)
             .context("Failed to serialize DynamicCheatsheet")?;
         crate::memory::persistence::atomic_write(path, json.as_bytes())
             .with_context(|| format!("Failed to write DynamicCheatsheet to: {}", path.display()))?;
         tracing::debug!(
             path = %path.display(),
             entries = self.entries.len(),
+            has_raw = self.raw_text.is_some(),
             "DynamicCheatsheet saved (atomic)"
         );
         Ok(())
@@ -372,18 +532,44 @@ impl MemoryPersistence for DynamicCheatsheet {
         }
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read DynamicCheatsheet from: {}", path.display()))?;
+
+        // Try the new format first (with raw_text).
+        if let Ok(data) = serde_json::from_str::<CheatsheetPersistenceData>(&content) {
+            tracing::info!(
+                path = %path.display(),
+                entries = data.entries.len(),
+                has_raw = data.raw_text.is_some(),
+                "DynamicCheatsheet loaded from disk (v2 format)"
+            );
+            return Ok(Self {
+                entries: data.entries,
+                raw_text: data.raw_text,
+                config: CheatsheetConfig::default(),
+            });
+        }
+
+        // Fall back to legacy format (just Vec<CheatsheetEntry>).
         let entries: Vec<CheatsheetEntry> = serde_json::from_str(&content)
             .with_context(|| format!("Failed to parse DynamicCheatsheet from: {}", path.display()))?;
         tracing::info!(
             path = %path.display(),
             entries = entries.len(),
-            "DynamicCheatsheet loaded from disk"
+            "DynamicCheatsheet loaded from disk (legacy format)"
         );
         Ok(Self {
             entries,
+            raw_text: None,
             config: CheatsheetConfig::default(),
         })
     }
+}
+
+/// Persistence format for DynamicCheatsheet (v2).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CheatsheetPersistenceData {
+    entries: Vec<CheatsheetEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw_text: Option<String>,
 }
 
 #[cfg(test)]
@@ -405,7 +591,11 @@ mod tests {
 
     #[test]
     fn test_to_markdown_with_entries() {
-        let mut cs = DynamicCheatsheet::with_defaults();
+        let config = CheatsheetConfig {
+            curator_mode: CuratorMode::Incremental,
+            ..Default::default()
+        };
+        let mut cs = DynamicCheatsheet::new(config);
         cs.entries.push(CheatsheetEntry::new(
             "strategy".to_string(),
             "Use binary search for sorted arrays".to_string(),
@@ -424,6 +614,35 @@ mod tests {
     }
 
     #[test]
+    fn test_to_markdown_with_usage_count() {
+        let config = CheatsheetConfig {
+            curator_mode: CuratorMode::Incremental,
+            ..Default::default()
+        };
+        let mut cs = DynamicCheatsheet::new(config);
+        let mut entry = CheatsheetEntry::new(
+            "strategy".to_string(),
+            "Use memoization".to_string(),
+        );
+        entry.reinforce();
+        entry.reinforce();
+        cs.entries.push(entry);
+
+        let md = cs.to_markdown().unwrap();
+        assert!(md.contains("used 3×"));
+    }
+
+    #[test]
+    fn test_to_markdown_raw_text_mode() {
+        let mut cs = DynamicCheatsheet::with_defaults();
+        cs.raw_text = Some("## Custom Cheatsheet\n\n- Strategy A\n- Strategy B".to_string());
+
+        let md = cs.to_markdown().unwrap();
+        assert!(md.contains("Custom Cheatsheet"));
+        assert!(md.contains("Strategy A"));
+    }
+
+    #[test]
     fn test_to_numbered_text() {
         let mut cs = DynamicCheatsheet::with_defaults();
         cs.entries.push(CheatsheetEntry::new(
@@ -438,6 +657,20 @@ mod tests {
         let text = cs.to_numbered_text();
         assert!(text.contains("1. [strategy] Insight one"));
         assert!(text.contains("2. [error_pattern] Insight two"));
+    }
+
+    #[test]
+    fn test_to_numbered_text_with_count() {
+        let mut cs = DynamicCheatsheet::with_defaults();
+        let mut entry = CheatsheetEntry::new(
+            "strategy".to_string(),
+            "Insight one".to_string(),
+        );
+        entry.reinforce();
+        cs.entries.push(entry);
+
+        let text = cs.to_numbered_text();
+        assert!(text.contains("(count: 2)"));
     }
 
     #[test]
@@ -462,6 +695,51 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_reinforce_directive() {
+        let response = "REINFORCE: 3";
+        let (_new, _updates, reinforcements) = DynamicCheatsheet::parse_incremental_response(response);
+        assert_eq!(reinforcements.len(), 1);
+        assert_eq!(reinforcements[0], 2); // 1-based → 0-based
+    }
+
+    #[test]
+    fn test_apply_incremental_response_reinforce() {
+        let config = CheatsheetConfig {
+            curator_mode: CuratorMode::Incremental,
+            ..Default::default()
+        };
+        let mut cs = DynamicCheatsheet::new(config);
+        cs.entries.push(CheatsheetEntry::new(
+            "strategy".to_string(),
+            "Some insight".to_string(),
+        ));
+        assert_eq!(cs.entries[0].reinforcement_count, 1);
+
+        let changed = cs.apply_incremental_response("REINFORCE: 1");
+        assert!(changed);
+        assert_eq!(cs.entries[0].reinforcement_count, 2);
+    }
+
+    #[test]
+    fn test_apply_incremental_response_update_increments_count() {
+        let config = CheatsheetConfig {
+            curator_mode: CuratorMode::Incremental,
+            ..Default::default()
+        };
+        let mut cs = DynamicCheatsheet::new(config);
+        cs.entries.push(CheatsheetEntry::new(
+            "strategy".to_string(),
+            "Old insight".to_string(),
+        ));
+        assert_eq!(cs.entries[0].reinforcement_count, 1);
+
+        let changed = cs.apply_incremental_response("UPDATE: 1 | Refined insight");
+        assert!(changed);
+        assert_eq!(cs.entries[0].content, "Refined insight");
+        assert_eq!(cs.entries[0].reinforcement_count, 2);
+    }
+
+    #[test]
     fn test_parse_reflection_response_no_insights() {
         let response = "NO_NEW_INSIGHTS";
         let (new_entries, updates) = DynamicCheatsheet::parse_reflection_response(response);
@@ -481,6 +759,7 @@ mod tests {
     fn test_evict_if_needed() {
         let config = CheatsheetConfig {
             max_entries: 3,
+            curator_mode: CuratorMode::Incremental,
             ..Default::default()
         };
         let mut cs = DynamicCheatsheet::new(config);
@@ -505,6 +784,7 @@ mod tests {
     fn test_to_markdown_token_budget() {
         let config = CheatsheetConfig {
             max_token_budget: 10, // Very small budget (~40 chars)
+            curator_mode: CuratorMode::Incremental,
             ..Default::default()
         };
         let mut cs = DynamicCheatsheet::new(config);
@@ -548,7 +828,7 @@ mod tests {
         let mut cs = DynamicCheatsheet::with_defaults();
         let changed = cs.apply_reflection_response("NO_NEW_INSIGHTS");
         assert!(!changed);
-        assert!(cs.is_empty());
+        assert!(cs.entries.is_empty());
     }
 
     #[test]
@@ -562,6 +842,7 @@ mod tests {
     fn test_apply_reflection_response_triggers_eviction() {
         let config = CheatsheetConfig {
             max_entries: 2,
+            curator_mode: CuratorMode::Incremental,
             ..Default::default()
         };
         let mut cs = DynamicCheatsheet::new(config);
@@ -580,6 +861,7 @@ mod tests {
         let config = CheatsheetConfig {
             max_entries: 2,
             min_reinforcement_for_retention: 3,
+            curator_mode: CuratorMode::Incremental,
             ..Default::default()
         };
         let mut cs = DynamicCheatsheet::new(config);
@@ -604,5 +886,13 @@ mod tests {
         assert_eq!(cs.entry_count(), 2);
         // The lowest-reinforcement entry ("Low value", count=1) should be evicted.
         assert!(cs.entries().iter().all(|e| e.reinforcement_count >= 2));
+    }
+
+    #[test]
+    fn test_is_empty_with_raw_text() {
+        let mut cs = DynamicCheatsheet::with_defaults();
+        assert!(cs.is_empty());
+        cs.raw_text = Some("Some content".to_string());
+        assert!(!cs.is_empty());
     }
 }

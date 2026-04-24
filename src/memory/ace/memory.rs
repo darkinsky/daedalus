@@ -64,12 +64,23 @@ impl AceMemory {
     }
 
     /// Create with an existing playbook (e.g., loaded from disk).
+    #[allow(dead_code)]
     pub fn with_playbook(system_prompt: &str, playbook: Playbook) -> Self {
         Self {
             base_system_prompt: system_prompt.to_string(),
             buffer: MessageBuffer::new(DEFAULT_MAX_MESSAGES),
             playbook,
             config: AceConfig::default(),
+        }
+    }
+
+    /// Create with an existing playbook and explicit config from YAML.
+    pub fn with_playbook_and_config(system_prompt: &str, playbook: Playbook, config: AceConfig) -> Self {
+        Self {
+            base_system_prompt: system_prompt.to_string(),
+            buffer: MessageBuffer::new(DEFAULT_MAX_MESSAGES),
+            playbook,
+            config,
         }
     }
 

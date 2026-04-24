@@ -3,16 +3,20 @@ use std::path::PathBuf;
 use crate::memory::{Memory, MemoryFactory};
 use crate::memory::persistence::MemoryPersistence;
 
+use super::config::AceConfig;
 use super::memory::AceMemory;
 use super::playbook::Playbook;
 
 /// Factory for creating `AceMemory` instances.
 ///
 /// When workspace paths are configured, the factory will automatically
-/// load a persisted playbook from disk.
+/// load a persisted playbook from disk. The `AceConfig` from YAML is
+/// passed through to the `AceMemory` engine.
 pub struct AceFactory {
     /// Path to the Playbook persistence file (from workspace).
     playbook_path: Option<PathBuf>,
+    /// Configuration from YAML (max_sections, max_token_budget, etc.).
+    config: AceConfig,
 }
 
 impl AceFactory {
@@ -21,13 +25,15 @@ impl AceFactory {
     pub fn new() -> Self {
         Self {
             playbook_path: None,
+            config: AceConfig::default(),
         }
     }
 
-    /// Create a factory with workspace persistence path.
-    pub fn with_workspace(playbook_path: PathBuf) -> Self {
+    /// Create a factory with workspace persistence path and YAML config.
+    pub fn with_workspace(playbook_path: PathBuf, config: AceConfig) -> Self {
         Self {
             playbook_path: Some(playbook_path),
+            config,
         }
     }
 }
@@ -49,7 +55,7 @@ impl MemoryFactory for AceFactory {
             None => Playbook::new(),
         };
 
-        Box::new(AceMemory::with_playbook(system_prompt, playbook))
+        Box::new(AceMemory::with_playbook_and_config(system_prompt, playbook, self.config.clone()))
     }
 
     fn strategy_name(&self) -> &str {
