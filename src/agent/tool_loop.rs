@@ -52,8 +52,15 @@ use super::duplicate_detector::{annotate_responses, DuplicateAction, DuplicateDe
 /// Older rounds have their tool responses truncated to save context tokens.
 const FULL_RESULT_RECENT_ROUNDS: usize = 3;
 
-/// Maximum character length for tool responses in older (truncated) rounds.
+/// Maximum character length for tool responses in "near" older rounds
+/// (within 2× FULL_RESULT_RECENT_ROUNDS of the current round).
 const TRUNCATED_RESULT_MAX_CHARS: usize = 500;
+
+/// Maximum character length for tool responses in very old rounds
+/// (beyond 2× FULL_RESULT_RECENT_ROUNDS). Inspired by Claude Code's
+/// microcompact: aggressively summarize ancient rounds to a tool-name
+/// + success/failure + tiny excerpt.
+const MICRO_TRUNCATED_RESULT_MAX_CHARS: usize = 120;
 
 // ── Injected abstractions ──
 
@@ -520,8 +527,11 @@ fn emit(callback: Option<&ToolEventCallback>, event: ToolEvent) {
 /// LLM's next decision. Sending all of them verbatim wastes context tokens
 /// and can cause language drift in long conversations.
 ///
-/// Strategy: keep the most recent `FULL_RESULT_RECENT_ROUNDS` rounds intact;
-/// truncate tool responses in older rounds to `TRUNCATED_RESULT_MAX_CHARS`.
+/// Strategy (progressive truncation, inspired by Claude Code's microcompact):
+/// - Most recent `FULL_RESULT_RECENT_ROUNDS` rounds: keep verbatim.
+/// - "Near" older rounds (within 2× of recent window): truncate to 500 chars.
+/// - Very old rounds (beyond 2×): micro-truncate to 120 chars (tool name + tiny excerpt).
+///
 /// Tool calls (function name + arguments) are always kept in full — they're
 /// small and provide important structural context.
 fn truncate_tool_history(history: &[ToolRound]) -> Vec<ToolRound> {
@@ -529,17 +539,28 @@ fn truncate_tool_history(history: &[ToolRound]) -> Vec<ToolRound> {
         return history.to_vec();
     }
 
-    let cutoff = history.len() - FULL_RESULT_RECENT_ROUNDS;
+    let recent_cutoff = history.len() - FULL_RESULT_RECENT_ROUNDS;
+    // "Near" zone = double the recent window
+    let micro_cutoff = history.len().saturating_sub(FULL_RESULT_RECENT_ROUNDS * 2);
     let mut result = Vec::with_capacity(history.len());
 
     for (i, round) in history.iter().enumerate() {
-        if i < cutoff {
-            // Older round: truncate tool responses
+        if i >= recent_cutoff {
+            // Recent round: keep verbatim
+            result.push(round.clone());
+        } else {
+            // Older round: pick truncation budget based on age
+            let max_chars = if i < micro_cutoff {
+                MICRO_TRUNCATED_RESULT_MAX_CHARS // very old → aggressive
+            } else {
+                TRUNCATED_RESULT_MAX_CHARS // near-old → moderate
+            };
+
             let truncated_responses: Vec<ToolResponse> = round.responses.iter().map(|resp| {
-                if resp.content.len() > TRUNCATED_RESULT_MAX_CHARS {
+                if resp.content.len() > max_chars {
                     let truncated = crate::tools::truncate_at_char_boundary(
                         &resp.content,
-                        TRUNCATED_RESULT_MAX_CHARS,
+                        max_chars,
                     );
                     ToolResponse {
                         call_id: resp.call_id.clone(),
@@ -559,9 +580,6 @@ fn truncate_tool_history(history: &[ToolRound]) -> Vec<ToolRound> {
                 calls: round.calls.clone(),
                 responses: truncated_responses,
             });
-        } else {
-            // Recent round: keep verbatim
-            result.push(round.clone());
         }
     }
 

@@ -1,73 +1,73 @@
 
-# Code Review Task — Trace Analysis & Optimization Report
+# 代码审查任务 — Trace 分析与优化报告
 
-> **Date**: 2026-04-25
+> **日期**: 2026-04-25
 > **Trace ID**: `427075e9-2bd5-4b68-983c-03bf19cb5787`
-> **Task**: "请帮我对当前项目做一个代码审查"
-> **Model**: claude-sonnet-4-6 (via Venus)
-> **Trace File**: `.daedalus/traces/2026-04-25.yaml`
+> **任务**: "请帮我对当前项目做一个代码审查"
+> **模型**: claude-sonnet-4-6 (通过 Venus)
+> **Trace 文件**: `.daedalus/traces/2026-04-25.yaml`
 
 ---
 
-## 1. Execution Summary
+## 1. 执行摘要
 
-| Metric | Value |
-|--------|-------|
-| Total elapsed | **528s** (~8.8 min) |
-| Total tokens | **3,771,879** (prompt: 3,746,849 / completion: 25,030) |
-| LLM calls | **115** |
-| Tool calls | **233** (subagent: 107, main agent: 126) |
-| Subagent (code-reviewer) elapsed | **203s** (38% of total) |
-| Subagent tokens | **1,945,710** |
-| Main agent post-subagent overhead | **1,773,245 prompt tokens / 61 rounds** |
+| 指标 | 数值 |
+|------|------|
+| 总耗时 | **528s**（约 8.8 分钟）|
+| 总 Token 数 | **3,771,879**（prompt: 3,746,849 / completion: 25,030）|
+| LLM 调用次数 | **115** |
+| 工具调用次数 | **233**（子代理: 107，主代理: 126）|
+| 子代理 (code-reviewer) 耗时 | **203s**（占总耗时 38%）|
+| 子代理 Token 数 | **1,945,710** |
+| 主代理在子代理之后的开销 | **1,773,245 prompt tokens / 61 轮** |
 
-### Execution Flow
+### 执行流程
 
 ```
-Main Agent (4 rounds, 38K tokens)
-  └─ list_directory → bash find → bash cat Cargo.toml → spawn_subagent
-       └─ code-reviewer subagent (50 rounds, 1.95M tokens)
-            └─ Hit maxTurns=50, returned error message
-  └─ Main Agent retry (61 rounds, 1.77M tokens)  ← WASTE
-       └─ bash cat × 120+ files, repeated "ready to output" 8 times
-       └─ Finally produced the review report
+主代理（4 轮，38K tokens）
+  └─ list_directory → bash find → bash cat Cargo.toml → 启动子代理
+       └─ code-reviewer 子代理（50 轮，1.95M tokens）
+            └─ 达到 maxTurns=50 上限，返回错误信息
+  └─ 主代理重试（61 轮，1.77M tokens）  ← 浪费
+       └─ bash cat × 120+ 个文件，重复"准备输出"8 次
+       └─ 最终生成审查报告
 ```
 
 ---
 
-## 2. Identified Problems
+## 2. 已识别的问题
 
-### 🔴 P0 — Subagent `maxTurns` Exhaustion Triggers Full Rework
+### 🔴 P0 — 子代理 `maxTurns` 耗尽触发完全返工
 
-**What happened:**
+**发生了什么：**
 
-1. `code-reviewer` subagent was configured with `maxTurns: 50`.
-2. For a ~21,000-line codebase, 50 rounds was insufficient to complete the review.
-3. Subagent returned a failure message:
+1. `code-reviewer` 子代理配置了 `maxTurns: 50`。
+2. 对于约 21,000 行的代码库，50 轮不足以完成审查。
+3. 子代理返回了失败信息：
    ```
    "[Subagent 'code-reviewer' reached maximum tool-calling rounds (50).
     Last tool history has 50 rounds of context.]"
    ```
-4. Main agent received this failure and decided to **redo the entire code review itself**.
-5. Main agent spent **61 additional rounds / 1.77M prompt tokens** using `bash cat` to re-read all files.
+4. 主代理收到此失败后决定**自己重新做整个代码审查**。
+5. 主代理额外花费了 **61 轮 / 1.77M prompt tokens**，用 `bash cat` 重新读取所有文件。
 
-**Impact:** ~50% of total token cost was wasted on redundant work.
+**影响：** 总 Token 成本中约 50% 被浪费在重复工作上。
 
-**Root cause:** `MaxRoundsExceeded` in `src/subagent/runner.rs` returns a plain error string with **zero useful content** from the subagent's work. The main agent has no partial results to build on.
+**根因：** `src/subagent/runner.rs` 中的 `MaxRoundsExceeded` 返回的是纯错误字符串，**不包含子代理已完成工作的任何有用内容**。主代理没有部分结果可以继续利用。
 
-### 🔴 P0 — "Loop Hesitation" Anti-Pattern
+### 🔴 P0 — "循环犹豫"反模式
 
-**What happened:**
+**发生了什么：**
 
-After the subagent failure, the main agent entered a loop where it:
-1. Read 2 files via `bash cat`
-2. Said "I now have enough information to write the report"
-3. ...then called `bash cat` on 2 more files instead of outputting
+子代理失败后，主代理进入了一个循环模式：
+1. 通过 `bash cat` 读取 2 个文件
+2. 宣称"我现在有足够的信息可以写报告了"
+3. ……然后又调用 `bash cat` 读取 2 个文件，而不是输出报告
 
-This "ready but not outputting" pattern repeated **at least 8 times** across 61 rounds:
+这种"准备好了但不输出"的模式在 61 轮中**至少重复了 8 次**：
 
-| Line | Output |
-|------|--------|
+| 行号 | 输出内容 |
+|------|---------|
 | 4408 | "现在我已经深入审查了关键模块，可以整理出一份完整的审查报告。" |
 | 4822 | "现在我已经收集了足够的信息，可以撰写一份全面的代码审查报告了。" |
 | 4891 | "Now I have a comprehensive understanding of the codebase." |
@@ -77,212 +77,210 @@ This "ready but not outputting" pattern repeated **at least 8 times** across 61 
 | 5926 | "Now I have enough context to write a comprehensive code review." |
 | 6202 | "现在我已经对整个项目代码有了全面的了解。" |
 | 6409 | "现在我已经对代码库有了充分的了解。" |
-| 6478 | *(finally produced the actual report)* |
+| 6478 | *（终于输出了实际的审查报告）* |
 
-**Root cause:** Memory sliding window kept evicting previously-read file contents. The agent read files → content got evicted → agent felt it needed to read more → repeat. Prompt tokens oscillated between 20K–43K, confirming constant eviction/re-read cycles.
+**根因：** 滑动窗口记忆不断驱逐之前读取的文件内容。代理读取文件 → 内容被驱逐 → 代理觉得需要读更多文件 → 循环往复。Prompt tokens 在 20K–43K 之间振荡，证实了持续的驱逐/重读循环。
 
-### 🟠 P1 — Subagent Context Overflow in Early Rounds
+### 🟠 P1 — 子代理在早期轮次中上下文溢出
 
-**Observation:** Subagent prompt token progression:
+**观察：** 子代理 prompt token 变化趋势：
 
 ```
-Round 1:  5,500   (initial)
-Round 2: 32,503   (read 2 files)
-Round 3: 55,928   (read 2 more)
-Round 4: 72,692   (peak — context overflow imminent)
-Round 5: 54,761   (memory eviction kicked in)
-...thereafter oscillates between 31K–49K
+第  1 轮:  5,500   （初始）
+第  2 轮: 32,503   （读取 2 个文件）
+第  3 轮: 55,928   （再读 2 个文件）
+第  4 轮: 72,692   （峰值 — 上下文即将溢出）
+第  5 轮: 54,761   （记忆驱逐开始生效）
+……之后在 31K–49K 之间振荡
 ```
 
-The subagent read too many files in the first 4 rounds, triggering memory eviction that discarded earlier file contents. This forced re-reading and wasted rounds.
+子代理在前 4 轮读取了太多文件，触发了记忆驱逐，导致之前的文件内容被丢弃。这迫使代理重新读取，浪费了轮次。
 
-### 🟠 P1 — Unnecessary Main Agent Pre-Exploration
+### 🟠 P1 — 主代理不必要的预探索
 
-The main agent spent **4 rounds (38K tokens)** exploring the project before spawning the subagent:
+主代理在启动子代理前花了 **4 轮（38K tokens）** 探索项目：
 
-1. `list_directory` (recursive)
+1. `list_directory`（递归）
 2. `bash find *.toml` + `bash find *.rs`
 3. `bash cat Cargo.toml` + `bash wc -l`
-4. Finally decided to `spawn_subagent`
+4. 最终决定 `spawn_subagent`
 
-This information could have been passed directly in the subagent task description.
+这些信息本可以直接写在子代理的任务描述中。
 
-### 🟠 P2 — System Prompt Repeated 115 Times Without Caching
+### 🟠 P2 — 系统 Prompt 被重复发送 115 次，未使用缓存
 
-Each LLM call included the full system prompt (~10K chars for main agent, ~14K for subagent). Over 115 calls, this is significant. Prompt caching (Anthropic `cache_control`) should be verified.
+每次 LLM 调用都包含完整的系统 prompt（主代理约 10K 字符，子代理约 14K 字符）。在 115 次调用中，这是一笔可观的开销。应验证 Prompt 缓存（Anthropic `cache_control`）是否已启用。
 
-### 🟡 P3 — Subagent Lacks `bash` Tool
+### 🟡 P3 — 子代理缺少 `bash` 工具
 
-The `code-reviewer` subagent only has: `read_file, list_directory, search_files, grep_search, get_file_info`. No `bash`. Meanwhile, the main agent heavily used `bash cat` for file reading, suggesting `bash` (or at least an unrestricted `read_file`) would improve subagent efficiency.
+`code-reviewer` 子代理仅有以下工具：`read_file, list_directory, search_files, grep_search, get_file_info`，没有 `bash`。而主代理大量使用 `bash cat` 来读取文件，说明为子代理提供 `bash`（或至少不受限的 `read_file`）可以提升效率。
 
 ---
 
-## 3. Optimization Recommendations
+## 3. 优化建议
 
-### 3.1 Increase `code-reviewer` maxTurns (P0, Effort: ⭐)
+### 3.1 增大 `code-reviewer` 的 maxTurns（P0，工作量：⭐）
 
-**File:** `.daedalus/agents/code-reviewer.md`
+**文件：** `.daedalus/agents/code-reviewer.md`
 
 ```yaml
-# Before
+# 修改前
 maxTurns: 50
 
-# After
+# 修改后
 maxTurns: 100
 ```
 
-**Expected impact:** Prevents subagent timeout for medium-sized codebases. Eliminates the main agent's 61-round retry entirely, saving ~50% of total tokens.
+**预期效果：** 防止中等规模代码库的子代理超时。彻底消除主代理 61 轮重试，节省约 50% 的总 Token。
 
-### 3.2 Implement `MaxRoundsExceeded` Graceful Degradation (P0, Effort: ⭐⭐)
+### 3.2 实现 `MaxRoundsExceeded` 优雅降级（P0，工作量：⭐⭐）
 
-**File:** `src/subagent/runner.rs`, `run_with_tools()` method
+**文件：** `src/subagent/runner.rs`，`run_with_tools()` 方法
 
-When `MaxRoundsExceeded` occurs, instead of returning a plain error string, make one final LLM call **without tools** to force a summary of findings:
+当 `MaxRoundsExceeded` 发生时，不要返回纯错误字符串，而是发起一次**不带工具**的最终 LLM 调用，强制输出已有发现的摘要：
 
 ```rust
 LoopOutcome::MaxRoundsExceeded => {
     tracing::warn!(
         agent = %definition.name,
         rounds = tool_rounds,
-        "Subagent reached max rounds, attempting final summary"
+        "子代理达到最大轮次上限，尝试最终总结"
     );
-    // Append a forcing message to the conversation
-    let mut summary_messages = /* rebuild from tool_history */;
+    // 向对话中追加一条强制输出消息
+    let mut summary_messages = /* 从 tool_history 重建 */;
     summary_messages.push(ChatMessage::user(
-        "You have reached the maximum number of tool-calling rounds. \
-         Output your findings NOW based on everything reviewed so far. \
-         Do not request any more tools."
+        "你已达到最大工具调用轮次。\
+         请立即根据目前已审查的所有内容输出你的发现。\
+         不要再请求任何工具。"
     ));
-    // Call LLM with tools=[] to force text-only response
+    // 以 tools=[] 调用 LLM，强制纯文本响应
     let summary = llm.chat(&summary_messages, None).await?;
     summary.content
 }
 ```
 
-**Expected impact:** Even when maxTurns is hit, the subagent returns useful partial results instead of nothing.
+**预期效果：** 即使达到 maxTurns 上限，子代理也能返回有用的部分结果，而非一无所获。
 
-### 3.3 Add Batched Review Strategy to code-reviewer Prompt (P1, Effort: ⭐)
+### 3.3 在 code-reviewer Prompt 中添加分批审查策略（P1，工作量：⭐）
 
-**File:** `.daedalus/agents/code-reviewer.md`, add to "Review Process" section:
+**文件：** `.daedalus/agents/code-reviewer.md`，添加到"审查流程"部分：
 
 ```markdown
-## Resource Management
+## 资源管理
 
-- Review files in batches of 2–3 at a time to avoid context overflow.
-- After reviewing each batch, **record your findings immediately** in your
-  response text before reading more files. This ensures findings survive
-  memory eviction.
-- Use `grep_search` to scan for common anti-patterns (`unwrap`, `expect`,
-  `panic`, `unsafe`, `todo`, `fixme`) before deep-reading individual files.
-- If you are approaching your round limit (>70% of max rounds used),
-  immediately output all findings collected so far.
+- 每次审查 2–3 个文件为一批，避免上下文溢出。
+- 每批审查完毕后，**立即在响应文本中记录发现**，然后再读取更多文件。
+  这确保即使发生记忆驱逐，发现也不会丢失。
+- 在逐文件深入阅读之前，先用 `grep_search` 扫描常见反模式
+  （`unwrap`、`expect`、`panic`、`unsafe`、`todo`、`fixme`）。
+- 如果已使用超过 70% 的轮次上限，立即输出已收集的所有发现。
 ```
 
-**Expected impact:** Reduces context overflow, prevents re-reading, and ensures incremental progress is preserved.
+**预期效果：** 减少上下文溢出，防止重复读取，确保增量进展被保留。
 
-### 3.4 Add Subagent Failure Recovery Strategy to Main Agent (P1, Effort: ⭐⭐)
+### 3.4 为主代理添加子代理失败恢复策略（P1，工作量：⭐⭐）
 
-**File:** Main agent system prompt (or a constraint document)
+**文件：** 主代理系统 prompt（或约束文档）
 
-Add guidance for handling subagent failures:
-
-```
-When a subagent reaches its maximum rounds without producing a final result:
-1. If the subagent returned partial findings, synthesize them into a report.
-2. If no findings were returned, spawn the subagent again with a NARROWER
-   scope (e.g., review only the 5 most critical files).
-3. NEVER attempt to redo the subagent's entire task yourself by reading
-   all files manually — this will exceed your own context limits.
-```
-
-**Expected impact:** Prevents the 61-round "loop hesitation" anti-pattern.
-
-### 3.5 Verify Prompt Caching is Active (P2, Effort: ⭐)
-
-**File:** `src/llm/venus_provider.rs`
-
-Confirm that system prompt messages are tagged with `cache_control: CacheControl::Ephemeral` so that the ~10K system prompt is cached across the 115 LLM calls in a session.
-
-### 3.6 Optimize code-reviewer Tool Strategy (P2, Effort: ⭐)
-
-Update the code-reviewer prompt to prefer `grep_search` for initial scanning:
+添加处理子代理失败的指导：
 
 ```
-## Efficient File Exploration
+当子代理达到最大轮次且未产生最终结果时：
+1. 如果子代理返回了部分发现，直接将其整合为报告。
+2. 如果没有返回任何发现，以更窄的范围重新启动子代理
+   （例如只审查最关键的 5 个文件）。
+3. 绝不要试图自己通过手动读取所有文件来重做子代理的整个任务
+   — 这会超出你自身的上下文限制。
+```
 
-1. Start with `grep_search` to find patterns across the codebase:
-   - `unwrap()` / `expect()` in non-test code
-   - `unsafe` blocks
+**预期效果：** 防止 61 轮"循环犹豫"反模式。
+
+### 3.5 验证 Prompt 缓存是否已启用（P2，工作量：⭐）
+
+**文件：** `src/llm/venus_provider.rs`
+
+确认系统 prompt 消息已标记 `cache_control: CacheControl::Ephemeral`，使得约 10K 的系统 prompt 在一个会话的 115 次 LLM 调用中被缓存。
+
+### 3.6 优化 code-reviewer 的工具使用策略（P2，工作量：⭐）
+
+更新 code-reviewer prompt，优先使用 `grep_search` 进行初始扫描：
+
+```
+## 高效文件探索
+
+1. 首先用 `grep_search` 在代码库中查找模式：
+   - 非测试代码中的 `unwrap()` / `expect()`
+   - `unsafe` 块
    - `todo!` / `unimplemented!`
-   - `clone()` in hot paths
-2. Only `read_file` for files where grep found potential issues.
-3. Use `read_file` with offset/limit for large files instead of reading entirely.
+   - 热路径中的 `clone()`
+2. 只对 grep 发现潜在问题的文件使用 `read_file`。
+3. 对大文件使用 `read_file` 的 offset/limit 参数，而非读取整个文件。
 ```
 
-### 3.7 Skip Main Agent Pre-Exploration for Review Tasks (P3, Effort: ⭐)
+### 3.7 审查任务跳过主代理预探索（P3，工作量：⭐）
 
-The main agent should directly spawn the code-reviewer subagent when receiving a code review request, passing project metadata in the task description rather than exploring first.
+收到代码审查请求时，主代理应直接启动 code-reviewer 子代理，将项目元数据写在任务描述中，而非自己先做探索。
 
 ---
 
-## 4. Cost Analysis
+## 4. 成本分析
 
-### Current Cost (Claude Sonnet 4 pricing: $3/M input, $15/M output)
+### 当前成本（Claude Sonnet 4 定价：$3/M 输入，$15/M 输出）
 
-| Phase | Prompt Tokens | Completion Tokens | Cost |
-|-------|:---:|:---:|:---:|
-| Main agent warmup (4 rounds) | 38K | 1.5K | ~$0.13 |
-| Subagent code-reviewer (50 rounds) | 1,946K | ~10K | ~$6.0 |
-| Main agent retry (61 rounds) | 1,773K | ~10K | ~$5.5 |
-| **Total** | **3,747K** | **25K** | **~$11.6** |
+| 阶段 | Prompt Tokens | Completion Tokens | 成本 |
+|------|:---:|:---:|:---:|
+| 主代理预热（4 轮）| 38K | 1.5K | ~$0.13 |
+| 子代理 code-reviewer（50 轮）| 1,946K | ~10K | ~$6.0 |
+| 主代理重试（61 轮）| 1,773K | ~10K | ~$5.5 |
+| **合计** | **3,747K** | **25K** | **~$11.6** |
 
-### Projected Cost After Optimization
+### 优化后预估成本
 
-| Scenario | Estimated Cost | Savings |
-|----------|:---:|:---:|
-| maxTurns=100, subagent completes | ~$6–7 | **40–50%** |
-| + prompt caching active | ~$4–5 | **55–65%** |
-| + batched review + grep-first | ~$3–4 | **65–75%** |
-
----
-
-## 5. Implementation Checklist
-
-- [ ] **P0**: Increase `code-reviewer` maxTurns from 50 → 100
-- [ ] **P0**: Implement `MaxRoundsExceeded` graceful degradation in `runner.rs`
-- [ ] **P1**: Add "Resource Management" section to code-reviewer prompt
-- [ ] **P1**: Add subagent failure recovery guidance to main agent prompt
-- [ ] **P2**: Verify prompt caching is active for system messages
-- [ ] **P2**: Add grep-first scanning strategy to code-reviewer prompt
-- [ ] **P3**: Optimize main agent to skip pre-exploration for review tasks
+| 场景 | 预估成本 | 节省 |
+|------|:---:|:---:|
+| maxTurns=100，子代理完成任务 | ~$6–7 | **40–50%** |
+| + 启用 prompt 缓存 | ~$4–5 | **55–65%** |
+| + 分批审查 + grep 优先 | ~$3–4 | **65–75%** |
 
 ---
 
-## 6. Appendix: Prompt Token Progression
+## 5. 实施检查清单
 
-### Subagent (50 rounds)
+- [ ] **P0**: 将 `code-reviewer` 的 maxTurns 从 50 增加到 100
+- [ ] **P0**: 在 `runner.rs` 中实现 `MaxRoundsExceeded` 优雅降级
+- [ ] **P1**: 在 code-reviewer prompt 中添加"资源管理"部分
+- [ ] **P1**: 在主代理 prompt 中添加子代理失败恢复指导
+- [ ] **P2**: 验证系统消息的 prompt 缓存已启用
+- [ ] **P2**: 在 code-reviewer prompt 中添加 grep 优先扫描策略
+- [ ] **P3**: 优化主代理，审查任务跳过预探索
+
+---
+
+## 6. 附录：Prompt Token 变化趋势
+
+### 子代理（50 轮）
 
 ```
-Round  1:  5,500  ▏
-Round  2: 32,503  ████████▎
-Round  3: 55,928  ██████████████▏
-Round  4: 72,692  ██████████████████▎  ← peak, memory eviction triggered
-Round  5: 54,761  █████████████▊
+第  1 轮:  5,500  ▏
+第  2 轮: 32,503  ████████▎
+第  3 轮: 55,928  ██████████████▏
+第  4 轮: 72,692  ██████████████████▎  ← 峰值，记忆驱逐触发
+第  5 轮: 54,761  █████████████▊
 ...
-Round 50: 46,326  ███████████▋
+第 50 轮: 46,326  ███████████▋
 ```
 
-### Main Agent Post-Subagent (61 rounds)
+### 主代理 — 子代理之后（61 轮）
 
 ```
-Round 51: 12,121  ███▏           ← fresh start after subagent
-Round 52: 21,168  █████▍
+第 51 轮: 12,121  ███▏           ← 子代理失败后重新开始
+第 52 轮: 21,168  █████▍
 ...
-Round 58: 20,200  █████▏         ← "ready to output" #1
+第 58 轮: 20,200  █████▏         ← "准备输出"第 1 次
 ...
-Round 72: 27,844  ███████▏       ← "ready to output" #4
+第 72 轮: 27,844  ███████▏       ← "准备输出"第 4 次
 ...
-Round 99: 33,838  ████████▌
+第 99 轮: 33,838  ████████▌
 ...
-Round111: 42,887  ██████████▊    ← finally outputs report
+第111 轮: 42,887  ██████████▊    ← 终于输出报告
 ```

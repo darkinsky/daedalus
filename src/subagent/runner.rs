@@ -22,7 +22,7 @@ const EXCLUDED_TOOLS: &[&str] = &["spawn_subagent", "spawn_team", "use_skill"];
 /// The runner creates a fresh `ChatAgent`-like execution environment for each
 /// subagent invocation:
 /// - Independent LLM provider (possibly a different model)
-/// - Independent memory (no shared conversation history)
+/// - No memory system (stateless — only system prompt + task + tool history)
 /// - Filtered tool set (whitelist/blacklist from the subagent definition)
 /// - The subagent's own system prompt (NOT the main agent's prompt)
 ///
@@ -97,9 +97,14 @@ impl SubagentRunner {
             has_tools,
         );
 
-        // 4. Build messages: enhanced system prompt + user task
+        // 4. Build messages: enhanced system prompt + user task.
+        //    Mark the system prompt with CacheControl::Ephemeral so the API
+        //    caches the static prefix across the subagent's 50-100 tool rounds.
+        //    Without this, the full system prompt (~14K chars) is reprocessed
+        //    on every LLM call, wasting significant tokens and latency.
         let messages = vec![
-            crate::llm::ChatMessage::system(&effective_prompt),
+            crate::llm::ChatMessage::system(&effective_prompt)
+                .with_cache_control(crate::llm::CacheControl::Ephemeral),
             crate::llm::ChatMessage::user(task),
         ];
 
@@ -323,13 +328,23 @@ impl SubagentRunner {
                 format!("[Subagent '{}' stopped: {}]", definition.name, message)
             }
             LoopOutcome::MaxRoundsExceeded => {
-                format!(
-                    "[Subagent '{}' reached maximum tool-calling rounds ({}). \
-                     Last tool history has {} rounds of context.]",
-                    definition.name,
-                    max_tool_rounds,
-                    tool_rounds
-                )
+                // ── Graceful degradation (inspired by Claude Code) ──
+                //
+                // Instead of returning a useless error string that discards
+                // all the subagent's work, make one final LLM call WITHOUT
+                // tools to force a summary of everything found so far.
+                // This is the single most impactful optimization: it prevents
+                // the main agent from re-doing the entire task from scratch.
+                tracing::warn!(
+                    agent = %definition.name,
+                    rounds = tool_rounds,
+                    max_rounds = max_tool_rounds,
+                    "Subagent reached max rounds, attempting final summary"
+                );
+
+                self.force_final_summary(
+                    definition, llm, messages, &tool_history, max_tool_rounds,
+                ).await
             }
         };
 
@@ -339,6 +354,83 @@ impl SubagentRunner {
             usage: Some(usage),
             tool_rounds,
         })
+    }
+
+    /// Force a final summary when `MaxRoundsExceeded`.
+    ///
+    /// Makes one last LLM call **without tools** (so the model is forced to
+    /// produce text), injecting a summary of the tool history as context.
+    /// This is inspired by Claude Code's `max_turns_reached` mechanism:
+    /// instead of discarding all work, give the LLM one chance to distill
+    /// its findings into a usable response.
+    ///
+    /// If this final call fails for any reason, falls back to a structured
+    /// summary of the tool history itself (tool names + truncated results).
+    async fn force_final_summary(
+        &self,
+        definition: &SubagentDefinition,
+        llm: &dyn LlmApi,
+        original_messages: &[crate::llm::ChatMessage],
+        tool_history: &[crate::llm::ToolRound],
+        max_tool_rounds: usize,
+    ) -> String {
+        use crate::llm::ChatMessage;
+
+        // Build a condensed view of what the subagent accomplished.
+        let mut work_summary = String::with_capacity(4096);
+        for (i, round) in tool_history.iter().enumerate() {
+            work_summary.push_str(&format!("Round {}:\n", i + 1));
+            for (call, resp) in round.calls.iter().zip(round.responses.iter()) {
+                work_summary.push_str(&format!("  Tool: {} → ", call.function_name));
+                // Keep first 300 chars of each result to stay within budget
+                let preview = if resp.content.len() > 300 {
+                    format!("{}...", &resp.content[..300])
+                } else {
+                    resp.content.clone()
+                };
+                work_summary.push_str(&preview);
+                work_summary.push('\n');
+            }
+        }
+
+        // Build the forcing prompt. Re-use the original system message so
+        // the LLM retains its role identity.
+        let system = original_messages.first().cloned()
+            .unwrap_or_else(|| ChatMessage::system("You are a helpful assistant."));
+
+        let forcing_prompt = format!(
+            "You have reached the maximum number of tool-calling rounds ({max_tool_rounds}). \
+             Below is a summary of all work completed so far:\n\n\
+             {work_summary}\n\n\
+             Based on EVERYTHING you have reviewed and found, output your COMPLETE \
+             findings NOW. Do not request any more tools. Provide a thorough, \
+             well-organized summary of all insights, issues, and observations.",
+        );
+
+        let messages = vec![system, ChatMessage::user(&forcing_prompt)];
+
+        match llm.chat(&messages, None).await {
+            Ok(response) if !response.content.trim().is_empty() => {
+                tracing::info!(
+                    agent = %definition.name,
+                    summary_len = response.content.len(),
+                    "Subagent produced graceful summary after max rounds"
+                );
+                response.content
+            }
+            Ok(_) | Err(_) => {
+                // Fallback: return the raw work summary so the main agent
+                // has *something* to work with rather than nothing.
+                tracing::warn!(
+                    agent = %definition.name,
+                    "Final summary call failed, returning raw work summary"
+                );
+                format!(
+                    "[Subagent '{}' reached max rounds ({}). Partial work summary:]\n\n{}",
+                    definition.name, max_tool_rounds, work_summary
+                )
+            }
+        }
     }
 
     /// Execute multiple subagent tasks in parallel and return all results.

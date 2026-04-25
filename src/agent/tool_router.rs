@@ -241,6 +241,12 @@ impl ToolRouter {
     ///
     /// Combines built-in (including skill) and MCP tool definitions into a single list.
     /// If a tool filter is active, only matching tools are included.
+    ///
+    /// **Cache stability**: The definitions are sorted alphabetically by tool name
+    /// so that the tool section of the system prompt (which includes tool schemas)
+    /// produces a deterministic token sequence across sessions. Without sorting,
+    /// MCP/skill tools loaded in non-deterministic order would break prompt cache
+    /// prefix stability. This mirrors Claude Code's `assembleToolPool()` design.
     pub fn build_tool_definitions(&self) -> Vec<serde_json::Value> {
         let mut definitions = self.builtin.build_tool_definitions();
         if let Some(ref mcp) = self.mcp {
@@ -254,6 +260,21 @@ impl ToolRouter {
                 .and_then(|n| n.as_str())
                 .unwrap_or("");
             self.is_tool_allowed(name)
+        });
+
+        // Sort by tool name for prompt cache stability.
+        // Claude Code does this in assembleToolPool() to prevent MCP tool
+        // registration order changes from invalidating the cached prefix.
+        definitions.sort_by(|a, b| {
+            let name_a = a.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
+            let name_b = b.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
+            name_a.cmp(name_b)
         });
 
         definitions
