@@ -213,6 +213,14 @@ pub fn build_tool_definition(registry: &SubagentRegistry) -> Option<serde_json::
          - A task matches a subagent's specialization\n\
          - You want to isolate a sub-task to preserve main conversation context\n\
          - The task produces large intermediate output that would clutter the main conversation\n\n\
+         IMPORTANT — Context isolation:\n\
+         - Each subagent has a completely independent context. If you spawn subagent A \
+         then subagent B, B cannot see any files or data that A read.\n\
+         - Do NOT spawn an 'explore' subagent to read code and then spawn 'code-reviewer' \
+         to review it — the reviewer would have to re-read everything from scratch, \
+         doubling the cost. Instead, spawn the specialized subagent directly.\n\
+         - For code review tasks, spawn 'code-reviewer' directly — it has all the tools \
+         it needs (read_file, grep_search, bash, etc.) to explore and review independently.\n\n\
          The subagent will execute the task independently and return a summary of results.",
         agent_list.join("\n")
     );

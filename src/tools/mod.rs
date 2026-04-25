@@ -8,6 +8,7 @@ mod multi_edit;
 pub(crate) mod recall_history;
 mod read_file;
 mod search_files;
+pub(crate) mod take_note;
 pub(crate) mod text_utils;
 mod write_file;
 
@@ -201,6 +202,7 @@ impl BuiltinToolRegistry {
             Box::new(grep_search::GrepSearchTool),
             Box::new(get_file_info::GetFileInfoTool),
             Box::new(bash::BashTool),
+            Box::new(take_note::TakeNoteTool::new(take_note::new_shared_notes())),
         ];
 
         tracing::info!(

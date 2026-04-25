@@ -49,7 +49,14 @@ pub fn build(tools: &[ToolInfo]) -> String {
          and the choice matters.\n\
          - **Concise responses**: Get to the point. Avoid filler, preamble, or restating \
          what the user already said.\n\
-         - **Language matching**: Respond in the same language the user is using."
+         - **Language matching**: Respond in the same language the user is using.\n\
+         \n\
+         ## Subagent Delegation\n\
+         \n\
+         - Spawn the most specialized subagent directly. Do not chain multiple subagents \
+         sequentially — they have isolated contexts and cannot share data.\n\
+         - If a subagent returns partial results, use them as-is. Never redo its work yourself.\n\
+         - On failure, retry with a narrower scope instead of a full retry."
     } else {
         "\n\n\
          ## Communication Style\n\

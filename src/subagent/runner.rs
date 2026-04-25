@@ -98,14 +98,30 @@ impl SubagentRunner {
         );
 
         // 4. Build messages: enhanced system prompt + user task.
-        //    Mark the system prompt with CacheControl::Ephemeral so the API
-        //    caches the static prefix across the subagent's 50-100 tool rounds.
-        //    Without this, the full system prompt (~14K chars) is reprocessed
-        //    on every LLM call, wasting significant tokens and latency.
+        //
+        //    Prompt caching strategy: mark the **user task** (not the system
+        //    prompt) with CacheControl::Ephemeral. This tells the API to set
+        //    a cache breakpoint at the end of the user message, so the entire
+        //    prefix `system + user` is cached across the subagent's 50-100
+        //    tool-calling rounds.
+        //
+        //    Why the user task and not the system prompt?
+        //    - Anthropic/Claude cache by **prefix match** up to the last
+        //      cache_control marker.
+        //    - Marking only system means only ~4K tokens are cached.
+        //    - Marking user means system + user (~5K tokens) are cached,
+        //      AND the tool history prefix (old rounds that don't change
+        //      between iterations) gets prefix-matched automatically.
+        //
+        //    The tool history is appended after these messages in
+        //    `build_request_body()`. Since old truncated rounds are stable
+        //    (their content doesn't change once truncated), the API's
+        //    automatic prefix matching will cache them too — potentially
+        //    caching 60-80% of the prompt instead of just 5%.
         let messages = vec![
-            crate::llm::ChatMessage::system(&effective_prompt)
+            crate::llm::ChatMessage::system(&effective_prompt),
+            crate::llm::ChatMessage::user(task)
                 .with_cache_control(crate::llm::CacheControl::Ephemeral),
-            crate::llm::ChatMessage::user(task),
         ];
 
         // 5. Run the tool-calling loop
@@ -295,6 +311,11 @@ impl SubagentRunner {
             // Subagents don't surface reasoning content upstream, so there's
             // no point paying the book-keeping cost.
             track_reasoning: false,
+            // Subagents share the same model as the parent — scale truncation
+            // for large context windows to avoid over-truncating tool history.
+            // This prevents the "read one file per round" degradation pattern
+            // where the model forgets previously read files too quickly.
+            truncation: Some(crate::agent::tool_loop::TruncationConfig::for_context_window(200_000)),
         };
 
         let loop_ctx = LoopContext {
@@ -305,6 +326,7 @@ impl SubagentRunner {
             on_llm_response: None,
             tracing_hook, // Pass tracing hook to subagent's tool loop
             tool_pipeline: None, // No tool pipeline for subagents (uses direct execution)
+            shared_notes: None, // TODO: wire up take_note SharedNotes when the tool is in the filtered set
         };
 
         let LoopResult { outcome, usage, tool_history } = run_tool_loop(
@@ -382,9 +404,14 @@ impl SubagentRunner {
             work_summary.push_str(&format!("Round {}:\n", i + 1));
             for (call, resp) in round.calls.iter().zip(round.responses.iter()) {
                 work_summary.push_str(&format!("  Tool: {} → ", call.function_name));
-                // Keep first 300 chars of each result to stay within budget
-                let preview = if resp.content.len() > 300 {
-                    format!("{}...", &resp.content[..300])
+                // Keep first ~1500 bytes of each result for the summary.
+                // With 100 rounds × ~2 calls/round, this can produce up to ~300KB,
+                // well within a 256K-token model's capacity for the final summary call.
+                // Use truncate_at_char_boundary to avoid splitting multi-byte
+                // characters (emoji, CJK, etc.).
+                let preview = if resp.content.len() > 1500 {
+                    let safe = crate::tools::truncate_at_char_boundary(&resp.content, 1500);
+                    format!("{}...", safe)
                 } else {
                     resp.content.clone()
                 };

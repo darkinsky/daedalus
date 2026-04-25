@@ -101,6 +101,9 @@ impl CoreTurnHandler {
             max_tool_rounds: self.max_tool_rounds,
             agent_label: "Lead agent".to_string(),
             track_reasoning: true,
+            // Lead agent uses a large context model — scale truncation accordingly.
+            // 200K is a conservative estimate for Claude Sonnet/Opus 256K context.
+            truncation: Some(crate::agent::tool_loop::TruncationConfig::for_context_window(200_000)),
         };
 
         let tracing_hook = trace_ctx.map(agent_tracing::TracingHook::new);
@@ -121,6 +124,7 @@ impl CoreTurnHandler {
             on_llm_response: None,
             tracing_hook: tracing_hook.as_ref(),
             tool_pipeline: Some(&tool_pipeline),
+            shared_notes: None, // Lead agent doesn't use take_note (subagents do)
         };
 
         let LoopResult {

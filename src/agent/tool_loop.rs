@@ -34,6 +34,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -48,19 +49,115 @@ use crate::agent_tracing::{TracingHook, TraceContext};
 
 use super::duplicate_detector::{annotate_responses, DuplicateAction, DuplicateDetector};
 
-/// Number of recent tool rounds whose results are kept verbatim.
-/// Older rounds have their tool responses truncated to save context tokens.
-const FULL_RESULT_RECENT_ROUNDS: usize = 3;
+/// Default number of recent tool rounds whose results are kept verbatim.
+/// Used as fallback when no context budget is configured.
+const DEFAULT_FULL_RESULT_RECENT_ROUNDS: usize = 3;
 
-/// Maximum character length for tool responses in "near" older rounds
-/// (within 2× FULL_RESULT_RECENT_ROUNDS of the current round).
-const TRUNCATED_RESULT_MAX_CHARS: usize = 500;
+/// Default maximum character length for tool responses in "near" older rounds.
+const DEFAULT_TRUNCATED_RESULT_MAX_CHARS: usize = 500;
 
-/// Maximum character length for tool responses in very old rounds
-/// (beyond 2× FULL_RESULT_RECENT_ROUNDS). Inspired by Claude Code's
-/// microcompact: aggressively summarize ancient rounds to a tool-name
-/// + success/failure + tiny excerpt.
-const MICRO_TRUNCATED_RESULT_MAX_CHARS: usize = 120;
+/// Default maximum character length for tool responses in very old rounds.
+const DEFAULT_MICRO_TRUNCATED_RESULT_MAX_CHARS: usize = 120;
+
+/// Approximate token-to-character ratio for estimating token counts from
+/// character lengths.
+///
+/// Set to 3 rather than 4 because tool history contains a high proportion
+/// of JSON structure (`{"id":"...","type":"function","function":{...}}`),
+/// where short keys and punctuation average ~3 chars per token. Using 4
+/// underestimates the true token count, causing the truncation algorithm
+/// to trigger too late — resulting in a steep "cliff" (e.g., 240K → 113K)
+/// when it finally fires and has to truncate many rounds at once.
+const CHARS_PER_TOKEN: usize = 3;
+
+/// Configuration for how tool history is truncated before sending to the LLM.
+///
+/// ## Strategy: Budget-based dynamic truncation
+///
+/// Instead of truncating based on fixed round-distance thresholds (which
+/// cause premature truncation when the context is far from full), this
+/// uses a **token budget** approach:
+///
+/// 1. If total estimated history tokens < `budget_tokens` → keep everything
+///    verbatim (no truncation at all).
+/// 2. If over budget → progressively truncate from oldest rounds first,
+///    using three tiers: moderate → aggressive → micro, until the total
+///    fits within budget.
+///
+/// The most recent `min_recent_rounds` are **never** truncated, ensuring
+/// the model always has full context for its immediate next decision.
+///
+/// This eliminates the "150K peak then drop to 80K" problem where the old
+/// fixed-tier strategy started truncating at round 14 regardless of how
+/// much context budget remained.
+#[derive(Debug, Clone)]
+pub struct TruncationConfig {
+    /// Token budget for the tool history portion of the context.
+    /// When total estimated tokens are below this, no truncation occurs.
+    /// A good default is ~60% of the model's context window.
+    pub budget_tokens: usize,
+    /// Minimum number of most-recent rounds that are never truncated.
+    pub min_recent_rounds: usize,
+    /// Truncation tier thresholds (in characters) applied from oldest first.
+    /// tier 1 (moderate): first pass truncation limit.
+    pub moderate_max_chars: usize,
+    /// tier 2 (aggressive): second pass if still over budget.
+    pub aggressive_max_chars: usize,
+    /// tier 3 (micro): final pass for extreme over-budget situations.
+    pub micro_max_chars: usize,
+}
+
+impl Default for TruncationConfig {
+    fn default() -> Self {
+        Self {
+            budget_tokens: 40_000, // conservative for small context models
+            min_recent_rounds: DEFAULT_FULL_RESULT_RECENT_ROUNDS,
+            moderate_max_chars: DEFAULT_TRUNCATED_RESULT_MAX_CHARS,
+            aggressive_max_chars: DEFAULT_MICRO_TRUNCATED_RESULT_MAX_CHARS,
+            micro_max_chars: 60,
+        }
+    }
+}
+
+impl TruncationConfig {
+    /// Build a truncation config scaled to a context window size (in tokens).
+    ///
+    /// Allocates ~60% of the context window to tool history budget.
+    /// The remaining 40% is reserved for system prompt, user message,
+    /// tool definitions, and the model's output.
+    pub fn for_context_window(context_tokens: usize) -> Self {
+        let budget = context_tokens * 60 / 100;
+
+        if context_tokens >= 200_000 {
+            // Large context (200K+): generous budget, gentle truncation
+            Self {
+                budget_tokens: budget,
+                min_recent_rounds: 10,
+                moderate_max_chars: 6000,
+                aggressive_max_chars: 2000,
+                micro_max_chars: 500,
+            }
+        } else if context_tokens >= 100_000 {
+            // Medium context (100K-200K)
+            Self {
+                budget_tokens: budget,
+                min_recent_rounds: 6,
+                moderate_max_chars: 3000,
+                aggressive_max_chars: 1000,
+                micro_max_chars: 200,
+            }
+        } else {
+            // Small context (<100K)
+            Self {
+                budget_tokens: budget,
+                min_recent_rounds: DEFAULT_FULL_RESULT_RECENT_ROUNDS,
+                moderate_max_chars: DEFAULT_TRUNCATED_RESULT_MAX_CHARS,
+                aggressive_max_chars: DEFAULT_MICRO_TRUNCATED_RESULT_MAX_CHARS,
+                micro_max_chars: 60,
+            }
+        }
+    }
+}
 
 // ── Injected abstractions ──
 
@@ -97,6 +194,12 @@ pub struct LoopConfig {
     /// is forwarded into the final `LoopOutcome::Final`. Subagents don't
     /// need this — only the main chat surface uses reasoning content.
     pub track_reasoning: bool,
+    /// Controls how aggressively older tool-round results are truncated.
+    ///
+    /// When `None`, uses conservative defaults suitable for small context
+    /// windows. Callers should set this based on the model's context window
+    /// size to avoid over-truncating on large-context models (e.g. 256K).
+    pub truncation: Option<TruncationConfig>,
 }
 
 // ── Outputs ──
@@ -151,6 +254,9 @@ pub struct LoopContext<'a> {
     /// When `None`, tool calls go directly to the executor (backward compatible
     /// for subagent runner which doesn't need middleware).
     pub tool_pipeline: Option<&'a ToolPipeline>,
+    /// Optional shared notes from `take_note` tool, injected into session metadata.
+    /// When `Some`, accumulated notes are included in the progress summary each round.
+    pub shared_notes: Option<&'a crate::tools::take_note::SharedNotes>,
 }
 
 // ── The loop itself ──
@@ -179,6 +285,13 @@ pub async fn run_tool_loop(
     let mut total_usage = TokenUsage::default();
     let mut last_reasoning: Option<String> = None;
     let mut duplicate_detector = DuplicateDetector::new();
+
+    // ── Session-level tracking (never truncated) ──
+    // Tracks which files have been read and how many total tool calls made.
+    // This is injected into the tool history as a synthetic system message
+    // so the LLM knows what it has already done, even after truncation.
+    let mut files_read: HashSet<String> = HashSet::new();
+    let mut total_tool_calls: usize = 0;
 
     for round_idx in 0..cfg.max_tool_rounds {
         // Human-facing round number (1-based) for logs / events.
@@ -225,7 +338,66 @@ pub async fn run_tool_loop(
         // Build a context-efficient view of tool history for the LLM.
         // Recent rounds keep full results; older rounds are truncated to save tokens.
         // The original `tool_history` is preserved intact for tracing and memory.
-        let truncated_history = truncate_tool_history(&tool_history);
+        let trunc_cfg = cfg.truncation.as_ref().cloned().unwrap_or_default();
+        let mut truncated_history = truncate_tool_history(&tool_history, &trunc_cfg);
+
+        // ── Inject session metadata into tool history ──
+        // Appends a compact session summary to the last tool response in the
+        // truncated history. This gives the LLM:
+        // 1. Progress awareness (round X/Y, Z% budget used)
+        // 2. File access index (which files already read — prevents re-reads)
+        // 3. Accumulated notes from take_note
+        //
+        // Unlike the previous synthetic-tool-round approach (which used a fake
+        // tool name `_session_progress` that APIs may ignore), this piggybacks
+        // on real tool responses, ensuring the metadata always reaches the LLM.
+        //
+        // Cost: ~100-500 bytes per injection, negligible vs. a single file read.
+        if !files_read.is_empty() || round_number > 1 {
+            let progress_pct = (round_number * 100) / cfg.max_tool_rounds;
+            let mut meta = format!(
+                "\n\n---\n[Session: Round {}/{} ({}% budget), {} calls, {} unique files read",
+                round_number, cfg.max_tool_rounds, progress_pct, total_tool_calls, files_read.len(),
+            );
+            meta.push(']');
+
+            // Compact file index (just filenames, not full paths)
+            if !files_read.is_empty() {
+                let mut sorted: Vec<&String> = files_read.iter().collect();
+                sorted.sort();
+                let short_names: Vec<&str> = sorted.iter().map(|p| {
+                    p.rsplit('/').next().unwrap_or(p)
+                }).collect();
+                meta.push_str(&format!("\n[Files read: {}]", short_names.join(", ")));
+            }
+
+            // Progress warning at 70%+
+            if progress_pct >= 70 {
+                meta.push_str(&format!(
+                    "\n⚠️ {}% budget used — start writing your final output now.",
+                    progress_pct
+                ));
+            }
+
+            // Accumulated notes from take_note tool
+            if let Some(notes_ref) = ctx.shared_notes {
+                if let Ok(notes) = notes_ref.lock() {
+                    if !notes.is_empty() {
+                        meta.push_str("\n[Notes recorded:]\n");
+                        for (i, note) in notes.iter().enumerate() {
+                            meta.push_str(&format!("  {}. {}\n", i + 1, note));
+                        }
+                    }
+                }
+            }
+
+            // Append to the last response of the last round in truncated history
+            if let Some(last_round) = truncated_history.last_mut() {
+                if let Some(last_resp) = last_round.responses.last_mut() {
+                    last_resp.content.push_str(&meta);
+                }
+            }
+        }
 
         let response = if use_streaming {
             // Streaming path: emit chunks to CLI in real time
@@ -370,6 +542,35 @@ pub async fn run_tool_loop(
             }
             DuplicateAction::Ok => {}
         }
+
+        // ── Track file reads and update session metadata ──
+        for tc in &tool_calls {
+            total_tool_calls += 1;
+            // Track files accessed by read_file, grep_search, search_files
+            if let Some(path) = tc.arguments.get("path").and_then(|v| v.as_str()) {
+                if tc.function_name == "read_file"
+                    || tc.function_name == "grep_search"
+                    || tc.function_name == "search_files"
+                    || tc.function_name == "list_directory"
+                {
+                    files_read.insert(path.to_string());
+                }
+            }
+        }
+
+        // ── Diagnostic logging (#8) ──
+        let full_chars = estimate_history_chars(&tool_history);
+        tracing::debug!(
+            agent = %cfg.agent_label,
+            round = round_number,
+            max_rounds = cfg.max_tool_rounds,
+            tool_calls_this_round = tool_calls.len(),
+            total_tool_calls,
+            unique_files = files_read.len(),
+            history_chars = full_chars,
+            estimated_history_tokens = full_chars / CHARS_PER_TOKEN,
+            "Tool loop round stats"
+        );
 
         tool_history.push(ToolRound {
             calls: tool_calls,
@@ -522,68 +723,160 @@ fn emit(callback: Option<&ToolEventCallback>, event: ToolEvent) {
 
 /// Build a context-efficient copy of tool history for the LLM.
 ///
-/// In a long tool-calling loop, early rounds accumulate large tool outputs
-/// (file contents, grep results, etc.) that are no longer critical for the
-/// LLM's next decision. Sending all of them verbatim wastes context tokens
-/// and can cause language drift in long conversations.
+/// ## Budget-based dynamic truncation
 ///
-/// Strategy (progressive truncation, inspired by Claude Code's microcompact):
-/// - Most recent `FULL_RESULT_RECENT_ROUNDS` rounds: keep verbatim.
-/// - "Near" older rounds (within 2× of recent window): truncate to 500 chars.
-/// - Very old rounds (beyond 2×): micro-truncate to 120 chars (tool name + tiny excerpt).
+/// Unlike a fixed-tier approach (which truncates based on round distance
+/// regardless of total size), this algorithm:
+///
+/// 1. **Estimates** the total token cost of the full history.
+/// 2. If under budget → returns everything verbatim (zero truncation).
+/// 3. If over budget → applies progressive truncation from the **oldest**
+///    rounds first, through three tiers (moderate → aggressive → micro),
+///    re-checking the budget after each tier.
+///
+/// The most recent `min_recent_rounds` are **never** truncated.
+///
+/// This ensures the context stays as close to the budget ceiling as possible
+/// without premature truncation (the "150K peak then drop to 80K" problem).
 ///
 /// Tool calls (function name + arguments) are always kept in full — they're
 /// small and provide important structural context.
-fn truncate_tool_history(history: &[ToolRound]) -> Vec<ToolRound> {
-    if history.len() <= FULL_RESULT_RECENT_ROUNDS {
+fn truncate_tool_history(history: &[ToolRound], cfg: &TruncationConfig) -> Vec<ToolRound> {
+    if history.is_empty() {
+        return Vec::new();
+    }
+
+    // Step 1: Estimate total tokens of the full (untruncated) history.
+    let total_chars = estimate_history_chars(history);
+    let estimated_tokens = total_chars / CHARS_PER_TOKEN;
+
+    // Under budget? Return everything verbatim — no truncation needed.
+    if estimated_tokens <= cfg.budget_tokens {
         return history.to_vec();
     }
 
-    let recent_cutoff = history.len() - FULL_RESULT_RECENT_ROUNDS;
-    // "Near" zone = double the recent window
-    let micro_cutoff = history.len().saturating_sub(FULL_RESULT_RECENT_ROUNDS * 2);
-    let mut result = Vec::with_capacity(history.len());
+    tracing::debug!(
+        estimated_tokens,
+        budget = cfg.budget_tokens,
+        rounds = history.len(),
+        "Tool history over budget, applying truncation"
+    );
 
-    for (i, round) in history.iter().enumerate() {
-        if i >= recent_cutoff {
-            // Recent round: keep verbatim
-            result.push(round.clone());
-        } else {
-            // Older round: pick truncation budget based on age
-            let max_chars = if i < micro_cutoff {
-                MICRO_TRUNCATED_RESULT_MAX_CHARS // very old → aggressive
-            } else {
-                TRUNCATED_RESULT_MAX_CHARS // near-old → moderate
-            };
+    // Step 2: Clone the history so we can mutate response content.
+    let mut result: Vec<ToolRound> = history.to_vec();
+    let len = result.len();
 
-            let truncated_responses: Vec<ToolResponse> = round.responses.iter().map(|resp| {
-                if resp.content.len() > max_chars {
+    // The most recent N rounds are protected from truncation.
+    let protected_start = len.saturating_sub(cfg.min_recent_rounds);
+
+    // Step 3: Truncate round-by-round from oldest to newest.
+    //
+    // For each unprotected round, try progressively harsher truncation
+    // tiers until we're back within budget. This ensures we truncate
+    // the *minimum* number of rounds needed, keeping newer rounds as
+    // intact as possible.
+    //
+    // Previous approach applied each tier to ALL rounds simultaneously,
+    // causing a "230K → 73K cliff". This per-round approach produces
+    // a smooth decline: only the oldest 3-5 rounds get micro-truncated,
+    // the rest stay at moderate or full.
+    let tiers = [
+        cfg.moderate_max_chars,
+        cfg.aggressive_max_chars,
+        cfg.micro_max_chars,
+    ];
+
+    for i in 0..protected_start {
+        // Check budget before touching this round
+        let current_chars = estimate_history_chars(&result);
+        let current_tokens = current_chars / CHARS_PER_TOKEN;
+        if current_tokens <= cfg.budget_tokens {
+            break; // We're within budget — stop truncating.
+        }
+
+        // Apply progressively harsher tiers to this single round
+        for &tier_limit in &tiers {
+            for resp in &mut result[i].responses {
+                if resp.content.len() > tier_limit {
                     let truncated = crate::tools::truncate_at_char_boundary(
                         &resp.content,
-                        max_chars,
+                        tier_limit,
                     );
-                    ToolResponse {
-                        call_id: resp.call_id.clone(),
-                        content: format!(
-                            "{}...(truncated, {} bytes total)",
-                            truncated,
-                            resp.content.len()
-                        ),
-                        success: resp.success,
-                    }
-                } else {
-                    resp.clone()
+                    resp.content = format!(
+                        "{}...(truncated, {} bytes total)",
+                        truncated,
+                        resp.content.len()
+                    );
                 }
-            }).collect();
+            }
 
-            result.push(ToolRound {
-                calls: round.calls.clone(),
-                responses: truncated_responses,
-            });
+            // Re-check after each tier — stop as soon as we're within budget
+            let after_chars = estimate_history_chars(&result);
+            let after_tokens = after_chars / CHARS_PER_TOKEN;
+            if after_tokens <= cfg.budget_tokens {
+                break;
+            }
         }
     }
 
     result
+}
+
+/// Estimate the total character count of a tool history.
+///
+/// Counts tool call arguments + response content for each round.
+/// This is a rough estimate used for budget comparison, not exact token counting.
+///
+/// For tool calls, we add a fixed overhead per call (~80 chars) to account
+/// for the JSON wire format wrapping (`{"id":"...","type":"function",
+/// "function":{"name":"...","arguments":...}}`). Without this, the estimate
+/// is ~30% too low for tool-call-heavy histories.
+fn estimate_history_chars(history: &[ToolRound]) -> usize {
+    /// Fixed overhead per tool call for JSON structure (id, type, function wrapper).
+    const TOOL_CALL_JSON_OVERHEAD: usize = 80;
+
+    let mut total = 0;
+    for round in history {
+        for call in &round.calls {
+            // Use byte length of the JSON value directly instead of
+            // serializing to a new String each time. For Object/Array
+            // values this is an undercount, but combined with the fixed
+            // overhead it's close enough for budget estimation.
+            let args_len = estimate_json_len(&call.arguments);
+            total += call.function_name.len() + args_len + TOOL_CALL_JSON_OVERHEAD;
+        }
+        for resp in &round.responses {
+            total += resp.content.len();
+        }
+    }
+    total
+}
+
+/// Estimate the serialized length of a JSON value without allocating.
+///
+/// This avoids `value.to_string()` which allocates a new String on every call.
+/// The estimate is approximate but sufficient for budget comparison.
+fn estimate_json_len(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Null => 4,
+        serde_json::Value::Bool(b) => if *b { 4 } else { 5 },
+        serde_json::Value::Number(n) => {
+            // Most numbers are < 10 digits
+            let s = n.to_string();
+            s.len()
+        }
+        serde_json::Value::String(s) => s.len() + 2, // quotes
+        serde_json::Value::Array(arr) => {
+            let inner: usize = arr.iter().map(estimate_json_len).sum();
+            inner + arr.len().saturating_sub(1) + 2 // commas + brackets
+        }
+        serde_json::Value::Object(map) => {
+            let inner: usize = map.iter()
+                .map(|(k, v)| k.len() + 2 + 1 + estimate_json_len(v)) // "key":value
+                .sum();
+            inner + map.len().saturating_sub(1) + 2 // commas + braces
+        }
+    }
 }
 
 // ── ToolPipeline core adapter ──

@@ -166,6 +166,12 @@ fn build_constraints_section(has_tools: bool) -> String {
         );
     }
 
+    constraints.push(
+        "Respond in the same language as the task description. \
+         If the task is in Chinese, all output (including intermediate thoughts \
+         and the final report) must be in Chinese. Never switch languages mid-response."
+    );
+
     let items: Vec<String> = constraints
         .iter()
         .enumerate()

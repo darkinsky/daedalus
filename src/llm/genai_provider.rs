@@ -3,6 +3,7 @@ use async_trait::async_trait;
 
 use genai::adapter::AdapterKind;
 use genai::chat::{
+    CacheControl as GenAiCacheControl,
     ChatMessage as GenAiChatMessage,
     ChatRequest,
     ChatStreamEvent,
@@ -87,17 +88,15 @@ impl GenAiProvider {
 
     /// Convert our ChatMessages to genai ChatMessages.
     ///
-    /// Note: genai crate does not natively support `cache_control` markers.
-    /// For Anthropic prompt caching through genai, the cache_control hint
-    /// is currently a no-op. If cache_control support is critical, use
-    /// VenusProvider which has full control over the HTTP request body.
+    /// Propagates `cache_control` markers to genai's `MessageOptions`.
+    /// For Anthropic backends, genai translates these into content-level
+    /// `cache_control` fields. For OpenAI backends, the marker is a no-op
+    /// (OpenAI uses automatic prefix caching).
     fn convert_messages(messages: &[ChatMessage]) -> Vec<GenAiChatMessage> {
         messages
             .iter()
             .map(|msg| {
-                // TODO: When genai crate adds cache_control support,
-                // propagate msg.cache_control here.
-                match msg.role {
+                let mut genai_msg = match msg.role {
                     ChatRole::System => GenAiChatMessage::system(&msg.content),
                     ChatRole::User => GenAiChatMessage::user(&msg.content),
                     ChatRole::Assistant => GenAiChatMessage::assistant(&msg.content),
@@ -105,7 +104,14 @@ impl GenAiProvider {
                     // genai they are treated as assistant messages since genai
                     // handles tool responses via its own ToolResponse type.
                     ChatRole::Tool => GenAiChatMessage::assistant(&msg.content),
+                };
+
+                // Propagate cache_control to genai's MessageOptions
+                if msg.cache_control.is_some() {
+                    genai_msg = genai_msg.with_options(GenAiCacheControl::Ephemeral);
                 }
+
+                genai_msg
             })
             .collect()
     }
@@ -198,6 +204,10 @@ impl GenAiProvider {
     ///
     /// Shared between `chat_with_tools` and `chat_with_tools_stream` to avoid
     /// duplicating the request construction logic.
+    ///
+    /// Applies the same prompt caching optimization as VenusProvider: marks
+    /// the last truncated tool response with `cache_control: ephemeral` so
+    /// the stable prefix (system + user + old truncated rounds) is cached.
     fn build_chat_request(
         messages: &[ChatMessage],
         tools: &[serde_json::Value],
@@ -214,13 +224,28 @@ impl GenAiProvider {
             chat_req = chat_req.with_tools(genai_tools);
         }
 
-        for round in tool_history {
+        // Find the last stable (truncated) round for cache breakpoint
+        let last_stable_round_idx = tool_history.iter()
+            .rposition(|round| {
+                round.responses.iter().any(|r| r.content.contains("...(truncated,"))
+            });
+
+        for (round_idx, round) in tool_history.iter().enumerate() {
             let genai_calls: Vec<GenAiToolCall> = round.calls.iter().map(Self::to_genai_tool_call).collect();
             chat_req = chat_req.append_message(GenAiChatMessage::from(genai_calls));
 
-            for resp in &round.responses {
+            let is_cache_boundary = last_stable_round_idx == Some(round_idx);
+            let resp_count = round.responses.len();
+            for (resp_idx, resp) in round.responses.iter().enumerate() {
                 let genai_resp = Self::to_genai_tool_response(resp);
-                chat_req = chat_req.append_message(GenAiChatMessage::from(genai_resp));
+                let mut msg = GenAiChatMessage::from(genai_resp);
+
+                // Mark the last response of the last stable round with cache_control
+                if is_cache_boundary && resp_idx == resp_count - 1 {
+                    msg = msg.with_options(GenAiCacheControl::Ephemeral);
+                }
+
+                chat_req = chat_req.append_message(msg);
             }
         }
 
@@ -239,13 +264,17 @@ impl GenAiProvider {
 
         let usage = &chat_res.usage;
         let usage = if usage.prompt_tokens.is_some() || usage.completion_tokens.is_some() || usage.total_tokens.is_some() {
+            // Extract cached_tokens from genai's prompt_tokens_details
+            let cached = usage.prompt_tokens_details
+                .as_ref()
+                .and_then(|d| d.cached_tokens)
+                .map(|v| v as u64);
+
             Some(TokenUsage {
                 prompt_tokens: usage.prompt_tokens.map(|v| v as u64),
                 completion_tokens: usage.completion_tokens.map(|v| v as u64),
                 total_tokens: usage.total_tokens.map(|v| v as u64),
-                // genai crate does not currently expose cached token counts.
-                // When it does, extract them here.
-                cached_tokens: None,
+                cached_tokens: cached,
             })
         } else {
             None
@@ -324,11 +353,16 @@ impl LlmApi for GenAiProvider {
                         }
                         ChatStreamEvent::End(end) => {
                             if let Some(usage) = end.captured_usage {
+                                let cached = usage.prompt_tokens_details
+                                    .as_ref()
+                                    .and_then(|d| d.cached_tokens)
+                                    .map(|v| v as u64);
+
                                 let token_usage = TokenUsage {
                                     prompt_tokens: usage.prompt_tokens.map(|v| v as u64),
                                     completion_tokens: usage.completion_tokens.map(|v| v as u64),
                                     total_tokens: usage.total_tokens.map(|v| v as u64),
-                                    cached_tokens: None,
+                                    cached_tokens: cached,
                                 };
                                 let _ = tx.send(StreamChunk::Usage(token_usage)).await;
                             }

@@ -90,7 +90,29 @@ impl VenusProvider {
             .collect();
 
         // Replay tool history
-        for round in tool_history {
+        //
+        // Prompt caching optimization: identify the last "stable" round in
+        // the tool history and mark its final tool response with cache_control.
+        //
+        // A round is "stable" if its responses have been truncated (content
+        // contains "...(truncated," suffix). Once truncated, a round's content
+        // never changes in subsequent iterations, making it a reliable cache
+        // boundary.
+        //
+        // By marking the last stable response, we tell the API that everything
+        // from the beginning of the conversation up to and including that
+        // response is a cacheable prefix. On the next LLM call, only the
+        // new/recent rounds need to be reprocessed.
+        //
+        // Without this, only the system+user messages (~5K tokens) are cached.
+        // With this, system+user+stable_history (potentially 50-80K tokens)
+        // can be cached, reducing costs by 50-75% for long-running subagents.
+        let last_stable_round_idx = tool_history.iter()
+            .rposition(|round| {
+                round.responses.iter().any(|r| r.content.contains("...(truncated,"))
+            });
+
+        for (round_idx, round) in tool_history.iter().enumerate() {
             // Assistant message with tool_calls
             let tool_calls_json: Vec<Value> = round.calls
                 .iter()
@@ -113,12 +135,27 @@ impl VenusProvider {
             }));
 
             // Tool response messages
-            for resp in &round.responses {
-                msg_array.push(json!({
-                    "role": "tool",
-                    "tool_call_id": resp.call_id,
-                    "content": resp.content,
-                }));
+            let is_cache_boundary = last_stable_round_idx == Some(round_idx);
+            let resp_count = round.responses.len();
+            for (resp_idx, resp) in round.responses.iter().enumerate() {
+                // Mark the last response of the last stable round with cache_control
+                if is_cache_boundary && resp_idx == resp_count - 1 {
+                    msg_array.push(json!({
+                        "role": "tool",
+                        "tool_call_id": resp.call_id,
+                        "content": [{
+                            "type": "text",
+                            "text": resp.content,
+                            "cache_control": { "type": "ephemeral" }
+                        }],
+                    }));
+                } else {
+                    msg_array.push(json!({
+                        "role": "tool",
+                        "tool_call_id": resp.call_id,
+                        "content": resp.content,
+                    }));
+                }
             }
         }
 

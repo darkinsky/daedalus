@@ -19,10 +19,97 @@ const MAX_TIMEOUT_SECS: u64 = 300;
 /// Maximum output size in bytes to prevent unbounded memory usage.
 const MAX_OUTPUT_BYTES: usize = 256 * 1024; // 256 KB
 
+/// Shell commands that are considered safe for read-only (plan) mode.
+///
+/// Only the first word of the command (the program name) is checked.
+/// This prevents write operations while allowing common read/analysis commands.
+#[allow(dead_code)]
+const READ_ONLY_ALLOWED_COMMANDS: &[&str] = &[
+    "find", "wc", "grep", "rg", "cat", "head", "tail", "ls", "file", "stat",
+    "sort", "uniq", "awk", "sed", "tr", "cut", "diff", "comm",
+    "tree", "du", "df", "echo", "printf", "test", "expr",
+    "cargo", "rustc", "git", "python", "node", "go",
+];
+
+/// Patterns in commands that indicate write/destructive operations,
+/// blocked even if the base command is in the allow-list.
+#[allow(dead_code)]
+const READ_ONLY_BLOCKED_PATTERNS: &[&str] = &[
+    " > ", " >> ", " | tee ", "rm ", "mv ", "cp ", "chmod ", "chown ",
+    "curl ", "wget ", "apt ", "pip install", "cargo install",
+    "mktemp", "mkdir ",
+];
+
 // ── bash ──
 
 /// Execute a bash command and return its output.
 pub struct BashTool;
+
+impl BashTool {
+    /// Check if a command is allowed in read-only mode.
+    ///
+    /// Returns `Ok(())` if allowed, or `Err` with an explanation if blocked.
+    pub fn validate_read_only(command: &str) -> Result<()> {
+        let trimmed = command.trim();
+
+        // Check for blocked destructive patterns
+        for pattern in READ_ONLY_BLOCKED_PATTERNS {
+            if trimmed.contains(pattern) {
+                anyhow::bail!(
+                    "Command blocked in read-only mode: contains '{}'. \
+                     This subagent operates in plan/read-only mode and cannot \
+                     perform write operations.",
+                    pattern.trim()
+                );
+            }
+        }
+
+        // Check the base command (first word, or first word after env vars)
+        let base_cmd = extract_base_command(trimmed);
+        if READ_ONLY_ALLOWED_COMMANDS.iter().any(|&allowed| base_cmd == allowed) {
+            return Ok(());
+        }
+
+        // Allow piped commands where the first command is allowed
+        // (e.g., "find ... | wc -l" — find is allowed)
+        if let Some(first_segment) = trimmed.split('|').next() {
+            let first_cmd = extract_base_command(first_segment.trim());
+            if READ_ONLY_ALLOWED_COMMANDS.iter().any(|&allowed| first_cmd == allowed) {
+                return Ok(());
+            }
+        }
+
+        anyhow::bail!(
+            "Command '{}' is not in the read-only allow-list. \
+             Allowed commands: {}",
+            base_cmd,
+            READ_ONLY_ALLOWED_COMMANDS.join(", ")
+        )
+    }
+}
+
+/// Extract the base command name from a shell command string.
+///
+/// Handles common patterns like:
+/// - `wc -l file` → `wc`
+/// - `ENV=val command arg` → `command`
+/// - `/usr/bin/grep pattern` → `grep`
+#[allow(dead_code)]
+fn extract_base_command(cmd: &str) -> &str {
+    let trimmed = cmd.trim();
+
+    // Skip leading environment variable assignments (FOO=bar command)
+    let after_env = trimmed
+        .split_whitespace()
+        .find(|word| !word.contains('='))
+        .unwrap_or(trimmed);
+
+    // Take just the program name (strip path: /usr/bin/grep → grep)
+    let base = after_env.rsplit('/').next().unwrap_or(after_env);
+
+    // Strip everything after whitespace
+    base.split_whitespace().next().unwrap_or(base)
+}
 
 #[async_trait]
 impl BuiltinTool for BashTool {

@@ -298,6 +298,7 @@ fn serialize_usage(usage: Option<&TokenUsage>) -> serde_json::Value {
             "prompt_tokens": u.prompt_tokens,
             "completion_tokens": u.completion_tokens,
             "total_tokens": u.total_tokens,
+            "cached_tokens": u.cached_tokens,
         }),
         None => serde_json::Value::Null,
     }
@@ -364,6 +365,9 @@ fn serialize_trace_yaml(trace: &Trace, flags: ContentFlags) -> String {
         }
         if let Some(tt) = usage.total_tokens {
             out.push_str(&format!("    total_tokens: {}\n", tt));
+        }
+        if let Some(cached) = usage.cached_tokens {
+            out.push_str(&format!("    cached_tokens: {}\n", cached));
         }
     }
 
@@ -521,6 +525,7 @@ fn serialize_span_yaml(out: &mut String, span: &Span, all_spans: &[Span], indent
                     u.prompt_tokens.map(|v| format!("prompt={}", v)),
                     u.completion_tokens.map(|v| format!("completion={}", v)),
                     u.total_tokens.map(|v| format!("total={}", v)),
+                    u.cached_tokens.map(|v| format!("cached={}", v)),
                 ]
                 .into_iter()
                 .flatten()
