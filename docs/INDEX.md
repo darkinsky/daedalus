@@ -27,6 +27,12 @@
 |------|------|---------|
 | [daedalus-runtime-constraints.md](constraints/daedalus-runtime-constraints.md) | 运行时硬编码约束（超时、轮次限制、截断、并行执行、记忆整合、A-MEM 参数、DC 参数、DEFAULT_MAX_MESSAGES、Skill 加载、Workspace 解析、原子写入、优雅关闭、Subagent 加载/执行约束、Bash 工具约束、**grep_search 工具约束**、Wiki Memory 常量、ACE Memory 常量、**MemPalace Memory 常量**） | 2026-04-17 |
 
+## 效果调优
+
+| 文档 | 简述 | 最后更新 |
+|------|------|---------|
+| [code-review-trace-analysis-2026-04-25.md](tuning/code-review-trace-analysis-2026-04-25.md) | 代码审查任务 Trace 分析：subagent maxTurns 耗尽导致主 Agent 重复工作、循环犹豫反模式、context overflow、MaxRoundsExceeded 优雅降级、分批审查策略、成本分析与优化路线图 | 2026-04-25 |
+
 ## 隐含规则
 
 | 文档 | 简述 | 最后更新 |

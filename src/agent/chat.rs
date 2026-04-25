@@ -408,6 +408,8 @@ impl ChatAgent {
                             self.llm.model_name().to_string(),
                             self.llm.provider_name().to_string(),
                         )));
+                    } else {
+                        tracing::warn!("Tracing globally enabled but tracing_manager is None — skipping tracing middleware");
                     }
                 }
                 pipeline
