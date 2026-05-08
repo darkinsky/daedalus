@@ -73,13 +73,14 @@ impl GenAiProvider {
 
     /// Parse an adapter kind string into a genai AdapterKind.
     ///
-    /// Supports: "openai" (default), "anthropic", "gemini", "groq", "cohere".
+    /// Supports: "openai" (default), "anthropic", "gemini", "groq", "cohere", "deepseek".
     fn parse_adapter_kind(kind: Option<&str>) -> AdapterKind {
         match kind.map(|s| s.to_lowercase()).as_deref() {
             Some("anthropic") => AdapterKind::Anthropic,
             Some("gemini") | Some("google") => AdapterKind::Gemini,
             Some("groq") => AdapterKind::Groq,
             Some("cohere") => AdapterKind::Cohere,
+            Some("deepseek") => AdapterKind::DeepSeek,
             _ => AdapterKind::OpenAI,
         }
     }
@@ -318,10 +319,16 @@ impl LlmApi for GenAiProvider {
 
         // Build options with capture enabled so the End event includes
         // usage and tool calls.
+        // NOTE: `capture_tool_calls` is critical — without it, the streamer
+        // does NOT accumulate incremental tool call deltas. Each ToolCallChunk
+        // would contain only a partial fragment (e.g., a few characters of the
+        // arguments string). By enabling capture, the streamer merges all
+        // fragments and the End event contains fully-assembled tool calls.
         let mut genai_opts = self.build_options(options);
         genai_opts = genai_opts
             .with_capture_content(true)
-            .with_capture_usage(true);
+            .with_capture_usage(true)
+            .with_capture_tool_calls(true);
 
         let stream_res = self
             .client
@@ -347,11 +354,23 @@ impl LlmApi for GenAiProvider {
                                 let _ = tx.send(StreamChunk::ReasoningDelta(chunk.content)).await;
                             }
                         }
-                        ChatStreamEvent::ToolCallChunk(tc_chunk) => {
-                            let tc = Self::from_genai_tool_call(&tc_chunk.tool_call);
-                            let _ = tx.send(StreamChunk::ToolCall(tc)).await;
+                        ChatStreamEvent::ToolCallChunk(_) => {
+                            // Do NOT emit partial tool call chunks here.
+                            // The streamer accumulates them internally and the
+                            // fully-assembled tool calls are available in the
+                            // End event's `captured_content`. Emitting partial
+                            // chunks would produce broken tool calls with empty
+                            // names and fragmented arguments.
                         }
                         ChatStreamEvent::End(end) => {
+                            // Emit fully-assembled tool calls from captured content
+                            if let Some(ref captured_content) = end.captured_content {
+                                for genai_tc in captured_content.tool_calls() {
+                                    let tc = Self::from_genai_tool_call(genai_tc);
+                                    let _ = tx.send(StreamChunk::ToolCall(tc)).await;
+                                }
+                            }
+
                             if let Some(usage) = end.captured_usage {
                                 let cached = usage.prompt_tokens_details
                                     .as_ref()

@@ -486,6 +486,10 @@ pub async fn run_tool_loop(
             elapsed_ms: llm_elapsed_ms,
         });
 
+        // Save reasoning_content for this round's ToolRound (DeepSeek V4 requires
+        // reasoning_content to be passed back in subsequent API requests).
+        let round_reasoning = response.reasoning_content.clone();
+
         if cfg.track_reasoning && response.reasoning_content.is_some() {
             last_reasoning = response.reasoning_content;
         }
@@ -533,6 +537,7 @@ pub async fn run_tool_loop(
                 tool_history.push(ToolRound {
                     calls: tool_calls,
                     responses,
+                    reasoning_content: round_reasoning.clone(),
                 });
                 return Ok(LoopResult {
                     outcome: LoopOutcome::DuplicateStop { message: stop_message },
@@ -575,6 +580,7 @@ pub async fn run_tool_loop(
         tool_history.push(ToolRound {
             calls: tool_calls,
             responses,
+            reasoning_content: round_reasoning,
         });
 
         emit(ctx.on_tool_event, ToolEvent::RoundComplete {

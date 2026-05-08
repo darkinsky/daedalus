@@ -23,6 +23,7 @@ use super::logging::LogConfig;
 use crate::agent_tracing::TracingConfig;
 use crate::middleware::config::MiddlewareConfig;
 use crate::acp::tool::AcpConfig;
+use crate::tools::web_search::WebSearchConfig;
 
 /// Top-level YAML configuration file structure.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -44,6 +45,8 @@ struct DaedalusConfigFile {
     middleware: MiddlewareConfig,
     /// ACP (Agent Communication Protocol) configuration.
     acp: AcpConfig,
+    /// Web search tool configuration.
+    web_search: WebSearchConfig,
 }
 
 /// Intermediate configuration state between YAML parsing and AgentConfig construction.
@@ -62,6 +65,8 @@ pub struct RawConfig {
     pub middleware: MiddlewareConfig,
     /// ACP (Agent Communication Protocol) configuration.
     pub acp: AcpConfig,
+    /// Web search tool configuration.
+    pub web_search: WebSearchConfig,
 }
 
 impl RawConfig {
@@ -110,6 +115,7 @@ pub fn load_from_workspace(workspace: &Workspace) -> Result<(RawConfig, LogConfi
         tracing: file_config.tracing,
         middleware: file_config.middleware,
         acp: file_config.acp,
+        web_search: file_config.web_search,
     };
 
     let mut log_config = file_config.logging;

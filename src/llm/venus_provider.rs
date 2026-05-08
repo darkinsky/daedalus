@@ -128,11 +128,17 @@ impl VenusProvider {
                 })
                 .collect();
 
-            msg_array.push(json!({
+            // DeepSeek V4 requires reasoning_content to be passed back in
+            // the assistant message when thinking mode is active.
+            let mut assistant_msg = json!({
                 "role": "assistant",
                 "content": null,
                 "tool_calls": tool_calls_json,
-            }));
+            });
+            if let Some(ref reasoning) = round.reasoning_content {
+                assistant_msg["reasoning_content"] = json!(reasoning);
+            }
+            msg_array.push(assistant_msg);
 
             // Tool response messages
             let is_cache_boundary = last_stable_round_idx == Some(round_idx);
@@ -857,6 +863,7 @@ mod tests {
         let tool_history = vec![ToolRound {
             calls: tool_calls,
             responses: tool_responses,
+            reasoning_content: None,
         }];
 
         let body = provider.build_request_body(&messages, &[], &tool_history, None);

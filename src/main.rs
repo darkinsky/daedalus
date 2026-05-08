@@ -79,6 +79,7 @@ async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard
     let tracing_config = raw_config.tracing.clone();
     let middleware_config = raw_config.middleware.clone();
     let acp_config = raw_config.acp.clone();
+    let web_search_config = raw_config.web_search.clone();
 
     // Apply CLI overrides to the raw config before building AgentConfig
     apply_cli_overrides(&args, &mut raw_config);
@@ -127,7 +128,7 @@ async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard
     }
 
     // Build the agent with all extensions
-    let agent = build_agent(&args, &workspace, &agent_config, tracing_manager, middleware_config, acp_config).await?;
+    let agent = build_agent(&args, &workspace, &agent_config, tracing_manager, middleware_config, acp_config, web_search_config).await?;
 
     Ok((agent, args, _log_guard))
 }
@@ -140,6 +141,7 @@ async fn build_agent(
     tracing_manager: Arc<agent_tracing::TracingManager>,
     middleware_config: middleware::config::MiddlewareConfig,
     acp_config: acp::AcpConfig,
+    web_search_config: tools::web_search::WebSearchConfig,
 ) -> Result<agent::ChatAgent> {
     let skip_extensions = args.bare;
 
@@ -185,6 +187,10 @@ async fn build_agent(
     if !skip_extensions && acp_config.has_agents() {
         load_acp_agents(&mut agent, &acp_config).await;
     }
+
+    // Register web_search tool with the configured provider
+    let web_search_tool = tools::web_search::WebSearchTool::new(web_search_config);
+    agent.install_acp_tool(Box::new(web_search_tool));
 
     // Apply tool filtering from CLI args
     apply_tool_filtering(args, &mut agent);

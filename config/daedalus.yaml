@@ -87,3 +87,17 @@ tracing:
   collectors:
     - type: file
       format: yaml
+
+# ── Web Search Configuration ──
+# web_search:
+#   # Provider: "duckduckgo" (default, free), "tavily", "exa", "infoquest"
+#   provider: "duckduckgo"
+#
+#   # API key (optional, can also use env vars: TAVILY_API_KEY, EXA_API_KEY, INFOQUEST_API_KEY)
+#   # api_key: "your-api-key"
+#
+#   # API base URL override (optional, for self-hosted instances)
+#   # api_base: "https://api.tavily.com"
+#
+#   # Maximum number of results (default: 5, max: 10)
+#   # max_results: 5

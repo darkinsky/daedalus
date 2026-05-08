@@ -132,6 +132,14 @@ pub fn create_provider(mut config: LlmConfig) -> Result<Box<dyn LlmApi>> {
         tracing::info!("Using VenusProvider (thinking parameters detected)");
         let provider = venus_provider::VenusProvider::new(config)?;
         Ok(Box::new(provider))
+    } else if config.adapter_kind.as_deref() == Some("deepseek") {
+        // DeepSeek V4 requires `reasoning_content` to be passed back in
+        // multi-turn tool-calling conversations. The genai library's OpenAI
+        // adapter does not support this, so we use VenusProvider which gives
+        // full control over the HTTP request body.
+        tracing::info!("Using VenusProvider (DeepSeek adapter requires reasoning_content passback)");
+        let provider = venus_provider::VenusProvider::new(config)?;
+        Ok(Box::new(provider))
     } else {
         let provider = genai_provider::GenAiProvider::new(config)?;
         Ok(Box::new(provider))

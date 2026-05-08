@@ -322,6 +322,13 @@ pub struct ToolRound {
     pub calls: Vec<ToolCall>,
     /// Responses from executing the tool calls, in the same order.
     pub responses: Vec<ToolResponse>,
+    /// Optional reasoning/thinking content from the LLM for this round.
+    ///
+    /// DeepSeek V4 requires `reasoning_content` to be passed back to the API
+    /// in subsequent requests when thinking mode is active. Without this,
+    /// the API returns a 400 error: "The reasoning_content in the thinking
+    /// mode must be passed back to the API."
+    pub reasoning_content: Option<String>,
 }
 
 /// Response from an LLM chat completion.

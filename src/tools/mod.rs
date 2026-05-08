@@ -10,6 +10,7 @@ mod read_file;
 mod search_files;
 pub(crate) mod take_note;
 pub(crate) mod text_utils;
+pub(crate) mod web_search;
 mod write_file;
 
 use std::sync::Arc;
