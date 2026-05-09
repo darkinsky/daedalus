@@ -89,10 +89,12 @@ impl ApiAdapter for VenusAdapter {
         options: Option<&ChatOptions>,
         config_venus: &VenusExtensions,
     ) -> Value {
-        // Build messages array — Venus uses plain string content format.
-        // Unlike direct Anthropic API, Venus proxy does NOT support content block
-        // array format for cache_control. Prompt caching on Venus is achieved via
-        // the Venus-Sticky-Routing header (set in headers()), not content blocks.
+        // Build messages array with prompt cache support.
+        // Venus proxy supports content block array format with cache_control
+        // for Claude models (same as direct Anthropic API). When a message has
+        // cache_control set, we use the content block format to mark it as a
+        // cache breakpoint. Combined with Venus-Sticky-Routing header (set in
+        // headers()), this enables effective prompt caching.
         //
         // IMPORTANT: Venus/Claude rejects messages with empty content
         // ("message has no content" error). Filter them out to be robust
@@ -101,15 +103,34 @@ impl ApiAdapter for VenusAdapter {
             .iter()
             .filter(|msg| !msg.content.is_empty())
             .map(|msg| {
-                json!({
-                    "role": msg.role.to_string(),
-                    "content": msg.content,
-                })
+                if msg.cache_control.is_some() {
+                    json!({
+                        "role": msg.role.to_string(),
+                        "content": [{
+                            "type": "text",
+                            "text": msg.content,
+                            "cache_control": { "type": "ephemeral" }
+                        }]
+                    })
+                } else {
+                    json!({
+                        "role": msg.role.to_string(),
+                        "content": msg.content,
+                    })
+                }
             })
             .collect();
 
-        // Replay tool history (Venus uses plain string format, no content blocks)
-        for round in tool_history.iter() {
+        // Replay tool history with prompt caching optimization.
+        // Use the FIRST truncated round as cache boundary — its content is already
+        // at maximum compression and won't change in future rounds, making the
+        // cached prefix stable across requests.
+        let first_stable_round_idx = tool_history.iter()
+            .position(|round| {
+                round.responses.iter().any(|r| r.content.contains("...(truncated,"))
+            });
+
+        for (round_idx, round) in tool_history.iter().enumerate() {
             // Assistant message with tool_calls
             let tool_calls_json: Vec<Value> = round.calls
                 .iter()
@@ -136,13 +157,28 @@ impl ApiAdapter for VenusAdapter {
             }
             msg_array.push(assistant_msg);
 
-            // Tool response messages — always use plain string content on Venus
-            for resp in round.responses.iter() {
-                msg_array.push(json!({
-                    "role": "tool",
-                    "tool_call_id": resp.call_id,
-                    "content": resp.content,
-                }));
+            // Tool response messages with cache boundary on first stable round
+            let is_cache_boundary = first_stable_round_idx == Some(round_idx);
+            let resp_count = round.responses.len();
+            for (resp_idx, resp) in round.responses.iter().enumerate() {
+                if is_cache_boundary && resp_idx == resp_count - 1 {
+                    // Mark last response of first stable round as cache breakpoint
+                    msg_array.push(json!({
+                        "role": "tool",
+                        "tool_call_id": resp.call_id,
+                        "content": [{
+                            "type": "text",
+                            "text": resp.content,
+                            "cache_control": { "type": "ephemeral" }
+                        }],
+                    }));
+                } else {
+                    msg_array.push(json!({
+                        "role": "tool",
+                        "tool_call_id": resp.call_id,
+                        "content": resp.content,
+                    }));
+                }
             }
         }
 
@@ -151,7 +187,7 @@ impl ApiAdapter for VenusAdapter {
             "messages": msg_array,
         });
 
-        // Add tool definitions (plain format, no cache_control on Venus)
+        // Add tool definitions
         if !tools.is_empty() {
             body["tools"] = json!(tools);
         }
@@ -422,7 +458,8 @@ mod tests {
                 "completion_tokens": 50,
                 "total_tokens": 150,
                 "prompt_tokens_details": {
-                    "cached_tokens": 80
+                    "cache_read_tokens": 80,
+                    "cache_creation_tokens": 10
                 }
             }
         });
@@ -436,38 +473,76 @@ mod tests {
     }
 
     #[test]
-    fn test_venus_tools_passed_without_cache_control() {
+    fn test_venus_cache_control_content_block_format() {
+        use crate::llm::CacheControl;
+        let adapter = VenusAdapter;
+        let messages = vec![
+            ChatMessage::system("You are helpful."),
+            ChatMessage::user("Hello")
+                .with_cache_control(CacheControl::Ephemeral),
+        ];
+        let config_venus = VenusExtensions::default();
+
+        let body = adapter.build_body(
+            "claude-sonnet-4-6", &messages, &[], &[], None, &config_venus,
+        );
+
+        let msgs = body["messages"].as_array().unwrap();
+        // System message: plain string (no cache_control)
+        assert!(msgs[0]["content"].is_string());
+        // User message: content block array with cache_control
+        let content_blocks = msgs[1]["content"].as_array()
+            .expect("User message with cache_control should use content-block format");
+        assert_eq!(content_blocks[0]["type"], "text");
+        assert_eq!(content_blocks[0]["text"], "Hello");
+        assert_eq!(content_blocks[0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn test_venus_tool_history_cache_boundary() {
         let adapter = VenusAdapter;
         let messages = vec![ChatMessage::user("Hello")];
         let config_venus = VenusExtensions::default();
-        let tools = vec![
-            json!({
-                "type": "function",
-                "function": {
-                    "name": "tool_a",
-                    "description": "Tool A",
-                    "parameters": {"type": "object"}
-                }
-            }),
-            json!({
-                "type": "function",
-                "function": {
-                    "name": "tool_b",
-                    "description": "Tool B",
-                    "parameters": {"type": "object"}
-                }
-            }),
+
+        let tool_history = vec![
+            ToolRound {
+                calls: vec![ToolCall {
+                    call_id: "call_1".to_string(),
+                    function_name: "read_file".to_string(),
+                    arguments: json!({"path": "foo.rs"}),
+                }],
+                responses: vec![ToolResponse::new("call_1", "content...(truncated, 500 chars)")],
+                reasoning_content: None,
+            },
+            ToolRound {
+                calls: vec![ToolCall {
+                    call_id: "call_2".to_string(),
+                    function_name: "read_file".to_string(),
+                    arguments: json!({"path": "bar.rs"}),
+                }],
+                responses: vec![ToolResponse::new("call_2", "full content here")],
+                reasoning_content: None,
+            },
         ];
 
         let body = adapter.build_body(
-            "claude-sonnet-4-6", &messages, &tools, &[], None, &config_venus,
+            "claude-sonnet-4-6", &messages, &[], &tool_history, None, &config_venus,
         );
 
-        let tools_arr = body["tools"].as_array().unwrap();
-        assert_eq!(tools_arr.len(), 2);
-        // Venus doesn't add cache_control to tool definitions
-        assert!(tools_arr[0]["function"].get("cache_control").is_none());
-        assert!(tools_arr[1]["function"].get("cache_control").is_none());
+        let msgs = body["messages"].as_array().unwrap();
+        // msg[0] = user, msg[1] = assistant (call_1), msg[2] = tool (call_1, cache boundary),
+        // msg[3] = assistant (call_2), msg[4] = tool (call_2, no cache)
+        assert_eq!(msgs.len(), 5);
+
+        // First tool response should have cache_control (it's the truncated one)
+        let first_tool_resp = &msgs[2];
+        let content_blocks = first_tool_resp["content"].as_array()
+            .expect("Cache boundary tool response should use content-block format");
+        assert_eq!(content_blocks[0]["cache_control"]["type"], "ephemeral");
+
+        // Second tool response should be plain string (not a cache boundary)
+        let second_tool_resp = &msgs[4];
+        assert!(second_tool_resp["content"].is_string());
     }
 
     #[test]

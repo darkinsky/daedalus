@@ -116,6 +116,19 @@ pub struct LlmConfig {
     ///
     /// This affects truncation budgets and auto-compact thresholds.
     pub context_window: Option<usize>,
+    /// Optional session ID for routing affinity.
+    ///
+    /// When set, this is sent as `Venus-Session-Id` header to ensure all
+    /// requests from the same logical session (e.g., a single subagent's
+    /// tool-calling loop) are routed to the same backend node.
+    ///
+    /// This is critical for prompt cache efficiency: parallel subagents
+    /// sharing the same API token would otherwise all route to the same
+    /// backend (via `Venus-Sticky-Routing: token`), causing cache eviction
+    /// storms. With per-subagent session IDs, each subagent gets its own
+    /// backend affinity and maintains independent prefix cache.
+    #[serde(skip)]
+    pub session_id: Option<String>,
 }
 
 /// Custom Debug implementation that redacts the API key to prevent
@@ -136,6 +149,7 @@ impl std::fmt::Debug for LlmConfig {
             .field("adapter_kind", &self.adapter_kind)
             .field("venus", &self.venus)
             .field("context_window", &self.context_window)
+            .field("session_id", &self.session_id)
             .finish()
     }
 }
@@ -149,6 +163,7 @@ impl Default for LlmConfig {
             adapter_kind: None,
             venus: VenusExtensions::default(),
             context_window: None,
+            session_id: None,
         }
     }
 }
@@ -619,6 +634,7 @@ mod tests {
                 reasoning_effort: Some(ReasoningEffort::High),
             },
             context_window: None,
+            session_id: None,
         };
         assert_eq!(config.api_key, "test-key");
         assert_eq!(config.model, "gpt-4o");

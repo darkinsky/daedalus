@@ -543,12 +543,23 @@ pub fn turn_summary(
         let (grand_prompt, grand_completion, grand_total, has_tokens) = accumulate_usage(all_usages);
 
         if has_tokens {
-            let ctx_info = match cw {
-                Some(cw_val) if cw_val > 0 => {
-                    let pct = grand_total * 100 / cw_val as u64;
-                    format!("ctx: {}/{} {}%", format_number(grand_total), format_number(cw_val as u64), pct)
+            // Don't show ctx percentage in Total row when subagents are present.
+            // The grand_total is the cumulative token consumption across all agents
+            // and rounds, NOT the current context window occupancy. Dividing it by
+            // the lead agent's context window is misleading (e.g. 209% makes no sense).
+            // ctx% is only meaningful per-agent (shown in the Lead row above).
+            let ctx_info = if subagents.is_empty() {
+                // No subagents: Total == Lead, ctx% is meaningful
+                match cw {
+                    Some(cw_val) if cw_val > 0 => {
+                        let pct = grand_total * 100 / cw_val as u64;
+                        format!("ctx: {}/{} {}%", format_number(grand_total), format_number(cw_val as u64), pct)
+                    }
+                    _ => format!("total: {}", format_number(grand_total)),
                 }
-                _ => format!("total: {}", format_number(grand_total)),
+            } else {
+                // With subagents: show plain total (cumulative consumption)
+                format!("total: {}", format_number(grand_total))
             };
             println!(
                 "    {} {}",

@@ -478,11 +478,32 @@ pub async fn run_tool_loop(
                 meta.push_str(&format!("\n[Files read: {}]", short_names.join(", ")));
             }
 
-            // Progress warning at 70%+
-            if progress_pct >= 70 {
+            // Round budget warnings — escalating urgency as rounds are consumed.
+            // These are independent of context pressure (which is token-based)
+            // and ensure subagents respect their round budget even when context
+            // window is far from full.
+            if progress_pct >= 90 {
                 meta.push_str(&format!(
-                    "\n⚠️ {}% budget used — start writing your final output now.",
-                    progress_pct
+                    "\n🚨 [ROUND BUDGET CRITICAL — {}% used, round {}/{}] \
+                     You have almost NO rounds left. STOP all exploration immediately. \
+                     Output your FINAL response NOW with whatever findings you have. \
+                     Do NOT make any more tool calls.",
+                    progress_pct, round_number, cfg.max_tool_rounds
+                ));
+            } else if progress_pct >= 80 {
+                meta.push_str(&format!(
+                    "\n⚠️ [ROUND BUDGET WARNING — {}% used, round {}/{}] \
+                     You MUST begin writing your final output NOW. \
+                     Only make a tool call if it is absolutely critical to verify \
+                     an existing finding. Do NOT read new files or explore new areas.",
+                    progress_pct, round_number, cfg.max_tool_rounds
+                ));
+            } else if progress_pct >= 70 {
+                meta.push_str(&format!(
+                    "\n📋 [ROUND BUDGET NOTICE — {}% used, round {}/{}] \
+                     Start wrapping up: synthesize your findings and prepare your final output. \
+                     Limit further exploration to verifying existing findings only.",
+                    progress_pct, round_number, cfg.max_tool_rounds
                 ));
             }
 

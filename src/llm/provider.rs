@@ -59,6 +59,7 @@ impl LlmProvider {
             model = %config.model,
             adapter = adapter.name(),
             base_url = %base_url,
+            session_id = ?config.session_id,
             thinking_enabled = ?config.venus.thinking_enabled,
             thinking_tokens = ?config.venus.thinking_tokens,
             reasoning_effort = ?config.venus.reasoning_effort,
@@ -95,10 +96,25 @@ impl LlmProvider {
         )
     }
 
+    /// Build headers with optional session-based routing.
+    ///
+    /// Starts with adapter-provided headers, then injects `Venus-Session-Id`
+    /// if the config has a session_id set. This enables per-subagent routing
+    /// affinity for prompt cache isolation.
+    fn build_headers(&self) -> reqwest::header::HeaderMap {
+        let mut headers = self.adapter.headers(&self.config.api_key);
+        if let Some(ref session_id) = self.config.session_id {
+            if let Ok(val) = reqwest::header::HeaderValue::from_str(session_id) {
+                headers.insert("Venus-Session-Id", val);
+            }
+        }
+        headers
+    }
+
     /// Send an HTTP request and return the parsed JSON body.
     async fn send_request(&self, body: &Value) -> Result<Value> {
         let url = self.adapter.endpoint(&self.base_url, &self.config.model);
-        let headers = self.adapter.headers(&self.config.api_key);
+        let headers = self.build_headers();
 
         tracing::debug!(
             url = %url,
@@ -174,7 +190,7 @@ impl LlmProvider {
         body: Value,
     ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
         let url = self.adapter.endpoint(&self.base_url, &self.config.model);
-        let headers = self.adapter.headers(&self.config.api_key);
+        let headers = self.build_headers();
         let adapter_name = self.adapter.name().to_string();
 
         tracing::debug!(
@@ -416,7 +432,11 @@ fn extract_usage(parsed: &Value, adapter_name: &str) -> Option<StreamChunk> {
             let total = usage_obj.get("total_tokens").and_then(|v| v.as_u64());
             let cached = usage_obj
                 .get("prompt_tokens_details")
-                .and_then(|d| d.get("cached_tokens"))
+                .and_then(|d| {
+                    // OpenAI uses "cached_tokens", Venus proxy uses "cache_read_tokens"
+                    d.get("cached_tokens")
+                        .or_else(|| d.get("cache_read_tokens"))
+                })
                 .and_then(|v| v.as_u64())
                 .or_else(|| usage_obj.get("cache_read_input_tokens").and_then(|v| v.as_u64()));
 

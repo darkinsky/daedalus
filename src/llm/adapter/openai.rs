@@ -277,6 +277,7 @@ pub(crate) fn parse_tool_calls(message: &Value) -> Vec<ToolCall> {
 ///
 /// Extracts cached token counts from multiple possible locations:
 /// - `usage.prompt_tokens_details.cached_tokens` (OpenAI format)
+/// - `usage.prompt_tokens_details.cache_read_tokens` (Venus proxy format)
 /// - `usage.cache_read_input_tokens` (Anthropic format)
 pub(crate) fn parse_usage(response_body: &Value) -> Option<TokenUsage> {
     let usage_obj = response_body.get("usage")?;
@@ -286,7 +287,11 @@ pub(crate) fn parse_usage(response_body: &Value) -> Option<TokenUsage> {
 
     let cached = usage_obj
         .get("prompt_tokens_details")
-        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|d| {
+            // OpenAI uses "cached_tokens", Venus proxy uses "cache_read_tokens"
+            d.get("cached_tokens")
+                .or_else(|| d.get("cache_read_tokens"))
+        })
         .and_then(|v| v.as_u64())
         .or_else(|| usage_obj.get("cache_read_input_tokens").and_then(|v| v.as_u64()));
 
@@ -568,5 +573,26 @@ mod tests {
         let usage = parse_usage(&body).unwrap();
         assert_eq!(usage.prompt_tokens, Some(100));
         assert_eq!(usage.cached_tokens, Some(75));
+    }
+
+    #[test]
+    fn test_parse_usage_with_cached_tokens_venus_format() {
+        // Venus proxy returns cache info as prompt_tokens_details.cache_read_tokens
+        let body = json!({
+            "usage": {
+                "prompt_tokens": 25194,
+                "completion_tokens": 443,
+                "total_tokens": 25637,
+                "prompt_tokens_details": {
+                    "cache_read_tokens": 22653,
+                    "cache_creation_tokens": 586
+                }
+            }
+        });
+
+        let usage = parse_usage(&body).unwrap();
+        assert_eq!(usage.prompt_tokens, Some(25194));
+        assert_eq!(usage.completion_tokens, Some(443));
+        assert_eq!(usage.cached_tokens, Some(22653));
     }
 }

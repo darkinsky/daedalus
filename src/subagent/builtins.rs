@@ -21,7 +21,9 @@ pub fn builtin_agents() -> Vec<SubagentDefinition> {
 }
 
 /// Standard read-only tool whitelist shared by all built-in subagents.
-const READ_ONLY_TOOLS: &[&str] = &["read_file", "list_directory", "search_files", "grep_search", "get_file_info"];
+/// Includes `bash` (for `wc -l`, `find`, etc.) and `take_note` (for
+/// persisting findings across context truncation).
+const READ_ONLY_TOOLS: &[&str] = &["read_file", "list_directory", "search_files", "grep_search", "get_file_info", "bash", "take_note"];
 
 /// Create a read-only built-in subagent with standard defaults.
 ///
@@ -87,8 +89,9 @@ fn code_reviewer_agent() -> SubagentDefinition {
     read_only_builtin(
         "code-reviewer",
         "Reviews code for quality, best practices, and potential issues. \
-            Invoke when the user asks to review, audit, or check code quality. \
-            Provides actionable feedback organized by severity.",
+            Best for reviewing a single module or focused subset (≤50 files). \
+            For full-project reviews, decompose into multiple parallel \
+            code-reviewer invocations scoped by module boundary.",
         "\
 You are a senior code reviewer working in an isolated context.
 

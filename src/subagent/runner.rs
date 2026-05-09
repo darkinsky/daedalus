@@ -5,6 +5,7 @@ use crate::agent_tracing::TracingHook;
 use crate::tools::ToolEventCallback;
 use crate::llm::{self, LlmApi, LlmConfig, ToolCall, ToolResponse};
 use crate::tools::BuiltinToolRegistry;
+use crate::tools::take_note::{self, SharedNotes};
 
 use super::prompt;
 use super::{IsolationMode, SubagentDefinition, SubagentResult};
@@ -81,8 +82,9 @@ impl SubagentRunner {
         // 1. Create LLM provider (possibly with a different model)
         let llm = self.create_provider(definition)?;
 
-        // 2. Build the filtered tool set
-        let filtered_tools = self.build_filtered_tools(definition);
+        // 2. Build the filtered tool set (with shared notes for take_note wiring)
+        let shared_notes = take_note::new_shared_notes();
+        let filtered_tools = self.build_filtered_tools(definition, Some(&shared_notes));
         let tools = filtered_tools.build_tool_definitions();
         let has_tools = !tools.is_empty() && llm.supports_tools();
 
@@ -129,7 +131,7 @@ impl SubagentRunner {
 
         let result = if has_tools {
             self.run_with_tools(
-                definition, &*llm, &filtered_tools, &messages, &tools, max_tool_rounds, on_tool_event, tracing_hook,
+                definition, &*llm, &filtered_tools, &messages, &tools, max_tool_rounds, on_tool_event, tracing_hook, &shared_notes,
             ).await
         } else {
             self.run_without_tools(definition, &*llm, &messages, tracing_hook).await
@@ -151,6 +153,12 @@ impl SubagentRunner {
     ///
     /// If the subagent specifies a model, creates a new provider with that model.
     /// Otherwise, clones the parent's config (inheriting the same model).
+    ///
+    /// Each subagent gets a unique `session_id` to enable per-subagent routing
+    /// affinity via `Venus-Session-Id` header. This prevents parallel subagents
+    /// from evicting each other's prefix cache when they share the same API token
+    /// (which causes all requests to route to the same backend via
+    /// `Venus-Sticky-Routing: token`).
     fn create_provider(
         &self,
         definition: &SubagentDefinition,
@@ -175,6 +183,22 @@ impl SubagentRunner {
                 );
             }
         }
+
+        // Generate a unique session ID for this subagent instance.
+        // Format: "subagent-{name}-{timestamp_nanos}" ensures uniqueness even
+        // for multiple invocations of the same subagent definition.
+        // This causes Venus proxy to route this subagent's requests to a
+        // dedicated backend, isolating its prefix cache from other parallel
+        // subagents.
+        let session_id = format!(
+            "subagent-{}-{}",
+            definition.name,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        config.session_id = Some(session_id);
 
         llm::create_provider(config)
     }
@@ -203,7 +227,17 @@ impl SubagentRunner {
     /// - If neither is set: include all built-in tools
     ///
     /// Tools in `EXCLUDED_TOOLS` are never included (prevents recursion).
-    fn build_filtered_tools(&self, definition: &SubagentDefinition) -> BuiltinToolRegistry {
+    ///
+    /// When `shared_notes` is provided and `take_note` passes the filter,
+    /// the default `TakeNoteTool` (which has its own isolated notes) is
+    /// replaced with one backed by the shared instance. This ensures notes
+    /// recorded by the subagent are visible to the tool loop's session
+    /// metadata injection.
+    fn build_filtered_tools(
+        &self,
+        definition: &SubagentDefinition,
+        shared_notes: Option<&SharedNotes>,
+    ) -> BuiltinToolRegistry {
         let full_registry = BuiltinToolRegistry::new();
 
         // Build a filter predicate based on the subagent's tool configuration.
@@ -224,6 +258,16 @@ impl SubagentRunner {
         for tool in full_registry.into_tools() {
             let name = tool.name().to_string();
             if filter(&name) && !EXCLUDED_TOOLS.contains(&name.as_str()) {
+                // Replace the default take_note tool with one backed by the
+                // shared notes instance, so notes survive into LoopContext.
+                if name == "take_note" {
+                    if let Some(notes) = shared_notes {
+                        filtered.register_tool(Box::new(
+                            take_note::TakeNoteTool::new(notes.clone()),
+                        ));
+                        continue;
+                    }
+                }
                 filtered.register_tool(tool);
             }
         }
@@ -300,11 +344,27 @@ impl SubagentRunner {
         max_tool_rounds: usize,
         on_tool_event: Option<&ToolEventCallback>,
         tracing_hook: Option<&TracingHook>,
+        shared_notes: &SharedNotes,
     ) -> Result<SubagentResult> {
         let executor = SubagentExecutor {
             builtin,
             agent_name: &definition.name,
         };
+
+        let context_window = self.parent_llm_config.resolved_context_window();
+        // For subagents, cap the effective context window used for pressure
+        // calculations. The cap is derived from the subagent's round budget:
+        // each tool round typically adds ~3-5K tokens of tool output, so a
+        // subagent with N rounds should not exceed ~N * 5K tokens of context.
+        // This ensures context pressure hints trigger at practical thresholds
+        // rather than theoretical model limits (e.g., 700K for a 1M model).
+        //
+        // Examples:
+        //   - plan agent (10 rounds): cap = 50K → soft limit at 35K
+        //   - code-reviewer (40 rounds): cap = 200K → soft limit at 140K
+        //   - default (100 rounds): cap = 500K → soft limit at 350K
+        let round_based_cap = max_tool_rounds * 5_000;
+        let effective_context_window = context_window.min(round_based_cap);
         let cfg = LoopConfig {
             max_tool_rounds,
             agent_label: format!("Subagent '{}'", definition.name),
@@ -314,11 +374,13 @@ impl SubagentRunner {
             // Subagents share the same model as the parent — scale truncation
             // to the model's actual context window size.
             truncation: Some(crate::agent::tool_loop::TruncationConfig::for_context_window(
-                self.parent_llm_config.resolved_context_window(),
+                context_window,
             )),
-            // Subagents have short lifespans and limited tool sets, so context
-            // pressure awareness is disabled (they rarely fill the window).
-            context_window_tokens: None,
+            // Enable context pressure awareness for subagents that may run
+            // many tool rounds (e.g. code-reviewer scanning 200+ files).
+            // Use the capped effective_context_window so pressure hints fire
+            // at practical thresholds rather than theoretical model limits.
+            context_window_tokens: Some(effective_context_window),
             context_soft_limit_ratio: 0.7,
             context_hard_limit_ratio: 0.9,
         };
@@ -331,7 +393,7 @@ impl SubagentRunner {
             on_llm_response: None,
             tracing_hook, // Pass tracing hook to subagent's tool loop
             tool_pipeline: None, // No tool pipeline for subagents (uses direct execution)
-            shared_notes: None, // TODO: wire up take_note SharedNotes when the tool is in the filtered set
+            shared_notes: Some(shared_notes),
         };
 
         let LoopResult { outcome, usage, tool_history } = run_tool_loop(
