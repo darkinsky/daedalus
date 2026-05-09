@@ -17,7 +17,11 @@ llm:
   # Custom API base URL (optional, for proxies, Azure, etc.)
   # api_base: "https://your-proxy.example.com/v1"
 
-  # LLM adapter kind (optional): "openai", "anthropic", "gemini", "groq", "cohere"
+  # LLM adapter kind (optional): "openai" (default), "anthropic", "gemini", "deepseek"
+  # - "openai": OpenAI, Venus proxy, DeepSeek, and any OpenAI-compatible API
+  # - "anthropic": Direct Anthropic Messages API (not via proxy)
+  # - "gemini" / "google": Direct Google Gemini API (not via proxy)
+  # - "deepseek": DeepSeek API (OpenAI-compatible with reasoning_content)
   # adapter_kind: "openai"
 
   # Venus API proxy advanced options (optional)

@@ -69,6 +69,8 @@ pub struct ChatAgent {
     /// Updatable memory handle for the recall_history tool.
     /// `None` if the memory strategy doesn't support history search.
     memory_handle: Option<crate::tools::recall_history::MemoryHandle>,
+    /// Model context window size (in tokens) for truncation and compression.
+    context_window: usize,
 }
 
 impl ChatAgent {
@@ -107,6 +109,7 @@ impl ChatAgent {
             provider = llm.provider_name(),
             model = llm.model_name(),
             prompt_len = system_prompt.len(),
+            context_window = config.context_window,
             "ChatAgent initialized with middleware pipeline"
         );
 
@@ -127,6 +130,7 @@ impl ChatAgent {
             middleware_config: MiddlewareConfig::default(),
             session_cost: Arc::new(std::sync::Mutex::new(SessionCost::new())),
             memory_handle: None,
+            context_window: config.context_window,
         }
     }
 
@@ -343,6 +347,7 @@ impl ChatAgent {
             self.max_tool_rounds,
             on_tool_event,
             self.middleware_config.tool.clone(),
+            self.context_window,
         ));
 
         let mut pipeline = TurnPipeline::new(core);

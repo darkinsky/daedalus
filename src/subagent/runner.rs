@@ -312,10 +312,10 @@ impl SubagentRunner {
             // no point paying the book-keeping cost.
             track_reasoning: false,
             // Subagents share the same model as the parent — scale truncation
-            // for large context windows to avoid over-truncating tool history.
-            // This prevents the "read one file per round" degradation pattern
-            // where the model forgets previously read files too quickly.
-            truncation: Some(crate::agent::tool_loop::TruncationConfig::for_context_window(200_000)),
+            // to the model's actual context window size.
+            truncation: Some(crate::agent::tool_loop::TruncationConfig::for_context_window(
+                self.parent_llm_config.resolved_context_window(),
+            )),
         };
 
         let loop_ctx = LoopContext {

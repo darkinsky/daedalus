@@ -1,21 +1,78 @@
 //! DuckDuckGo search backend — free, no API key required.
 //!
-//! Uses the DuckDuckGo HTML endpoint and parses results from the response.
+//! Uses the DuckDuckGo Lite endpoint (`lite.duckduckgo.com/lite/`) which
+//! is less likely to trigger CAPTCHA challenges compared to the HTML endpoint.
 //! This is the default backend when no provider is configured.
 
 use anyhow::{Context, Result};
 
 use super::WebSearchTool;
 
-/// Execute a DuckDuckGo web search.
-pub async fn search(tool: &WebSearchTool, query: &str, max_results: usize) -> Result<String> {
-    let url = "https://html.duckduckgo.com/html/";
+/// Maximum number of retry attempts when CAPTCHA is encountered.
+const MAX_RETRIES: u32 = 2;
 
+/// Base delay between retries in milliseconds (increases with each attempt).
+const RETRY_BASE_DELAY_MS: u64 = 2000;
+
+/// Execute a DuckDuckGo web search via the Lite endpoint.
+///
+/// Includes retry logic with exponential backoff to handle CAPTCHA challenges
+/// that occur when multiple requests are sent in quick succession.
+pub async fn search(tool: &WebSearchTool, query: &str, max_results: usize) -> Result<String> {
+    let url = format!(
+        "https://lite.duckduckgo.com/lite/?q={}",
+        url_encode(query)
+    );
+
+    let mut last_error = None;
+
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            // Exponential backoff: 2s, 4s
+            let delay = RETRY_BASE_DELAY_MS * (1 << (attempt - 1));
+            tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+        }
+
+        let body = match send_request(tool, &url).await {
+            Ok(body) => body,
+            Err(e) => {
+                last_error = Some(e);
+                continue;
+            }
+        };
+
+        // Detect CAPTCHA/bot challenge page
+        if body.contains("anomaly-modal") || body.contains("bots use DuckDuckGo") {
+            last_error = Some(anyhow::anyhow!(
+                "DuckDuckGo returned a CAPTCHA challenge (attempt {})",
+                attempt + 1
+            ));
+            continue;
+        }
+
+        let results = parse_lite_html(&body, max_results);
+
+        if results.is_empty() {
+            return Ok(format!("No results found for: {}", query));
+        }
+
+        return Ok(format_results(query, &results));
+    }
+
+    // All retries exhausted
+    Err(last_error.unwrap_or_else(|| {
+        anyhow::anyhow!("DuckDuckGo search failed after {} retries", MAX_RETRIES)
+    }))
+}
+
+/// Send a single HTTP request to DuckDuckGo Lite.
+async fn send_request(tool: &WebSearchTool, url: &str) -> Result<String> {
     let response = tool
         .client
-        .post(url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        .form(&[("q", query), ("kl", "")])
+        .get(url)
+        .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0")
+        .header("Accept", "text/html")
+        .header("Accept-Language", "en-US,en;q=0.5")
         .send()
         .await
         .context("Failed to send request to DuckDuckGo")?;
@@ -25,50 +82,75 @@ pub async fn search(tool: &WebSearchTool, query: &str, max_results: usize) -> Re
         anyhow::bail!("DuckDuckGo returned HTTP {}", status);
     }
 
-    let body = response
+    response
         .text()
         .await
-        .context("Failed to read DuckDuckGo response")?;
-
-    let results = parse_html(&body, max_results);
-
-    if results.is_empty() {
-        return Ok(format!("No results found for: {}", query));
-    }
-
-    Ok(format_results(query, &results))
+        .context("Failed to read DuckDuckGo response")
 }
 
-// ── HTML parsing ──
+// ── HTML parsing for Lite endpoint ──
 
-/// A single search result extracted from DuckDuckGo HTML.
+/// A single search result extracted from DuckDuckGo Lite HTML.
 struct SearchResult {
     title: String,
     url: String,
     snippet: String,
 }
 
-/// Parse DuckDuckGo HTML response to extract search results.
+/// Parse DuckDuckGo Lite HTML response to extract search results.
 ///
-/// DuckDuckGo HTML endpoint returns results in a predictable structure
-/// with class="result__a" for links and class="result__snippet" for snippets.
-fn parse_html(html: &str, max_results: usize) -> Vec<SearchResult> {
+/// The Lite endpoint uses a table-based layout with:
+/// - Links: `<a ... class='result-link'>Title</a>`
+/// - Snippets: `<td class='result-snippet'>Content</td>`
+/// - URLs in href: `//duckduckgo.com/l/?uddg=ENCODED_URL&rut=...`
+fn parse_lite_html(html: &str, max_results: usize) -> Vec<SearchResult> {
     let mut results = Vec::new();
 
-    // Split by result blocks
-    let result_blocks: Vec<&str> = html.split("class=\"result__body\"").collect();
+    // Find all result-link anchors and their corresponding snippets
+    let mut search_from = 0;
 
-    for block in result_blocks.iter().skip(1).take(max_results) {
-        let title = extract_between(block, "class=\"result__a\"", "</a>")
-            .map(|s| strip_html_tags(&s))
-            .unwrap_or_default();
+    while results.len() < max_results {
+        // Find next result-link
+        let link_marker = "class='result-link'>";
+        let link_start = match html[search_from..].find(link_marker) {
+            Some(idx) => search_from + idx,
+            None => break,
+        };
 
-        let url = extract_href(block, "class=\"result__a\"").unwrap_or_default();
+        // Extract title (text between > and </a>)
+        let title_start = link_start + link_marker.len();
+        let title_end = match html[title_start..].find("</a>") {
+            Some(idx) => title_start + idx,
+            None => break,
+        };
+        let title = strip_html_tags(&html[title_start..title_end]);
 
-        let snippet = extract_between(block, "class=\"result__snippet\"", "</a>")
-            .or_else(|| extract_between(block, "class=\"result__snippet\"", "</td>"))
-            .map(|s| strip_html_tags(&s))
-            .unwrap_or_default();
+        // Skip sponsored links
+        let after_link = &html[title_end..title_end + 200.min(html.len() - title_end)];
+        if after_link.contains("Sponsored link") {
+            search_from = title_end + 4;
+            continue;
+        }
+
+        // Extract URL from href attribute before the class='result-link'
+        let href_search_start = if link_start > 200 { link_start - 200 } else { 0 };
+        let href_region = &html[href_search_start..link_start];
+        let url = extract_url_from_href(href_region).unwrap_or_default();
+
+        // Find the corresponding snippet (next result-snippet after this link)
+        let snippet_marker = "class='result-snippet'>";
+        let snippet = if let Some(snippet_offset) = html[title_end..].find(snippet_marker) {
+            let snippet_start = title_end + snippet_offset + snippet_marker.len();
+            // Find the end of the snippet (</td>)
+            if let Some(snippet_end_offset) = html[snippet_start..].find("</td>") {
+                let raw_snippet = &html[snippet_start..snippet_start + snippet_end_offset];
+                strip_html_tags(raw_snippet)
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
 
         if !title.is_empty() && !url.is_empty() {
             results.push(SearchResult {
@@ -77,9 +159,41 @@ fn parse_html(html: &str, max_results: usize) -> Vec<SearchResult> {
                 snippet,
             });
         }
+
+        search_from = title_end + 4;
     }
 
     results
+}
+
+/// Extract the actual URL from a DuckDuckGo redirect href.
+///
+/// DuckDuckGo Lite wraps URLs as: `href="//duckduckgo.com/l/?uddg=ENCODED_URL&rut=..."`
+fn extract_url_from_href(region: &str) -> Option<String> {
+    // Find the last href=" in the region (closest to the result-link class)
+    let href_start = region.rfind("href=\"")?;
+    let href_content = &region[href_start + 6..];
+    let href_end = href_content.find('"')?;
+    let raw_href = &href_content[..href_end];
+
+    // Decode HTML entities in the href (e.g., &amp; -> &)
+    let href = raw_href.replace("&amp;", "&");
+
+    // Extract the actual URL from the uddg parameter
+    if let Some(uddg_start) = href.find("uddg=") {
+        let url_part = &href[uddg_start + 5..];
+        let url_end = url_part.find('&').unwrap_or(url_part.len());
+        let encoded_url = &url_part[..url_end];
+        Some(url_decode(encoded_url))
+    } else {
+        // Not a redirect, return as-is (strip leading //)
+        let cleaned = href.trim_start_matches("//");
+        if cleaned.starts_with("duckduckgo.com") {
+            None // Internal DDG link, skip
+        } else {
+            Some(format!("https://{}", cleaned))
+        }
+    }
 }
 
 /// Format search results into a readable string.
@@ -99,56 +213,27 @@ fn format_results(query: &str, results: &[SearchResult]) -> String {
     output
 }
 
-// ── HTML utility functions ──
+// ── Utility functions ──
 
-/// Extract text between a start marker and end marker.
-fn extract_between(text: &str, start_marker: &str, end_marker: &str) -> Option<String> {
-    let start_idx = text.find(start_marker)?;
-    let after_marker = &text[start_idx + start_marker.len()..];
-    // Find the closing > of the tag containing the start marker
-    let content_start = after_marker.find('>')? + 1;
-    let content = &after_marker[content_start..];
-    let end_idx = content.find(end_marker)?;
-    Some(content[..end_idx].to_string())
-}
-
-/// Extract href attribute from a tag with the given marker.
-fn extract_href(text: &str, marker: &str) -> Option<String> {
-    let start_idx = text.find(marker)?;
-    // Look backwards for href="
-    let before = &text[..start_idx];
-    let href_start = before.rfind("href=\"").or_else(|| {
-        // Look forward
-        let after = &text[start_idx..];
-        after.find("href=\"").map(|i| start_idx + i)
-    })?;
-
-    let href_content = if href_start < start_idx {
-        &text[href_start + 6..]
-    } else {
-        &text[href_start + 6..]
-    };
-
-    let end = href_content.find('"')?;
-    let url = &href_content[..end];
-
-    // DuckDuckGo wraps URLs in a redirect, extract the actual URL
-    if url.contains("uddg=") {
-        let uddg_start = url.find("uddg=")? + 5;
-        let uddg_end = url[uddg_start..].find('&').unwrap_or(url.len() - uddg_start);
-        let encoded_url = &url[uddg_start..uddg_start + uddg_end];
-        Some(url_decode(encoded_url))
-    } else if url.starts_with("//duckduckgo.com/l/?") {
-        if let Some(kh_start) = url.find("uddg=") {
-            let after = &url[kh_start + 5..];
-            let end = after.find('&').unwrap_or(after.len());
-            Some(url_decode(&after[..end]))
-        } else {
-            Some(url.to_string())
+/// Simple URL encode for query strings.
+fn url_encode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() * 3);
+    for c in s.chars() {
+        match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => {
+                result.push(c);
+            }
+            ' ' => result.push('+'),
+            _ => {
+                let mut buf = [0u8; 4];
+                let encoded = c.encode_utf8(&mut buf);
+                for byte in encoded.bytes() {
+                    result.push_str(&format!("%{:02X}", byte));
+                }
+            }
         }
-    } else {
-        Some(url.to_string())
     }
+    result
 }
 
 /// Simple URL decode (handles %XX encoding).
@@ -215,5 +300,42 @@ mod tests {
         assert_eq!(url_decode("hello%20world"), "hello world");
         assert_eq!(url_decode("a+b"), "a b");
         assert_eq!(url_decode("https%3A%2F%2Fexample.com"), "https://example.com");
+    }
+
+    #[test]
+    fn test_url_encode() {
+        assert_eq!(url_encode("hello world"), "hello+world");
+        assert_eq!(url_encode("rust programming"), "rust+programming");
+        assert_eq!(url_encode("a&b=c"), "a%26b%3Dc");
+    }
+
+    #[test]
+    fn test_extract_url_from_href() {
+        let region = r#"<a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Frust-lang.org%2F&amp;rut=abc123" class='"#;
+        let url = extract_url_from_href(region);
+        assert_eq!(url, Some("https://rust-lang.org/".to_string()));
+    }
+
+    #[test]
+    fn test_parse_lite_html_basic() {
+        let html = r#"
+        <table>
+            <tr>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2F&amp;rut=abc" class='result-link'>Example Site</a>
+                </td>
+            </tr>
+            <tr>
+                <td class='result-snippet'>
+                    This is an example website for testing.
+                </td>
+            </tr>
+        </table>
+        "#;
+        let results = parse_lite_html(html, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Example Site");
+        assert_eq!(results[0].url, "https://example.com/");
+        assert!(results[0].snippet.contains("example website"));
     }
 }

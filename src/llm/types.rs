@@ -69,12 +69,11 @@ impl VenusExtensions {
             || self.reasoning_effort.is_some()
     }
 
-    /// Return true if Venus-specific parameters are configured that require
-    /// the `VenusProvider` (raw HTTP) instead of the `GenAiProvider`.
+    /// Return true if advanced thinking parameters are configured.
     ///
-    /// Only `thinking_enabled` and `thinking_tokens` require Venus — the
-    /// `reasoning_effort` parameter is handled natively by genai.
-    pub fn needs_venus_provider(&self) -> bool {
+    /// Useful for diagnostics and logging.
+    #[allow(dead_code)]
+    pub fn needs_thinking_provider(&self) -> bool {
         self.thinking_enabled.is_some() || self.thinking_tokens.is_some()
     }
 
@@ -109,6 +108,14 @@ pub struct LlmConfig {
     /// Venus API proxy advanced options (thinking, reasoning_effort).
     #[serde(default)]
     pub venus: VenusExtensions,
+    /// Override the model's context window size (in tokens).
+    ///
+    /// When set, this value takes priority over the built-in model registry.
+    /// When not set, the system looks up the model name in the registry,
+    /// falling back to 128K if the model is not recognized.
+    ///
+    /// This affects truncation budgets and auto-compact thresholds.
+    pub context_window: Option<usize>,
 }
 
 /// Custom Debug implementation that redacts the API key to prevent
@@ -128,6 +135,7 @@ impl std::fmt::Debug for LlmConfig {
             .field("api_base", &self.api_base)
             .field("adapter_kind", &self.adapter_kind)
             .field("venus", &self.venus)
+            .field("context_window", &self.context_window)
             .finish()
     }
 }
@@ -140,7 +148,20 @@ impl Default for LlmConfig {
             api_base: None,
             adapter_kind: None,
             venus: VenusExtensions::default(),
+            context_window: None,
         }
+    }
+}
+
+impl LlmConfig {
+    /// Resolve the effective context window size for this configuration.
+    ///
+    /// Priority:
+    /// 1. Explicit `context_window` value from config
+    /// 2. Built-in model registry lookup by model name
+    /// 3. Default (128K)
+    pub fn resolved_context_window(&self) -> usize {
+        super::model_registry::resolve_context_window(&self.model, self.context_window)
     }
 }
 
@@ -597,6 +618,7 @@ mod tests {
                 thinking_tokens: Some(2048),
                 reasoning_effort: Some(ReasoningEffort::High),
             },
+            context_window: None,
         };
         assert_eq!(config.api_key, "test-key");
         assert_eq!(config.model, "gpt-4o");

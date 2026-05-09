@@ -1,17 +1,22 @@
 mod types;
-mod genai_provider;
-mod venus_provider;
+mod adapter;
+mod provider;
+pub mod model_registry;
 
 // Explicit re-exports instead of glob (`pub use types::*`).
 // This makes it clear which symbols come from the llm module and
 // prevents accidental namespace pollution as the type set grows.
 pub use types::{
     CacheControl, ChatMessage, ChatOptions, ChatRole, ChatResponse,
-    LlmConfig, ReasoningEffort, VenusExtensions,
+    LlmConfig, VenusExtensions,
     TokenUsage, ToolCall, ToolResponse, ToolRound,
     StreamChunk, StreamAccumulator,
     format_messages_for_log,
 };
+
+// Re-export ReasoningEffort for use in config deserialization.
+#[allow(unused_imports)]
+pub use types::ReasoningEffort;
 
 // NOTE: ToolInfo has been moved to `crate::tools::ToolInfo`.
 // It is no longer re-exported from `crate::llm` to avoid stale aliases.
@@ -23,8 +28,8 @@ use tokio::sync::mpsc;
 
 /// The core LLM API trait — provider-agnostic interface for chat completion.
 ///
-/// All provider-specific details (genai, OpenAI REST, etc.) are hidden behind
-/// this trait. The trait uses only our own types (`ChatMessage`, `ToolCall`,
+/// All provider-specific details (OpenAI, Anthropic, Gemini, etc.) are hidden
+/// behind this trait. The trait uses only our own types (`ChatMessage`, `ToolCall`,
 /// `ToolResponse`, `ChatResponse`), never leaking provider internals.
 #[async_trait]
 pub trait LlmApi: Send + Sync {
@@ -47,8 +52,7 @@ pub trait LlmApi: Send + Sync {
     /// * `tools` - Tool definitions (as JSON, in OpenAI function-calling format).
     /// * `tool_history` - Prior tool calls and responses from earlier rounds in
     ///   the current tool-calling loop. The provider converts these into the
-    ///   appropriate wire format (e.g., genai `ChatMessage::from(ToolCall)` /
-    ///   `ChatMessage::from(ToolResponse)`).
+    ///   appropriate wire format.
     /// * `options` - Optional generation parameters.
     async fn chat_with_tools(
         &self,
@@ -102,21 +106,21 @@ pub trait LlmApi: Send + Sync {
     /// Return the model identifier this provider is configured to use.
     fn model_name(&self) -> &str;
 
-    /// Return a human-readable name for this provider (e.g., "GenAI").
+    /// Return a human-readable name for this provider (e.g., "OpenAI", "Anthropic").
     fn provider_name(&self) -> &str;
 }
 
 /// Factory function: create an LLM provider from configuration.
 ///
-/// Selects the provider implementation based on configuration:
+/// Creates a unified `LlmProvider` that uses the appropriate adapter
+/// based on the `adapter_kind` configuration:
 ///
-/// - **VenusProvider**: Used when Venus-specific advanced parameters are
-///   configured (`thinking_enabled` or `thinking_tokens`). This provider
-///   sends raw HTTP requests, giving full control over the request body
-///   to support Venus proxy extensions.
-/// - **GenAiProvider** (default): Uses the `genai` crate's adapter system.
-///   Supports standard OpenAI, Anthropic, Gemini, and compatible APIs.
-///   Also handles `reasoning_effort` natively via genai.
+/// - `"openai"` (default) — OpenAI, Venus proxy, DeepSeek, compatible APIs
+/// - `"anthropic"` — Anthropic Messages API (direct)
+/// - `"gemini"` or `"google"` — Google Gemini API (direct)
+///
+/// The adapter handles all format-specific logic while the provider
+/// manages HTTP transport, streaming, and error handling.
 pub fn create_provider(mut config: LlmConfig) -> Result<Box<dyn LlmApi>> {
     // Resolve API key with env var fallback (avoids forcing plaintext in YAML)
     if config.api_key.is_empty() {
@@ -128,20 +132,6 @@ pub fn create_provider(mut config: LlmConfig) -> Result<Box<dyn LlmApi>> {
             ))?;
     }
 
-    if config.venus.needs_venus_provider() {
-        tracing::info!("Using VenusProvider (thinking parameters detected)");
-        let provider = venus_provider::VenusProvider::new(config)?;
-        Ok(Box::new(provider))
-    } else if config.adapter_kind.as_deref() == Some("deepseek") {
-        // DeepSeek V4 requires `reasoning_content` to be passed back in
-        // multi-turn tool-calling conversations. The genai library's OpenAI
-        // adapter does not support this, so we use VenusProvider which gives
-        // full control over the HTTP request body.
-        tracing::info!("Using VenusProvider (DeepSeek adapter requires reasoning_content passback)");
-        let provider = venus_provider::VenusProvider::new(config)?;
-        Ok(Box::new(provider))
-    } else {
-        let provider = genai_provider::GenAiProvider::new(config)?;
-        Ok(Box::new(provider))
-    }
+    let provider = provider::LlmProvider::new(config)?;
+    Ok(Box::new(provider))
 }

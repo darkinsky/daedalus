@@ -46,6 +46,8 @@ pub(crate) struct CoreTurnHandler {
     on_tool_event: Option<ToolEventCallback>,
     /// Tool middleware config entries for building per-turn tool pipelines.
     tool_middleware_config: Vec<MiddlewareEntry>,
+    /// Model context window size (in tokens) for truncation scaling.
+    context_window: usize,
 }
 
 impl CoreTurnHandler {
@@ -59,6 +61,7 @@ impl CoreTurnHandler {
         max_tool_rounds: usize,
         on_tool_event: Option<ToolEventCallback>,
         tool_middleware_config: Vec<MiddlewareEntry>,
+        context_window: usize,
     ) -> Self {
         Self {
             llm,
@@ -66,6 +69,7 @@ impl CoreTurnHandler {
             max_tool_rounds,
             on_tool_event,
             tool_middleware_config,
+            context_window,
         }
     }
 }
@@ -101,9 +105,8 @@ impl CoreTurnHandler {
             max_tool_rounds: self.max_tool_rounds,
             agent_label: "Lead agent".to_string(),
             track_reasoning: true,
-            // Lead agent uses a large context model — scale truncation accordingly.
-            // 200K is a conservative estimate for Claude Sonnet/Opus 256K context.
-            truncation: Some(crate::agent::tool_loop::TruncationConfig::for_context_window(200_000)),
+            // Scale truncation to the model's actual context window size.
+            truncation: Some(crate::agent::tool_loop::TruncationConfig::for_context_window(self.context_window)),
         };
 
         let tracing_hook = trace_ctx.map(agent_tracing::TracingHook::new);

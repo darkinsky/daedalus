@@ -215,6 +215,11 @@ pub struct AgentConfig {
     pub memory_config: MemorySection,
     /// Embedding provider configuration (used by agentic memory).
     pub embedding: EmbeddingConfig,
+    /// Resolved context window size (in tokens) for the configured model.
+    ///
+    /// Determined by: explicit config > model registry > 128K default.
+    /// Used for truncation budgets and auto-compact thresholds.
+    pub context_window: usize,
 }
 
 impl AgentConfig {
@@ -246,6 +251,20 @@ impl AgentConfig {
         // Load project rules from DAEDALUS.md files (multi-level merge)
         let project_rules = Self::load_project_rules(workspace);
 
+        // Resolve context window from config override or model registry
+        let context_window = llm.resolved_context_window();
+
+        // Propagate context_window to memory's context_budget if the user
+        // didn't explicitly configure it (still at default 128K).
+        let mut memory = memory;
+        if memory.sliding_window.context_budget == 128_000 && context_window != 128_000 {
+            memory.sliding_window.context_budget = context_window;
+            tracing::debug!(
+                context_window,
+                "Propagated model context_window to sliding_window.context_budget"
+            );
+        }
+
         Self {
             llm,
             system_prompt,
@@ -257,6 +276,7 @@ impl AgentConfig {
             memory_strategy: memory.strategy.clone(),
             memory_config: memory,
             embedding,
+            context_window,
         }
     }
 
