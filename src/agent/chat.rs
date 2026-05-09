@@ -498,6 +498,9 @@ impl AgentMetadata for ChatAgent {
     fn session_cost(&self) -> Option<&SharedSessionCost> {
         Some(&self.session_cost)
     }
+    fn context_window(&self) -> usize {
+        self.context_window
+    }
 }
 
 // ── AgentMode — pipeline-driven ──

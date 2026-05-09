@@ -200,6 +200,20 @@ pub struct LoopConfig {
     /// windows. Callers should set this based on the model's context window
     /// size to avoid over-truncating on large-context models (e.g. 256K).
     pub truncation: Option<TruncationConfig>,
+
+    // ── Context pressure awareness ──
+
+    /// Context window size (in tokens) for budget-aware behavior.
+    /// When set, enables context pressure hints and hard-stop gate.
+    /// When `None`, context pressure features are disabled.
+    pub context_window_tokens: Option<usize>,
+    /// Ratio of context window usage at which to start injecting "wrap up"
+    /// hints into the tool history (default: 0.7 = 70%).
+    pub context_soft_limit_ratio: f64,
+    /// Ratio of context window usage at which to force-stop the loop
+    /// (default: 0.9 = 90%). The loop will make one final LLM call
+    /// requesting a summary before exiting.
+    pub context_hard_limit_ratio: f64,
 }
 
 // ── Outputs ──
@@ -218,6 +232,13 @@ pub enum LoopOutcome {
     DuplicateStop { message: String },
     /// Round budget exhausted without reaching a final response.
     MaxRoundsExceeded,
+    /// Context budget exceeded — the loop force-stopped because the
+    /// estimated context usage exceeded `context_hard_limit_ratio`.
+    /// Contains the final response from the forced summarization call.
+    ContextBudgetExceeded {
+        content: String,
+        reasoning: Option<String>,
+    },
 }
 
 /// Full loop output: outcome + accumulated bookkeeping.
@@ -297,6 +318,49 @@ pub async fn run_tool_loop(
         // Human-facing round number (1-based) for logs / events.
         let round_number = round_idx + 1;
 
+        // ── Context pressure check (before each LLM call) ──
+        // Estimate current context usage and decide whether to inject hints
+        // or force-stop the loop.
+        let context_usage_pct = estimate_context_usage_pct(
+            ctx.messages,
+            &tool_history,
+            cfg.context_window_tokens,
+        );
+
+        if let Some(cw) = cfg.context_window_tokens {
+            if context_usage_pct >= (cfg.context_hard_limit_ratio * 100.0) as u8 {
+                // Hard stop: context budget exceeded. Force one final LLM call
+                // requesting immediate summarization, then exit.
+                tracing::warn!(
+                    agent = %cfg.agent_label,
+                    context_usage_pct,
+                    hard_limit = %(cfg.context_hard_limit_ratio * 100.0),
+                    round = round_number,
+                    "Context budget exceeded — forcing final response"
+                );
+
+                emit(ctx.on_tool_event, ToolEvent::ContextBudgetExceeded {
+                    usage_pct: context_usage_pct,
+                });
+
+                let final_result = force_final_response(
+                    llm, cfg, ctx, &tool_history, &total_usage,
+                ).await?;
+                return Ok(final_result);
+            }
+
+            // Log context pressure for observability
+            if context_usage_pct >= 60 {
+                tracing::info!(
+                    agent = %cfg.agent_label,
+                    context_usage_pct,
+                    context_window = cw,
+                    round = round_number,
+                    "Context pressure elevated"
+                );
+            }
+        }
+
         let llm_start = Instant::now();
 
         // Start LLM call tracing span
@@ -339,7 +403,49 @@ pub async fn run_tool_loop(
         // Recent rounds keep full results; older rounds are truncated to save tokens.
         // The original `tool_history` is preserved intact for tracing and memory.
         let trunc_cfg = cfg.truncation.as_ref().cloned().unwrap_or_default();
-        let mut truncated_history = truncate_tool_history(&tool_history, &trunc_cfg);
+
+        // ── Dynamic truncation tightening (context pressure aware) ──
+        // When context usage exceeds 60%, progressively reduce the truncation
+        // budget to free up space for the model's output and new tool calls.
+        // This implements "Intra-Turn MicroCompact" — the tool history budget
+        // shrinks as context pressure increases.
+        let effective_trunc_cfg = if context_usage_pct > 60 {
+            let pressure = (context_usage_pct as f64 - 60.0) / 40.0; // 0.0 ~ 1.0
+            let reduction = (trunc_cfg.budget_tokens as f64 * pressure * 0.5) as usize;
+            let new_budget = trunc_cfg.budget_tokens.saturating_sub(reduction);
+            tracing::debug!(
+                original_budget = trunc_cfg.budget_tokens,
+                new_budget,
+                pressure = %format!("{:.2}", pressure),
+                "Tightening truncation budget due to context pressure"
+            );
+            TruncationConfig {
+                budget_tokens: new_budget,
+                // Under extreme pressure (>80%), reduce protected rounds to
+                // free more space. Floor at 3 to always keep immediate context.
+                min_recent_rounds: if context_usage_pct > 80 {
+                    3_usize.max(trunc_cfg.min_recent_rounds / 2)
+                } else {
+                    trunc_cfg.min_recent_rounds
+                },
+                // Tighten truncation limits under pressure
+                moderate_max_chars: if context_usage_pct > 70 {
+                    trunc_cfg.moderate_max_chars / 2
+                } else {
+                    trunc_cfg.moderate_max_chars
+                },
+                aggressive_max_chars: if context_usage_pct > 70 {
+                    trunc_cfg.aggressive_max_chars / 2
+                } else {
+                    trunc_cfg.aggressive_max_chars
+                },
+                micro_max_chars: trunc_cfg.micro_max_chars,
+            }
+        } else {
+            trunc_cfg
+        };
+
+        let mut truncated_history = truncate_tool_history(&tool_history, &effective_trunc_cfg);
 
         // ── Inject session metadata into tool history ──
         // Appends a compact session summary to the last tool response in the
@@ -347,6 +453,7 @@ pub async fn run_tool_loop(
         // 1. Progress awareness (round X/Y, Z% budget used)
         // 2. File access index (which files already read — prevents re-reads)
         // 3. Accumulated notes from take_note
+        // 4. Context pressure hints (when approaching budget limits)
         //
         // Unlike the previous synthetic-tool-round approach (which used a fake
         // tool name `_session_progress` that APIs may ignore), this piggybacks
@@ -377,6 +484,12 @@ pub async fn run_tool_loop(
                     "\n⚠️ {}% budget used — start writing your final output now.",
                     progress_pct
                 ));
+            }
+
+            // ── Context pressure hints (based on actual token usage) ──
+            if let Some(hint) = context_budget_hint(context_usage_pct, cfg.context_soft_limit_ratio) {
+                meta.push_str("\n");
+                meta.push_str(&hint);
             }
 
             // Accumulated notes from take_note tool
@@ -885,6 +998,155 @@ fn estimate_json_len(value: &serde_json::Value) -> usize {
     }
 }
 
+// ── Context pressure awareness ──
+
+/// Estimate the current context usage as a percentage (0-100).
+///
+/// Combines the pre-built messages (system + history + user) with the
+/// tool history to estimate total token consumption relative to the
+/// context window size.
+///
+/// Returns 0 if `context_window_tokens` is `None` (feature disabled).
+fn estimate_context_usage_pct(
+    messages: &[ChatMessage],
+    tool_history: &[ToolRound],
+    context_window_tokens: Option<usize>,
+) -> u8 {
+    let cw = match context_window_tokens {
+        Some(cw) if cw > 0 => cw,
+        _ => return 0,
+    };
+
+    // Estimate tokens from pre-built messages
+    let msg_chars: usize = messages.iter().map(|m| {
+        m.content.len() + 20 // role overhead + JSON structure
+    }).sum();
+
+    // Estimate tokens from tool history
+    let history_chars = estimate_history_chars(tool_history);
+
+    let total_estimated_tokens = (msg_chars + history_chars) / CHARS_PER_TOKEN;
+    let pct = (total_estimated_tokens * 100) / cw;
+    pct.min(100) as u8
+}
+
+/// Generate a context budget hint message based on current usage percentage.
+///
+/// Returns `None` if usage is below the soft limit (no hint needed).
+/// The hint is injected into the tool history metadata to guide the LLM
+/// toward wrapping up its work.
+///
+/// ## Hint levels:
+/// - **Notice** (soft_limit ~ soft_limit+10%): Gentle reminder to be efficient
+/// - **Warning** (soft_limit+10% ~ hard_limit): Strong push to conclude
+/// - **Critical** (>= hard_limit): Demand immediate answer
+fn context_budget_hint(usage_pct: u8, soft_limit_ratio: f64) -> Option<String> {
+    let soft_pct = (soft_limit_ratio * 100.0) as u8;
+    let warn_pct = soft_pct + 10; // 10% above soft limit
+
+    if usage_pct >= 90 {
+        Some(format!(
+            "\n🚨 [CONTEXT CRITICAL — {}% used] You are about to exceed the context window. \
+             STOP making tool calls immediately. Provide your FINAL answer NOW based on \
+             the information you have already gathered. Do NOT read any more files or \
+             make any more searches. Synthesize your findings and respond.",
+            usage_pct
+        ))
+    } else if usage_pct >= warn_pct {
+        Some(format!(
+            "\n⚠️ [CONTEXT WARNING — {}% used] You MUST conclude your work very soon. \
+             Synthesize what you already know and provide your answer. Only make a tool \
+             call if it is absolutely critical to answering the user's question. \
+             Prefer summarizing your findings over gathering more information.",
+            usage_pct
+        ))
+    } else if usage_pct >= soft_pct {
+        Some(format!(
+            "\n📋 [CONTEXT NOTICE — {}% used] Context window is filling up. \
+             Start wrapping up: prefer summarizing findings over reading more files. \
+             Only make essential tool calls. Plan to deliver your answer within \
+             the next 2-3 rounds.",
+            usage_pct
+        ))
+    } else {
+        None
+    }
+}
+
+/// Force a final response from the LLM when context budget is exceeded.
+///
+/// Makes one last LLM call with a strong instruction to summarize findings
+/// and provide a final answer, then returns a `ContextBudgetExceeded` outcome.
+async fn force_final_response(
+    llm: &dyn LlmApi,
+    cfg: &LoopConfig,
+    ctx: &LoopContext<'_>,
+    tool_history: &[ToolRound],
+    total_usage: &TokenUsage,
+) -> Result<LoopResult> {
+    // Build a heavily truncated view of tool history for the final call
+    let micro_cfg = TruncationConfig {
+        budget_tokens: cfg.truncation.as_ref()
+            .map(|t| t.budget_tokens / 4)
+            .unwrap_or(10_000),
+        min_recent_rounds: 3,
+        moderate_max_chars: 200,
+        aggressive_max_chars: 80,
+        micro_max_chars: 40,
+    };
+    let mut truncated = truncate_tool_history(tool_history, &micro_cfg);
+
+    // Inject a strong "conclude now" instruction into the last tool response
+    let conclude_msg = "\n\n---\n\
+        🚨 [SYSTEM: CONTEXT BUDGET EXCEEDED — FORCED FINAL RESPONSE]\n\
+        The context window is nearly full. This is your LAST chance to respond.\n\
+        You MUST provide your final answer NOW. Do NOT request any tool calls.\n\
+        Synthesize all information gathered so far and give the best possible answer.\n\
+        If the task is incomplete, explain what was accomplished and what remains.";
+
+    if let Some(last_round) = truncated.last_mut() {
+        if let Some(last_resp) = last_round.responses.last_mut() {
+            last_resp.content.push_str(conclude_msg);
+        }
+    } else {
+        // No tool history at all — create a synthetic round with the instruction
+        truncated.push(ToolRound {
+            calls: vec![],
+            responses: vec![ToolResponse {
+                call_id: String::new(),
+                content: conclude_msg.to_string(),
+                success: true,
+            }],
+            reasoning_content: None,
+        });
+    }
+
+    // Make the final LLM call with NO tools (force text response)
+    let response = llm
+        .chat_with_tools(ctx.messages, &[], &truncated, None)
+        .await?;
+
+    let mut final_usage = total_usage.clone();
+    if let Some(ref usage) = response.usage {
+        final_usage.accumulate(usage);
+    }
+
+    let reasoning = if cfg.track_reasoning {
+        response.reasoning_content
+    } else {
+        None
+    };
+
+    Ok(LoopResult {
+        outcome: LoopOutcome::ContextBudgetExceeded {
+            content: response.content,
+            reasoning,
+        },
+        usage: final_usage,
+        tool_history: tool_history.to_vec(),
+    })
+}
+
 // ── ToolPipeline core adapter ──
 
 /// Adapter that wraps a `ToolExecutor` as the core of a `ToolPipeline`.
@@ -900,5 +1162,162 @@ pub(crate) struct ToolExecutorCore {
 impl ToolNext for ToolExecutorCore {
     async fn run(&self, request: ToolRequest) -> ToolResponse {
         self.executor.execute(&request.call).await
+    }
+}
+
+// ── Tests ──
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::{ChatRole, ChatMessage, ToolRound, ToolResponse, ToolCall};
+
+    #[test]
+    fn test_estimate_context_usage_pct_disabled() {
+        // When context_window_tokens is None, should return 0
+        let messages = vec![ChatMessage {
+            role: ChatRole::User,
+            content: "Hello".to_string(),
+            cache_control: None,
+            preserved: false,
+        }];
+        assert_eq!(estimate_context_usage_pct(&messages, &[], None), 0);
+    }
+
+    #[test]
+    fn test_estimate_context_usage_pct_empty() {
+        // Empty messages + empty history should be ~0%
+        let messages: Vec<ChatMessage> = vec![];
+        let pct = estimate_context_usage_pct(&messages, &[], Some(100_000));
+        assert_eq!(pct, 0);
+    }
+
+    #[test]
+    fn test_estimate_context_usage_pct_basic() {
+        // Create messages that should use a known percentage
+        let content = "x".repeat(30_000); // 30K chars ≈ 10K tokens
+        let messages = vec![ChatMessage {
+            role: ChatRole::System,
+            content,
+            cache_control: None,
+            preserved: false,
+        }];
+        // With 100K context window, 10K tokens ≈ 10%
+        let pct = estimate_context_usage_pct(&messages, &[], Some(100_000));
+        assert!(pct >= 8 && pct <= 12, "Expected ~10%, got {}%", pct);
+    }
+
+    #[test]
+    fn test_estimate_context_usage_pct_with_tool_history() {
+        let messages = vec![ChatMessage {
+            role: ChatRole::User,
+            content: "short".to_string(),
+            cache_control: None,
+            preserved: false,
+        }];
+        // Create tool history with substantial content
+        let tool_history = vec![ToolRound {
+            calls: vec![ToolCall {
+                call_id: "1".to_string(),
+                function_name: "read_file".to_string(),
+                arguments: serde_json::json!({"path": "/foo/bar.rs"}),
+            }],
+            responses: vec![ToolResponse {
+                call_id: "1".to_string(),
+                content: "x".repeat(60_000), // 60K chars ≈ 20K tokens
+                success: true,
+            }],
+            reasoning_content: None,
+        }];
+        // With 100K context window, ~20K tokens ≈ 20%
+        let pct = estimate_context_usage_pct(&messages, &tool_history, Some(100_000));
+        assert!(pct >= 18 && pct <= 25, "Expected ~20%, got {}%", pct);
+    }
+
+    #[test]
+    fn test_estimate_context_usage_pct_caps_at_100() {
+        // Huge content should cap at 100%
+        let content = "x".repeat(500_000);
+        let messages = vec![ChatMessage {
+            role: ChatRole::System,
+            content,
+            cache_control: None,
+            preserved: false,
+        }];
+        let pct = estimate_context_usage_pct(&messages, &[], Some(10_000));
+        assert_eq!(pct, 100);
+    }
+
+    #[test]
+    fn test_context_budget_hint_below_threshold() {
+        // Below soft limit (70%) — no hint
+        assert!(context_budget_hint(50, 0.7).is_none());
+        assert!(context_budget_hint(69, 0.7).is_none());
+    }
+
+    #[test]
+    fn test_context_budget_hint_notice_level() {
+        // At soft limit (70-79%) — notice
+        let hint = context_budget_hint(70, 0.7);
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("CONTEXT NOTICE"));
+    }
+
+    #[test]
+    fn test_context_budget_hint_warning_level() {
+        // Above soft+10% (80-89%) — warning
+        let hint = context_budget_hint(82, 0.7);
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("CONTEXT WARNING"));
+    }
+
+    #[test]
+    fn test_context_budget_hint_critical_level() {
+        // At 90%+ — critical
+        let hint = context_budget_hint(90, 0.7);
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("CONTEXT CRITICAL"));
+
+        let hint = context_budget_hint(95, 0.7);
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("CONTEXT CRITICAL"));
+    }
+
+    #[test]
+    fn test_context_budget_hint_custom_soft_limit() {
+        // With soft limit at 0.5 (50%), notice should trigger at 50%
+        let hint = context_budget_hint(50, 0.5);
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("CONTEXT NOTICE"));
+
+        // Warning at 60% (soft + 10%)
+        let hint = context_budget_hint(62, 0.5);
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("CONTEXT WARNING"));
+    }
+
+    #[test]
+    fn test_dynamic_truncation_tightening() {
+        // Verify that TruncationConfig budget is reduced under pressure
+        let base_cfg = TruncationConfig::for_context_window(200_000);
+        let original_budget = base_cfg.budget_tokens;
+
+        // Simulate 80% context usage — should reduce budget by ~25%
+        let usage_pct: u8 = 80;
+        let pressure = (usage_pct as f64 - 60.0) / 40.0; // 0.5
+        let reduction = (original_budget as f64 * pressure * 0.5) as usize;
+        let new_budget = original_budget.saturating_sub(reduction);
+
+        // Budget should be reduced but not zero
+        assert!(new_budget < original_budget);
+        assert!(new_budget > original_budget / 2);
+        // At 80% pressure (0.5), reduction is 25% of original
+        let expected_ratio = 0.75;
+        let actual_ratio = new_budget as f64 / original_budget as f64;
+        assert!(
+            (actual_ratio - expected_ratio).abs() < 0.05,
+            "Expected ~75% of original budget, got {:.1}%",
+            actual_ratio * 100.0
+        );
     }
 }

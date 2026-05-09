@@ -83,6 +83,14 @@ impl ToolEventFormatter {
             ToolEvent::StreamText { .. }
             | ToolEvent::StreamReasoning { .. }
             | ToolEvent::StreamDone => vec![],
+            ToolEvent::ContextBudgetExceeded { usage_pct } => {
+                vec![format!(
+                    "    {} {}",
+                    "⚠️  Context budget exceeded".with(Color::Red).attribute(Attribute::Bold),
+                    format!("({}% used) — forcing final response", usage_pct)
+                        .with(Color::DarkGrey),
+                )]
+            }
         }
     }
 
@@ -171,7 +179,7 @@ impl ToolEventFormatter {
         // Show per-round token usage and LLM elapsed time
         {
             let mut parts: Vec<String> = if let Some(u) = usage {
-                super::format_token_parts(u)
+                super::format_token_parts(u, None)
             } else {
                 Vec::new()
             };
@@ -305,7 +313,7 @@ impl ToolEventFormatter {
 
         // Build token info string
         let token_info = if let Some(u) = usage {
-            let parts = super::format_token_parts(u);
+            let parts = super::format_token_parts(u, None);
             if parts.is_empty() {
                 String::new()
             } else {

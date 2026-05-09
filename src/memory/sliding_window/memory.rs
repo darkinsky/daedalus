@@ -1102,6 +1102,14 @@ impl Memory for SlidingWindowMemory {
         // summary that preserves the tool name and call structure.
         Self::micro_compact(&mut messages);
 
+        // Filter out non-system messages with empty content.
+        // Some LLM APIs (Venus/Claude) reject empty content with
+        // "message has no content" error. This can happen when tool-only
+        // turns store an empty assistant message.
+        messages.retain(|msg| {
+            msg.role == crate::llm::ChatRole::System || !msg.content.is_empty()
+        });
+
         messages
     }
 

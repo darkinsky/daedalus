@@ -43,27 +43,62 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // ── Token usage formatting helpers ──
 
-/// Format token usage into a list of human-readable parts (e.g. `["100↑", "20↓", "120total"]`).
+/// Format token usage into a list of human-readable parts.
+///
+/// Output example: `["input: 58,965 (cached: 56,320 95%)", "output: 868", "ctx: 59,833/1,000,000 5%"]`
+///
+/// When `context_window` is provided (> 0), the total is displayed as a
+/// fraction of the context window with a percentage.
 ///
 /// Used by `response_footer`, `turn_summary`, and `tool_event` to avoid
 /// duplicating the same `if let Some(pt) = ...` pattern everywhere.
-pub(super) fn format_token_parts(usage: &TokenUsage) -> Vec<String> {
+pub(super) fn format_token_parts(usage: &TokenUsage, context_window: Option<usize>) -> Vec<String> {
     let mut parts = Vec::new();
     if let Some(pt) = usage.prompt_tokens {
-        parts.push(format!("{}↑", pt));
-    }
-    if let Some(cached) = usage.cached_tokens {
+        let mut input_part = format!("input: {}", format_number(pt));
+        if let Some(cached) = usage.cached_tokens {
+            if cached > 0 {
+                let pct = if pt > 0 { cached * 100 / pt } else { 0 };
+                input_part.push_str(&format!(" (cached: {} {}%)", format_number(cached), pct));
+            }
+        }
+        parts.push(input_part);
+    } else if let Some(cached) = usage.cached_tokens {
         if cached > 0 {
-            parts.push(format!("{}cached", cached));
+            parts.push(format!("cached: {}", format_number(cached)));
         }
     }
     if let Some(ct) = usage.completion_tokens {
-        parts.push(format!("{}↓", ct));
+        parts.push(format!("output: {}", format_number(ct)));
     }
     if let Some(tt) = usage.total_tokens {
-        parts.push(format!("{}total", tt));
+        match context_window {
+            Some(cw) if cw > 0 => {
+                let pct = tt * 100 / cw as u64;
+                parts.push(format!("ctx: {}/{} {}%", format_number(tt), format_number(cw as u64), pct));
+            }
+            _ => {
+                parts.push(format!("total: {}", format_number(tt)));
+            }
+        }
     }
     parts
+}
+
+/// Format a number with thousand separators for readability (e.g. 58965 → "58,965").
+fn format_number(n: u64) -> String {
+    if n < 1_000 {
+        return n.to_string();
+    }
+    let s = n.to_string();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    for (i, ch) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(ch);
+    }
+    result.chars().rev().collect()
 }
 
 /// Accumulate token usage from multiple sources into grand totals.
@@ -347,9 +382,13 @@ pub fn stream_done() {
 }
 
 /// Print a compact token-usage / elapsed-time line after each response.
-pub fn response_footer(usage: Option<&TokenUsage>, elapsed: f64) {
+///
+/// `context_window` is the model's max context size in tokens, used to
+/// display a usage percentage (e.g. "ctx: 59,833/1,000,000 5%").
+pub fn response_footer(usage: Option<&TokenUsage>, elapsed: f64, context_window: usize) {
+    let cw = if context_window > 0 { Some(context_window) } else { None };
     let mut parts: Vec<String> = if let Some(u) = usage {
-        format_token_parts(u)
+        format_token_parts(u, cw)
     } else {
         Vec::new()
     };
@@ -445,6 +484,7 @@ pub fn turn_summary(
     lead_usage: Option<&TokenUsage>,
     total_elapsed: f64,
     subagents: &[SubagentUsageSummary],
+    context_window: usize,
 ) {
     let ts = Local::now().format("%H:%M:%S");
 
@@ -457,17 +497,19 @@ pub fn turn_summary(
         format!("[{}]", ts).with(Color::DarkGrey),
     );
 
+    let cw = if context_window > 0 { Some(context_window) } else { None };
+
     // Lead agent row
     {
         let mut parts: Vec<String> = if let Some(u) = lead_usage {
-            format_token_parts(u)
+            format_token_parts(u, cw)
         } else {
             Vec::new()
         };
         parts.push(format!("{:.1}s", total_elapsed));
         println!(
             "    {} {}",
-            "Lead agent:".with(Color::White).attribute(Attribute::Bold),
+            "Lead:".with(Color::White).attribute(Attribute::Bold),
             parts.join(" \u{00b7} ").with(Color::DarkGrey),
         );
     }
@@ -480,7 +522,7 @@ pub fn turn_summary(
             "\u{2717}".with(Color::Red)
         };
         let mut parts: Vec<String> = if let Some(ref u) = sa.usage {
-            format_token_parts(u)
+            format_token_parts(u, None)
         } else {
             Vec::new()
         };
@@ -501,12 +543,20 @@ pub fn turn_summary(
         let (grand_prompt, grand_completion, grand_total, has_tokens) = accumulate_usage(all_usages);
 
         if has_tokens {
+            let ctx_info = match cw {
+                Some(cw_val) if cw_val > 0 => {
+                    let pct = grand_total * 100 / cw_val as u64;
+                    format!("ctx: {}/{} {}%", format_number(grand_total), format_number(cw_val as u64), pct)
+                }
+                _ => format!("total: {}", format_number(grand_total)),
+            };
             println!(
                 "    {} {}",
-                "Grand total:".with(Color::Yellow).attribute(Attribute::Bold),
+                "Total:".with(Color::Yellow).attribute(Attribute::Bold),
                 format!(
-                    "{}\u{2191} \u{00b7} {}\u{2193} \u{00b7} {}total \u{00b7} {:.1}s",
-                    grand_prompt, grand_completion, grand_total, total_elapsed,
+                    "input: {} · output: {} · {} · {:.1}s",
+                    format_number(grand_prompt), format_number(grand_completion),
+                    ctx_info, total_elapsed,
                 )
                 .with(Color::DarkGrey),
             );

@@ -107,6 +107,10 @@ impl CoreTurnHandler {
             track_reasoning: true,
             // Scale truncation to the model's actual context window size.
             truncation: Some(crate::agent::tool_loop::TruncationConfig::for_context_window(self.context_window)),
+            // Enable context pressure awareness with the model's context window.
+            context_window_tokens: Some(self.context_window),
+            context_soft_limit_ratio: 0.7,
+            context_hard_limit_ratio: 0.9,
         };
 
         let tracing_hook = trace_ctx.map(agent_tracing::TracingHook::new);
@@ -150,6 +154,20 @@ impl CoreTurnHandler {
                 usage,
                 extensions: Extensions::new(),
             }),
+            LoopOutcome::ContextBudgetExceeded { content, reasoning } => {
+                tracing::warn!("Tool loop ended due to context budget exceeded");
+                Ok(TurnResponse {
+                    chat_response: ChatResponse {
+                        content,
+                        reasoning_content: reasoning,
+                        usage: Some(usage.clone()),
+                        tool_calls: vec![],
+                    },
+                    tool_history,
+                    usage,
+                    extensions: Extensions::new(),
+                })
+            }
             LoopOutcome::DuplicateStop { message } => anyhow::bail!("{}", message),
             LoopOutcome::MaxRoundsExceeded => {
                 anyhow::bail!(

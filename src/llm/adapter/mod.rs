@@ -13,6 +13,7 @@
 pub mod openai;
 pub mod anthropic;
 pub mod gemini;
+pub mod venus;
 
 use anyhow::Result;
 use reqwest::header::HeaderMap;
@@ -73,11 +74,13 @@ pub trait ApiAdapter: Send + Sync {
 /// Create an adapter based on the adapter_kind configuration.
 ///
 /// Supported values:
-/// - `"openai"` (default) — OpenAI, Venus proxy, DeepSeek, and any OpenAI-compatible API
+/// - `"venus"` — Venus LLM Proxy (OpenAI-compatible with extensions for Claude/Gemini thinking)
+/// - `"openai"` (default) — OpenAI, DeepSeek, and any plain OpenAI-compatible API
 /// - `"anthropic"` — Anthropic Messages API (direct, not via Venus proxy)
 /// - `"gemini"` or `"google"` — Google Gemini API (direct)
 pub fn create_adapter(config: &LlmConfig) -> Box<dyn ApiAdapter> {
     match config.adapter_kind.as_deref().map(|s| s.to_lowercase()).as_deref() {
+        Some("venus") => Box::new(venus::VenusAdapter),
         Some("anthropic") => Box::new(anthropic::AnthropicAdapter),
         Some("gemini") | Some("google") => Box::new(gemini::GeminiAdapter),
         // "openai", "deepseek", or anything else → OpenAI-compatible

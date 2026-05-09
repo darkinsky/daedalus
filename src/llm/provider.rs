@@ -175,10 +175,11 @@ impl LlmProvider {
     ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
         let url = self.adapter.endpoint(&self.base_url, &self.config.model);
         let headers = self.adapter.headers(&self.config.api_key);
+        let adapter_name = self.adapter.name().to_string();
 
         tracing::debug!(
             url = %url,
-            adapter = self.adapter.name(),
+            adapter = %adapter_name,
             model = %self.config.model,
             "LLM API streaming request"
         );
@@ -234,13 +235,13 @@ impl LlmProvider {
                     let line = buffer[..line_end].trim_end_matches('\r').to_string();
                     buffer = buffer[line_end + 1..].to_string();
 
-                    if line.is_empty() {
+                    if line.is_empty() || line.starts_with("event:") {
                         continue;
                     }
 
                     if let Some(data) = line.strip_prefix("data: ") {
                         if data.trim() == "[DONE]" {
-                            // Emit remaining partial tool calls
+                            // OpenAI-style stream termination
                             for (_, ptc) in tool_call_builders.drain() {
                                 if let Some(tc) = ptc.into_tool_call() {
                                     let _ = tx.send(StreamChunk::ToolCall(tc)).await;
@@ -250,85 +251,43 @@ impl LlmProvider {
                             return;
                         }
 
-                        // Try to parse tool call deltas from the raw JSON
-                        if let Ok(parsed) = serde_json::from_str::<Value>(data) {
-                            // Handle incremental tool calls (OpenAI format)
-                            if let Some(choices) = parsed.get("choices").and_then(|c| c.as_array()) {
-                                for choice in choices {
-                                    if let Some(delta) = choice.get("delta") {
-                                        if let Some(tool_calls) = delta.get("tool_calls").and_then(|tc| tc.as_array()) {
-                                            for tc_delta in tool_calls {
-                                                let index = tc_delta.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
-                                                let builder = tool_call_builders.entry(index).or_insert_with(PartialToolCall::new);
+                        let parsed = match serde_json::from_str::<Value>(data) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
 
-                                                if let Some(id) = tc_delta.get("id").and_then(|v| v.as_str()) {
-                                                    builder.call_id = Some(id.to_string());
-                                                }
-                                                if let Some(func) = tc_delta.get("function") {
-                                                    if let Some(name) = func.get("name").and_then(|n| n.as_str()) {
-                                                        builder.function_name = Some(name.to_string());
-                                                    }
-                                                    if let Some(args) = func.get("arguments").and_then(|a| a.as_str()) {
-                                                        builder.arguments_buffer.push_str(args);
-                                                    }
-                                                }
-                                            }
-                                            continue; // Don't pass to adapter for tool call deltas
-                                        }
-                                    }
-                                }
+                        // ── Extract tool call deltas (stateful, handled here) ──
+                        let tool_call_handled = extract_tool_call_deltas(
+                            &parsed, &adapter_name, &mut tool_call_builders,
+                        );
 
-                                // Check for usage in the chunk (OpenAI/Anthropic format)
-                                if let Some(usage_obj) = parsed.get("usage") {
-                                    let prompt = usage_obj.get("prompt_tokens").and_then(|v| v.as_u64());
-                                    let completion = usage_obj.get("completion_tokens").and_then(|v| v.as_u64());
-                                    let total = usage_obj.get("total_tokens").and_then(|v| v.as_u64());
-                                    let cached = usage_obj
-                                        .get("prompt_tokens_details")
-                                        .and_then(|d| d.get("cached_tokens"))
-                                        .and_then(|v| v.as_u64())
-                                        .or_else(|| usage_obj.get("cache_read_input_tokens").and_then(|v| v.as_u64()));
-
-                                    if prompt.is_some() || completion.is_some() || total.is_some() {
-                                        let _ = tx.send(StreamChunk::Usage(super::TokenUsage {
-                                            prompt_tokens: prompt,
-                                            completion_tokens: completion,
-                                            total_tokens: total,
-                                            cached_tokens: cached,
-                                        })).await;
-                                    }
-                                }
-
-                                // Check for usage in the chunk (Gemini format)
-                                if let Some(usage_meta) = parsed.get("usageMetadata") {
-                                    let prompt = usage_meta.get("promptTokenCount").and_then(|v| v.as_u64());
-                                    let completion = usage_meta.get("candidatesTokenCount").and_then(|v| v.as_u64());
-                                    let cached = usage_meta.get("cachedContentTokenCount").and_then(|v| v.as_u64());
-
-                                    if prompt.is_some() || completion.is_some() {
-                                        let _ = tx.send(StreamChunk::Usage(super::TokenUsage {
-                                            prompt_tokens: prompt,
-                                            completion_tokens: completion,
-                                            total_tokens: match (prompt, completion) {
-                                                (Some(p), Some(c)) => Some(p + c),
-                                                _ => None,
-                                            },
-                                            cached_tokens: cached,
-                                        })).await;
-                                    }
-                                }
-                            }
+                        // ── Extract usage information ──
+                        if let Some(usage_chunk) = extract_usage(&parsed, &adapter_name) {
+                            let _ = tx.send(usage_chunk).await;
                         }
 
-                        // Delegate content/reasoning parsing to adapter
-                        if let Some(chunk) = parse_stream_content(data) {
-                            let _ = tx.send(chunk).await;
+                        // ── Check for stream termination (Anthropic "message_stop") ──
+                        if parsed.get("type").and_then(|t| t.as_str()) == Some("message_stop") {
+                            for (_, ptc) in tool_call_builders.drain() {
+                                if let Some(tc) = ptc.into_tool_call() {
+                                    let _ = tx.send(StreamChunk::ToolCall(tc)).await;
+                                }
+                            }
+                            let _ = tx.send(StreamChunk::Done).await;
+                            return;
+                        }
+
+                        // ── Extract content/reasoning deltas ──
+                        if !tool_call_handled {
+                            if let Some(chunk) = extract_content_delta(&parsed, &adapter_name) {
+                                let _ = tx.send(chunk).await;
+                            }
                         }
                     }
                 }
             }
 
-            // Stream ended without [DONE]
+            // Stream ended without explicit termination signal
             for (_, ptc) in tool_call_builders.drain() {
                 if let Some(tc) = ptc.into_tool_call() {
                     let _ = tx.send(StreamChunk::ToolCall(tc)).await;
@@ -341,30 +300,197 @@ impl LlmProvider {
     }
 }
 
-/// Parse content and reasoning deltas from an SSE data line.
-///
-/// This is a shared helper that handles the common OpenAI streaming format
-/// for content and reasoning_content deltas.
-fn parse_stream_content(data: &str) -> Option<StreamChunk> {
-    let parsed: Value = serde_json::from_str(data).ok()?;
-    let choices = parsed.get("choices")?.as_array()?;
-    let choice = choices.first()?;
-    let delta = choice.get("delta")?;
+// ─── SSE Stream Parsing Helpers ───────────────────────────────────────────────
 
-    // Content delta
-    if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-        if !content.is_empty() {
-            return Some(StreamChunk::ContentDelta(content.to_string()));
+/// Extract incremental tool call deltas from a parsed SSE event.
+/// Returns `true` if the event was a tool call delta (so content parsing can be skipped).
+fn extract_tool_call_deltas(
+    parsed: &Value,
+    adapter_name: &str,
+    builders: &mut HashMap<usize, PartialToolCall>,
+) -> bool {
+    if adapter_name == "Anthropic" {
+        let event_type = parsed.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        match event_type {
+            "content_block_start" => {
+                if let Some(cb) = parsed.get("content_block") {
+                    if cb.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                        let idx = parsed.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                        let b = builders.entry(idx).or_insert_with(PartialToolCall::new);
+                        if let Some(id) = cb.get("id").and_then(|v| v.as_str()) {
+                            b.call_id = Some(id.to_string());
+                        }
+                        if let Some(name) = cb.get("name").and_then(|v| v.as_str()) {
+                            b.function_name = Some(name.to_string());
+                        }
+                        return true;
+                    }
+                }
+            }
+            "content_block_delta" => {
+                if let Some(delta) = parsed.get("delta") {
+                    if delta.get("type").and_then(|t| t.as_str()) == Some("input_json_delta") {
+                        if let Some(partial) = delta.get("partial_json").and_then(|v| v.as_str()) {
+                            let idx = parsed.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                            let b = builders.entry(idx).or_insert_with(PartialToolCall::new);
+                            b.arguments_buffer.push_str(partial);
+                            return true;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    } else {
+        // OpenAI/Venus/Gemini format: tool_calls array in choices[].delta
+        if let Some(choices) = parsed.get("choices").and_then(|c| c.as_array()) {
+            for choice in choices {
+                if let Some(delta) = choice.get("delta") {
+                    if let Some(tool_calls) = delta.get("tool_calls").and_then(|tc| tc.as_array()) {
+                        for tc_delta in tool_calls {
+                            let idx = tc_delta.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                            let b = builders.entry(idx).or_insert_with(PartialToolCall::new);
+                            if let Some(id) = tc_delta.get("id").and_then(|v| v.as_str()) {
+                                b.call_id = Some(id.to_string());
+                            }
+                            if let Some(func) = tc_delta.get("function") {
+                                if let Some(name) = func.get("name").and_then(|n| n.as_str()) {
+                                    b.function_name = Some(name.to_string());
+                                }
+                                if let Some(args) = func.get("arguments").and_then(|a| a.as_str()) {
+                                    b.arguments_buffer.push_str(args);
+                                }
+                            }
+                        }
+                        return true;
+                    }
+                }
+            }
         }
     }
+    false
+}
 
-    // Reasoning content delta
-    if let Some(reasoning) = delta.get("reasoning_content").and_then(|r| r.as_str()) {
-        if !reasoning.is_empty() {
-            return Some(StreamChunk::ReasoningDelta(reasoning.to_string()));
+/// Extract usage information from a parsed SSE event.
+fn extract_usage(parsed: &Value, adapter_name: &str) -> Option<StreamChunk> {
+    if adapter_name == "Anthropic" {
+        let event_type = parsed.get("type").and_then(|t| t.as_str())?;
+        match event_type {
+            "message_start" => {
+                let usage = parsed.get("message")?.get("usage")?;
+                let input = usage.get("input_tokens").and_then(|v| v.as_u64());
+                let cached = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64());
+                if input.is_some() {
+                    return Some(StreamChunk::Usage(super::TokenUsage {
+                        prompt_tokens: input,
+                        completion_tokens: None,
+                        total_tokens: None,
+                        cached_tokens: cached,
+                    }));
+                }
+            }
+            "message_delta" => {
+                let usage = parsed.get("usage")?;
+                let input = usage.get("input_tokens").and_then(|v| v.as_u64());
+                let output = usage.get("output_tokens").and_then(|v| v.as_u64());
+                let cached = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64());
+                if input.is_some() || output.is_some() {
+                    return Some(StreamChunk::Usage(super::TokenUsage {
+                        prompt_tokens: input,
+                        completion_tokens: output,
+                        total_tokens: match (input, output) {
+                            (Some(i), Some(o)) => Some(i + o),
+                            _ => None,
+                        },
+                        cached_tokens: cached,
+                    }));
+                }
+            }
+            _ => {}
+        }
+    } else {
+        // OpenAI format usage
+        if let Some(usage_obj) = parsed.get("usage") {
+            let prompt = usage_obj.get("prompt_tokens").and_then(|v| v.as_u64());
+            let completion = usage_obj.get("completion_tokens").and_then(|v| v.as_u64());
+            let total = usage_obj.get("total_tokens").and_then(|v| v.as_u64());
+            let cached = usage_obj
+                .get("prompt_tokens_details")
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(|v| v.as_u64())
+                .or_else(|| usage_obj.get("cache_read_input_tokens").and_then(|v| v.as_u64()));
+
+            if prompt.is_some() || completion.is_some() || total.is_some() {
+                return Some(StreamChunk::Usage(super::TokenUsage {
+                    prompt_tokens: prompt,
+                    completion_tokens: completion,
+                    total_tokens: total,
+                    cached_tokens: cached,
+                }));
+            }
+        }
+
+        // Gemini format usage
+        if let Some(usage_meta) = parsed.get("usageMetadata") {
+            let prompt = usage_meta.get("promptTokenCount").and_then(|v| v.as_u64());
+            let completion = usage_meta.get("candidatesTokenCount").and_then(|v| v.as_u64());
+            let cached = usage_meta.get("cachedContentTokenCount").and_then(|v| v.as_u64());
+
+            if prompt.is_some() || completion.is_some() {
+                return Some(StreamChunk::Usage(super::TokenUsage {
+                    prompt_tokens: prompt,
+                    completion_tokens: completion,
+                    total_tokens: match (prompt, completion) {
+                        (Some(p), Some(c)) => Some(p + c),
+                        _ => None,
+                    },
+                    cached_tokens: cached,
+                }));
+            }
         }
     }
+    None
+}
 
+/// Extract content or reasoning deltas from a parsed SSE event.
+fn extract_content_delta(parsed: &Value, adapter_name: &str) -> Option<StreamChunk> {
+    if adapter_name == "Anthropic" {
+        if parsed.get("type").and_then(|t| t.as_str()) != Some("content_block_delta") {
+            return None;
+        }
+        let delta = parsed.get("delta")?;
+        match delta.get("type").and_then(|t| t.as_str()) {
+            Some("text_delta") => {
+                let text = delta.get("text").and_then(|t| t.as_str())?;
+                if !text.is_empty() {
+                    return Some(StreamChunk::ContentDelta(text.to_string()));
+                }
+            }
+            Some("thinking_delta") => {
+                let thinking = delta.get("thinking").and_then(|t| t.as_str())?;
+                if !thinking.is_empty() {
+                    return Some(StreamChunk::ReasoningDelta(thinking.to_string()));
+                }
+            }
+            _ => {}
+        }
+    } else {
+        // OpenAI/Venus/Gemini format: choices[].delta.content / reasoning_content
+        let choices = parsed.get("choices")?.as_array()?;
+        let choice = choices.first()?;
+        let delta = choice.get("delta")?;
+
+        if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+            if !content.is_empty() {
+                return Some(StreamChunk::ContentDelta(content.to_string()));
+            }
+        }
+        if let Some(reasoning) = delta.get("reasoning_content").and_then(|r| r.as_str()) {
+            if !reasoning.is_empty() {
+                return Some(StreamChunk::ReasoningDelta(reasoning.to_string()));
+            }
+        }
+    }
     None
 }
 
@@ -392,7 +518,10 @@ impl LlmApi for LlmProvider {
         let mut body = self.build_request_body(messages, tools, tool_history, options);
         // Enable streaming
         body["stream"] = json!(true);
-        body["stream_options"] = json!({ "include_usage": true });
+        // stream_options is OpenAI-specific; Anthropic doesn't use it
+        if self.adapter.name() != "Anthropic" {
+            body["stream_options"] = json!({ "include_usage": true });
+        }
         self.send_stream_request(body).await
     }
 

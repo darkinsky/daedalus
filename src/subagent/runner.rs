@@ -316,6 +316,11 @@ impl SubagentRunner {
             truncation: Some(crate::agent::tool_loop::TruncationConfig::for_context_window(
                 self.parent_llm_config.resolved_context_window(),
             )),
+            // Subagents have short lifespans and limited tool sets, so context
+            // pressure awareness is disabled (they rarely fill the window).
+            context_window_tokens: None,
+            context_soft_limit_ratio: 0.7,
+            context_hard_limit_ratio: 0.9,
         };
 
         let loop_ctx = LoopContext {
@@ -367,6 +372,14 @@ impl SubagentRunner {
                 self.force_final_summary(
                     definition, llm, messages, &tool_history, max_tool_rounds,
                 ).await
+            }
+            LoopOutcome::ContextBudgetExceeded { content, .. } => {
+                tracing::warn!(
+                    agent = %definition.name,
+                    rounds = tool_rounds,
+                    "Subagent stopped due to context budget exceeded"
+                );
+                content
             }
         };
 

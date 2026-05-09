@@ -127,6 +127,14 @@ pub enum ToolEvent {
         /// Wall-clock time the subagent took, in milliseconds.
         elapsed_ms: u64,
     },
+    /// Context budget exceeded — the tool loop is being force-stopped.
+    ///
+    /// Emitted when the estimated context usage exceeds the hard limit ratio,
+    /// signaling that the loop will make one final LLM call and exit.
+    ContextBudgetExceeded {
+        /// Current context usage percentage (0-100).
+        usage_pct: u8,
+    },
 }
 
 /// Callback type for receiving tool execution events.

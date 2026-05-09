@@ -252,6 +252,8 @@ fn build_stream_json_callback() -> ToolEventCallback {
             ToolEvent::StreamText { .. }
             | ToolEvent::StreamReasoning { .. }
             | ToolEvent::StreamDone => return,
+            // Context budget events are informational — skip in stream-json mode
+            ToolEvent::ContextBudgetExceeded { .. } => return,
         };
         emit_stream_event(&stream_event);
     })

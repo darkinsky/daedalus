@@ -267,7 +267,7 @@ async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &SharedSessio
 
             if subagent_stats.is_empty() {
                 // No subagents — simple footer
-                render::response_footer(result.usage.as_ref(), elapsed);
+                render::response_footer(result.usage.as_ref(), elapsed, agent.context_window());
             } else {
                 // Has subagents — render detailed turn summary
                 render::turn_summary(
@@ -283,6 +283,7 @@ async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &SharedSessio
                             elapsed_secs: s.elapsed_ms as f64 / 1000.0,
                         })
                         .collect::<Vec<_>>(),
+                    agent.context_window(),
                 );
 
                 // Also add subagent token usage to session cost

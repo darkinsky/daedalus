@@ -85,6 +85,13 @@ pub trait AgentMetadata {
     fn session_cost(&self) -> Option<&SharedSessionCost> {
         None
     }
+
+    /// Return the model's context window size (in tokens).
+    ///
+    /// Used by the CLI layer to display context usage percentage.
+    fn context_window(&self) -> usize {
+        crate::llm::model_registry::DEFAULT_CONTEXT_WINDOW
+    }
 }
 
 // ── Agent mode trait (core behavior) ──
