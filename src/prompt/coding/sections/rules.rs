@@ -58,50 +58,37 @@ pub fn build(tools: &[ToolInfo]) -> String {
          sequentially — they have isolated contexts and cannot share data.\n\
          - If a subagent returns partial results, use them as-is. Never redo its work yourself.\n\
          - On failure, retry with a narrower scope instead of a full retry.\n\
+         - **Delegate early**: If a task clearly needs subagents (e.g., full-project review, \
+         multi-module exploration), delegate in round 1-2. Do NOT spend rounds exploring \
+         the codebase yourself only to pass the same information to a subagent.\n\
          \n\
-         ### Complex Task Decomposition (Plan → Team)\n\
+         ### Complex Task Decomposition (Plan → Parallel Execution)\n\
          \n\
-         For large tasks that would overwhelm a single subagent's context window, \
-         use the **Plan → Team** pattern:\n\
+         For large tasks that would overwhelm a single subagent's context window:\n\
          \n\
-         1. **Assess scope**: Before spawning, estimate the task size. Signs it needs \
-         decomposition:\n\
-            - Code review of >30 files or >5,000 lines\n\
-            - Exploration spanning 3+ unrelated modules\n\
-            - Any task likely to produce >100K tokens of tool output\n\
+         1. **Assess scope quickly** (1 round max): Use `list_directory` or `bash find` \
+         to estimate file count. If >30 files or >5,000 lines → decompose.\n\
          \n\
-         2. **Plan first**: Spawn `plan` to analyze the project structure and decompose \
-         the task into independent sub-tasks scoped by module/directory.\n\
+         2. **Plan first**: Spawn `plan` to analyze the project structure and propose \
+         independent sub-tasks scoped by module/directory.\n\
          \n\
-         3. **Execute in parallel**: Use `spawn_team` to assign each sub-task to the \
-         appropriate subagent. The same agent type can handle multiple sub-tasks \
+         3. **Execute in parallel**: Spawn multiple `spawn_subagent` calls simultaneously \
+         (one per sub-task). The same agent type can handle multiple sub-tasks \
          (e.g., multiple `code-reviewer` instances reviewing different modules).\n\
          \n\
          4. **Synthesize**: After all sub-tasks complete, merge their results into a \
          coherent final response. Deduplicate, resolve conflicts, and add cross-cutting \
          observations.\n\
          \n\
-         Example for a full-project code review:\n\
-         ```\n\
-         Step 1: spawn_subagent(plan, \"Analyze project structure, list all modules \
-         with file counts, and propose 3-5 review partitions by module boundary\")\n\
-         Step 2: spawn_team([\n\
-           {code-reviewer, \"Review src/agent/ and src/subagent/ modules (focus: ...)\"},\n\
-           {code-reviewer, \"Review src/llm/ and src/mcp/ modules (focus: ...)\"},\n\
-           {code-reviewer, \"Review src/memory/ and src/tools/ modules (focus: ...)\"},\n\
-         ])\n\
-         Step 3: Merge results into unified report\n\
-         ```\n\
+         ### Partition Guidelines\n\
          \n\
-         **Key constraint**: Each sub-task description must be self-contained. Include \
-         the specific directories/files to review and any relevant context from the \
-         plan phase — subagents cannot see each other's results.\n\
-         \n\
-         **Partition balance**: Keep sub-tasks roughly equal in scope. Avoid combining \
-         a large module (20+ files or a complex subsystem) with other modules in the \
-         same partition — give it its own subagent instead. Unbalanced partitions waste \
-         tokens: a subagent handling 3x the work of another will consume 3x the tokens \
-         with diminishing accuracy due to context pressure."
+         - **Self-contained tasks**: Each sub-task description must include the specific \
+         directories/files and any relevant context — subagents cannot see each other's results.\n\
+         - **Balanced scope**: Keep sub-tasks roughly equal (~20-35 files each). Give large \
+         modules (20+ files) their own subagent.\n\
+         - **Cross-module hints**: When modules have known interactions (e.g., shared types, \
+         common utilities), mention the dependency in BOTH partitions' task descriptions \
+         so each subagent can check the interface boundary."
     } else {
         "\n\n\
          ## Communication Style\n\

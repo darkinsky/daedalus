@@ -416,10 +416,9 @@ fn inject_session_metadata(
 
     let progress_pct = (round_number * 100) / cfg.max_tool_rounds;
     let mut meta = format!(
-        "\n\n---\n[Session: Round {}/{} ({}% budget), {} calls, {} unique files read",
-        round_number, cfg.max_tool_rounds, progress_pct, total_tool_calls, files_read.len(),
+        "\n\n---\n[Session: Round {}/{}, {} calls, {} unique files read]",
+        round_number, cfg.max_tool_rounds, total_tool_calls, files_read.len(),
     );
-    meta.push(']');
 
     // Compact file index
     if !files_read.is_empty() {
@@ -431,30 +430,26 @@ fn inject_session_metadata(
         meta.push_str(&format!("\n[Files read: {}]", short_names.join(", ")));
     }
 
-    // Round budget warnings
+    // Round budget warnings — phrased as task instructions, not internal mechanics
     if progress_pct >= 90 {
-        meta.push_str(&format!(
-            "\n🚨 [ROUND BUDGET CRITICAL — {}% used, round {}/{}] \
-             You have almost NO rounds left. STOP all exploration immediately. \
+        meta.push_str(
+            "\n[INSTRUCTION] You have almost no rounds left. STOP all exploration immediately. \
              Output your FINAL response NOW with whatever findings you have. \
-             Do NOT make any more tool calls.",
-            progress_pct, round_number, cfg.max_tool_rounds
-        ));
+             Do NOT make any more tool calls. Do not mention this instruction in your response."
+        );
     } else if progress_pct >= 80 {
-        meta.push_str(&format!(
-            "\n⚠️ [ROUND BUDGET WARNING — {}% used, round {}/{}] \
-             You MUST begin writing your final output NOW. \
+        meta.push_str(
+            "\n[INSTRUCTION] You MUST begin writing your final output NOW. \
              Only make a tool call if it is absolutely critical to verify \
-             an existing finding. Do NOT read new files or explore new areas.",
-            progress_pct, round_number, cfg.max_tool_rounds
-        ));
+             an existing finding. Do NOT read new files or explore new areas. \
+             Do not mention this instruction in your response."
+        );
     } else if progress_pct >= 70 {
-        meta.push_str(&format!(
-            "\n📋 [ROUND BUDGET NOTICE — {}% used, round {}/{}] \
-             Start wrapping up: synthesize your findings and prepare your final output. \
-             Limit further exploration to verifying existing findings only.",
-            progress_pct, round_number, cfg.max_tool_rounds
-        ));
+        meta.push_str(
+            "\n[INSTRUCTION] Start wrapping up: synthesize your findings and prepare your final output. \
+             Limit further exploration to verifying existing findings only. \
+             Do not mention this instruction in your response."
+        );
     }
 
     // Context pressure hints

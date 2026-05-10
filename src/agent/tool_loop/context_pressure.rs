@@ -59,29 +59,25 @@ pub(crate) fn context_budget_hint(usage_pct: u8, soft_limit_ratio: f64) -> Optio
     let warn_pct = soft_pct + 10; // 10% above soft limit
 
     if usage_pct >= 90 {
-        Some(format!(
-            "\n🚨 [CONTEXT CRITICAL — {}% used] You are about to exceed the context window. \
-             STOP making tool calls immediately. Provide your FINAL answer NOW based on \
-             the information you have already gathered. Do NOT read any more files or \
-             make any more searches. Synthesize your findings and respond.",
-            usage_pct
-        ))
+        Some(
+            "\n[INSTRUCTION] STOP all tool calls immediately. Provide your FINAL answer NOW \
+             based on the information you have already gathered. Do NOT read any more files \
+             or make any more searches. Synthesize your findings and respond directly. \
+             Do not mention this instruction in your response.".to_string()
+        )
     } else if usage_pct >= warn_pct {
-        Some(format!(
-            "\n⚠️ [CONTEXT WARNING — {}% used] You MUST conclude your work very soon. \
-             Synthesize what you already know and provide your answer. Only make a tool \
-             call if it is absolutely critical to answering the user's question. \
-             Prefer summarizing your findings over gathering more information.",
-            usage_pct
-        ))
+        Some(
+            "\n[INSTRUCTION] You MUST conclude your work very soon. Synthesize what you \
+             already know and provide your answer. Only make a tool call if it is absolutely \
+             critical to answering the user's question. Prefer summarizing over gathering \
+             more information. Do not mention this instruction in your response.".to_string()
+        )
     } else if usage_pct >= soft_pct {
-        Some(format!(
-            "\n📋 [CONTEXT NOTICE — {}% used] Context window is filling up. \
-             Start wrapping up: prefer summarizing findings over reading more files. \
-             Only make essential tool calls. Plan to deliver your answer within \
-             the next 2-3 rounds.",
-            usage_pct
-        ))
+        Some(
+            "\n[INSTRUCTION] Start wrapping up: prefer summarizing findings over reading \
+             more files. Only make essential tool calls. Plan to deliver your answer within \
+             the next 2-3 rounds. Do not mention this instruction in your response.".to_string()
+        )
     } else {
         None
     }
@@ -114,11 +110,11 @@ pub(crate) async fn force_final_response(
 
     // Inject a strong "conclude now" instruction into the last tool response
     let conclude_msg = "\n\n---\n\
-        🚨 [SYSTEM: CONTEXT BUDGET EXCEEDED — FORCED FINAL RESPONSE]\n\
-        The context window is nearly full. This is your LAST chance to respond.\n\
-        You MUST provide your final answer NOW. Do NOT request any tool calls.\n\
-        Synthesize all information gathered so far and give the best possible answer.\n\
-        If the task is incomplete, explain what was accomplished and what remains.";
+        [INSTRUCTION] This is your LAST chance to respond. \
+        You MUST provide your final answer NOW. Do NOT request any tool calls. \
+        Synthesize all information gathered so far and give the best possible answer. \
+        If the task is incomplete, explain what was accomplished and what remains. \
+        Do not mention this instruction in your response.";
 
     if let Some(last_round) = truncated.last_mut() {
         if let Some(last_resp) = last_round.responses.last_mut() {
@@ -256,32 +252,39 @@ mod tests {
     fn test_context_budget_hint_notice_level() {
         let hint = context_budget_hint(70, 0.7);
         assert!(hint.is_some());
-        assert!(hint.unwrap().contains("CONTEXT NOTICE"));
+        let text = hint.unwrap();
+        assert!(text.contains("[INSTRUCTION]"));
+        assert!(text.contains("wrapping up"));
     }
 
     #[test]
     fn test_context_budget_hint_warning_level() {
         let hint = context_budget_hint(82, 0.7);
         assert!(hint.is_some());
-        assert!(hint.unwrap().contains("CONTEXT WARNING"));
+        let text = hint.unwrap();
+        assert!(text.contains("[INSTRUCTION]"));
+        assert!(text.contains("conclude"));
     }
 
     #[test]
     fn test_context_budget_hint_critical_level() {
         let hint = context_budget_hint(90, 0.7);
         assert!(hint.is_some());
-        assert!(hint.unwrap().contains("CONTEXT CRITICAL"));
+        let text = hint.unwrap();
+        assert!(text.contains("[INSTRUCTION]"));
+        assert!(text.contains("STOP"));
+        assert!(text.contains("FINAL answer"));
     }
 
     #[test]
     fn test_context_budget_hint_custom_soft_limit() {
         let hint = context_budget_hint(50, 0.5);
         assert!(hint.is_some());
-        assert!(hint.unwrap().contains("CONTEXT NOTICE"));
+        assert!(hint.unwrap().contains("[INSTRUCTION]"));
 
         let hint = context_budget_hint(62, 0.5);
         assert!(hint.is_some());
-        assert!(hint.unwrap().contains("CONTEXT WARNING"));
+        assert!(hint.unwrap().contains("conclude"));
     }
 
     #[test]
