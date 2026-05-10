@@ -49,6 +49,7 @@ impl BashTool {
     /// Check if a command is allowed in read-only mode.
     ///
     /// Returns `Ok(())` if allowed, or `Err` with an explanation if blocked.
+    #[allow(dead_code)]
     pub fn validate_read_only(command: &str) -> Result<()> {
         let trimmed = command.trim();
 
@@ -142,6 +143,10 @@ impl BuiltinTool for BashTool {
             },
             "required": ["command"]
         })
+    }
+
+    fn is_read_only(&self) -> bool {
+        false
     }
 
     async fn execute(&self, arguments: serde_json::Value) -> Result<String> {

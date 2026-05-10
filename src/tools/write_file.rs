@@ -36,6 +36,10 @@ impl BuiltinTool for WriteFileTool {
         })
     }
 
+    fn is_read_only(&self) -> bool {
+        false
+    }
+
     async fn execute(&self, arguments: serde_json::Value) -> Result<String> {
         let path_str = get_required_string(&arguments, "path")?;
         let content = get_required_string(&arguments, "content")?;

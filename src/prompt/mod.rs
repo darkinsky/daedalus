@@ -1,4 +1,5 @@
 pub mod coding;
+pub mod inputs;
 pub mod sections;
 
 use crate::tools::ToolInfo;
@@ -119,9 +120,8 @@ impl std::fmt::Display for PromptStyle {
 
 /// Configuration for building a system prompt.
 ///
-/// Collects all the dynamic inputs needed to assemble a production-grade
-/// system prompt. Use `PromptBuilder::default()` and chain setter methods
-/// for a fluent API.
+/// Uses `PromptInputs` for shared fields, eliminating duplication
+/// with `CodingPromptBuilder`.
 ///
 /// # Example
 ///
@@ -135,62 +135,46 @@ impl std::fmt::Display for PromptStyle {
 ///     .build();
 /// ```
 pub struct PromptBuilder<'a> {
-    /// Custom agent name (defaults to "Daedalus").
-    agent_name: Option<&'a str>,
-    /// Available MCP tool descriptions.
-    tools: &'a [ToolInfo],
-    /// Optional long-term memory context to inject.
-    memory_context: Option<&'a str>,
-    /// Optional custom preamble to prepend (e.g., loaded from SOUL.md).
-    /// This is injected right after the role section.
-    soul: Option<&'a str>,
-    /// Optional project rules (loaded from DAEDALUS.md files).
-    /// Injected before critical reminders for high salience.
-    project_rules: Option<&'a str>,
+    /// Shared input fields (agent_name, tools, soul, project_rules, memory_context).
+    inputs: inputs::PromptInputs<'a>,
 }
 
 impl<'a> PromptBuilder<'a> {
     /// Create a new builder with default settings.
     pub fn new() -> Self {
         Self {
-            agent_name: None,
-            tools: &[],
-            memory_context: None,
-            soul: None,
-            project_rules: None,
+            inputs: inputs::PromptInputs::new(),
         }
     }
 
     /// Set a custom agent name.
     pub fn agent_name(mut self, name: &'a str) -> Self {
-        self.agent_name = Some(name);
+        self.inputs.agent_name = Some(name);
         self
     }
 
     /// Set the available MCP tools.
     pub fn tools(mut self, tools: &'a [ToolInfo]) -> Self {
-        self.tools = tools;
+        self.inputs.tools = tools;
         self
     }
 
     /// Set the long-term memory context to inject.
-    ///
-    /// Reserved for future use when long-term memory is implemented.
     #[allow(dead_code)]
     pub fn memory_context(mut self, ctx: &'a str) -> Self {
-        self.memory_context = Some(ctx);
+        self.inputs.memory_context = Some(ctx);
         self
     }
 
     /// Set a custom soul/personality preamble (e.g., from SOUL.md).
     pub fn soul(mut self, soul: &'a str) -> Self {
-        self.soul = Some(soul);
+        self.inputs.soul = Some(soul);
         self
     }
 
     /// Set project-level rules (loaded from DAEDALUS.md files).
     pub fn project_rules(mut self, rules: &'a str) -> Self {
-        self.project_rules = Some(rules);
+        self.inputs.project_rules = Some(rules);
         self
     }
 
@@ -214,17 +198,17 @@ impl<'a> PromptBuilder<'a> {
     /// maximizing KV cache hit rate for both implicit (OpenAI) and explicit
     /// (Anthropic) prompt caching.
     pub fn build(&self) -> String {
-        let has_tools = !self.tools.is_empty();
+        let has_tools = self.inputs.has_tools();
 
         let mut sections: Vec<String> = Vec::with_capacity(8);
 
         // ═══ STATIC PREFIX (cacheable across requests) ═══
 
         // 1. Role definition
-        sections.push(build_role_section(self.agent_name, self.tools));
+        sections.push(build_role_section(self.inputs.agent_name, self.inputs.tools));
 
         // 2. Soul / personality (optional)
-        if let Some(soul) = self.soul {
+        if let Some(soul) = self.inputs.soul {
             if !soul.trim().is_empty() {
                 sections.push(format!("<soul>\n{}\n</soul>", soul.trim()));
             }
@@ -234,7 +218,7 @@ impl<'a> PromptBuilder<'a> {
         sections.push(build_thinking_section(has_tools));
 
         // 4. Tool guidance (only if tools are available)
-        let tool_section = build_tool_guidance_section(self.tools);
+        let tool_section = build_tool_guidance_section(self.inputs.tools);
         if !tool_section.is_empty() {
             sections.push(tool_section);
         }
@@ -246,27 +230,17 @@ impl<'a> PromptBuilder<'a> {
         sections.push(build_reminders_section(has_tools));
 
         // ═══ CACHE BOUNDARY ═══
-        // Content above this line is static and can be cached across requests.
-        // Content below changes per session/turn.
         sections.push("<!-- CACHE_BOUNDARY -->".to_string());
 
         // ═══ DYNAMIC SUFFIX (changes per session/turn) ═══
 
         // 7. Project rules from DAEDALUS.md (optional, semi-static)
-        if let Some(rules) = self.project_rules {
-            if !rules.trim().is_empty() {
-                sections.push(format!(
-                    "<project_rules>\n\
-                     The following rules are specific to this project. Follow them strictly.\n\n\
-                     {}\n\
-                     </project_rules>",
-                    rules.trim()
-                ));
-            }
+        if let Some(rules_section) = self.inputs.project_rules_section() {
+            sections.push(rules_section);
         }
 
         // 8. Dynamic context (date, memory) — last for maximum cache prefix
-        sections.push(build_context_section(self.memory_context));
+        sections.push(build_context_section(self.inputs.memory_context));
 
         sections.join("\n\n")
     }

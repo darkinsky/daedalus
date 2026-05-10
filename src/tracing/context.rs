@@ -411,13 +411,35 @@ impl SpanGuard {
 impl Drop for SpanGuard {
     fn drop(&mut self) {
         if !self.finished {
-            // Can't do async in Drop, so we just mark it finished.
-            // The span won't be properly exported, but at least we don't leak.
             self.finished = true;
+
+            // Best-effort: record elapsed time and mark as Ok (we can't know
+            // the real status since the caller didn't tell us).
+            let elapsed_ms = self.start_time.elapsed().as_millis() as u64;
+            self.span.ended_at = Some(Utc::now());
+            self.span.elapsed_ms = Some(elapsed_ms);
+            self.span.status = SpanStatus::Error(
+                "SpanGuard dropped without explicit finish".to_string()
+            );
+
+            // Best-effort: pop from span stack (non-async, use try_lock).
+            if let Ok(mut stack) = self.span_stack.try_lock() {
+                if let Some(pos) = stack.iter().rposition(|id| *id == self.span.span_id) {
+                    stack.remove(pos);
+                }
+            }
+
+            // Best-effort: store the span so the trace is not incomplete.
+            // This is the key fix — previously the span was silently lost.
+            if let Ok(mut spans) = self.spans.try_lock() {
+                spans.push(self.span.clone());
+            }
+
             tracing::warn!(
                 span_id = %self.span.span_id,
                 span_name = %self.span.name,
-                "SpanGuard dropped without explicit finish — span data may be lost. \
+                elapsed_ms,
+                "SpanGuard dropped without explicit finish — span saved with Error status. \
                  Use .finish_ok() or .finish_error() instead."
             );
         }

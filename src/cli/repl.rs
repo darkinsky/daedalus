@@ -16,7 +16,7 @@ use super::render;
 use super::render::ToolEventFormatter;
 
 /// Handle a parsed slash command. Returns `true` if the REPL should exit.
-fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &SharedSessionCost) -> Result<bool> {
+async fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &SharedSessionCost) -> Result<bool> {
     match cmd {
         Command::Exit => {
             render::goodbye();
@@ -30,10 +30,8 @@ fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &SharedSess
             }
             render::new_session(agent);
         }
-        Command::Compact { .. } => {
-            // Compact is async — return false and let the caller handle it.
-            // This is a marker; actual handling is in the REPL loop.
-            // (We can't call async from here, so we handle it specially.)
+        Command::Compact { instruction, range } => {
+            handle_compact(agent, instruction, range).await;
         }
         Command::Clear => {
             print!("\x1B[2J\x1B[1;1H");
@@ -382,12 +380,7 @@ pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
 
                 // ── Handle slash commands ──
                 if let Some(cmd) = commands::parse(input) {
-                    // /compact needs async handling — intercept it before handle_command
-                    if let Command::Compact { instruction, range } = cmd {
-                        handle_compact(agent, instruction, range).await;
-                        continue;
-                    }
-                    if handle_command(cmd, agent, &cost)? {
+                    if handle_command(cmd, agent, &cost).await? {
                         break;
                     }
                     continue;

@@ -1,10 +1,13 @@
 pub(crate) mod config;
+mod compact_ops;
 mod consolidation;
+mod consolidation_ops;
 mod factory;
 mod history;
 mod long_term;
 mod memory;
 mod prompts;
+mod session_state;
 
 #[cfg(test)]
 mod tests;

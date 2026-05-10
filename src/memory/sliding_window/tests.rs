@@ -1081,6 +1081,57 @@ MEMORY:
         assert!(memory.messages[1].preserved, "Manually preserved messages should never be un-marked");
     }
 
+    #[test]
+    fn test_auto_mark_preserved_plan_content() {
+        let mut memory = SlidingWindowMemory::unlimited("System");
+        memory.add_user_message("Refactor the auth module");
+        memory.add_assistant_message(
+            "## Implementation Plan\n\n\
+             1. Extract the auth logic into a separate module\n\
+             2. Create new interfaces\n\
+             3. Update all callers"
+        );
+        memory.add_assistant_message("I've started working on step 1.");
+
+        memory.auto_mark_preserved();
+
+        let messages = &memory.messages;
+        assert!(messages[1].preserved, "Plan-containing assistant message should be preserved");
+        assert!(!messages[2].preserved, "Regular follow-up should not be preserved");
+    }
+
+    #[test]
+    fn test_auto_mark_preserved_structured_steps() {
+        let mut memory = SlidingWindowMemory::unlimited("System");
+        memory.add_user_message("Build a new feature");
+        memory.add_assistant_message(
+            "Here's my approach:\n\n\
+             Step 1: Read the existing code\n\
+             Step 2: Design the interface\n\
+             Step 3: Implement the core logic\n\
+             Step 4: Add tests"
+        );
+
+        memory.auto_mark_preserved();
+
+        let messages = &memory.messages;
+        assert!(messages[1].preserved, "Message with structured steps should be preserved");
+    }
+
+    #[test]
+    fn test_auto_mark_preserved_plan_in_tool_context_not_preserved() {
+        let mut memory = SlidingWindowMemory::unlimited("System");
+        memory.add_user_message("Check the code");
+        memory.add_assistant_message(
+            "[Tool call round 1: read_file({\"path\":\"plan.md\"}) -> ## Plan\nStep 1: foo\nStep 2: bar\nStep 3: baz]"
+        );
+
+        memory.auto_mark_preserved();
+
+        let messages = &memory.messages;
+        assert!(!messages[1].preserved, "Tool context should not be preserved even with plan keywords");
+    }
+
     // ── Partial compact command parsing ──
 
     #[test]

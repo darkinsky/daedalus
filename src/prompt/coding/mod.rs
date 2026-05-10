@@ -14,6 +14,7 @@
 pub mod sections;
 
 use crate::tools::ToolInfo;
+use super::inputs::PromptInputs;
 
 /// Environment context for the coding-focused prompt.
 #[derive(Debug, Clone, Default)]
@@ -95,55 +96,43 @@ impl EnvironmentContext {
 /// └─────────────────────────────────────────┘
 /// ```
 pub struct CodingPromptBuilder<'a> {
-    /// Custom agent name (defaults to "Daedalus").
-    agent_name: Option<&'a str>,
-    /// Available MCP tool descriptions.
-    tools: &'a [ToolInfo],
-    /// Optional long-term memory context to inject.
-    memory_context: Option<&'a str>,
-    /// Optional soul/personality content.
-    soul: Option<&'a str>,
+    /// Shared input fields (agent_name, tools, soul, project_rules, memory_context).
+    inputs: PromptInputs<'a>,
     /// Runtime environment context.
     environment: Option<EnvironmentContext>,
-    /// Project-level rules (loaded from workspace).
-    project_rules: Option<&'a str>,
 }
 
 impl<'a> CodingPromptBuilder<'a> {
     /// Create a new builder with default settings.
     pub fn new() -> Self {
         Self {
-            agent_name: None,
-            tools: &[],
-            memory_context: None,
-            soul: None,
+            inputs: PromptInputs::new(),
             environment: None,
-            project_rules: None,
         }
     }
 
     /// Set a custom agent name.
     pub fn agent_name(mut self, name: &'a str) -> Self {
-        self.agent_name = Some(name);
+        self.inputs.agent_name = Some(name);
         self
     }
 
     /// Set the available MCP tools.
     pub fn tools(mut self, tools: &'a [ToolInfo]) -> Self {
-        self.tools = tools;
+        self.inputs.tools = tools;
         self
     }
 
     /// Set the long-term memory context to inject.
     #[allow(dead_code)]
     pub fn memory_context(mut self, ctx: &'a str) -> Self {
-        self.memory_context = Some(ctx);
+        self.inputs.memory_context = Some(ctx);
         self
     }
 
     /// Set a custom soul/personality preamble.
     pub fn soul(mut self, soul: &'a str) -> Self {
-        self.soul = Some(soul);
+        self.inputs.soul = Some(soul);
         self
     }
 
@@ -156,7 +145,7 @@ impl<'a> CodingPromptBuilder<'a> {
     /// Set project-level rules.
     #[allow(dead_code)]
     pub fn project_rules(mut self, rules: &'a str) -> Self {
-        self.project_rules = Some(rules);
+        self.inputs.project_rules = Some(rules);
         self
     }
 
@@ -170,27 +159,25 @@ impl<'a> CodingPromptBuilder<'a> {
         // ═══ STATIC PREFIX (cacheable across sessions) ═══
 
         // 1. Identity & Capabilities
-        parts.push(sections::identity::build(self.agent_name, self.tools));
+        parts.push(sections::identity::build(self.inputs.agent_name, self.inputs.tools));
 
         // 2. Soul / personality (optional, but static once loaded)
-        if let Some(soul) = self.soul {
+        if let Some(soul) = self.inputs.soul {
             if !soul.trim().is_empty() {
                 parts.push(format!("<personality>\n{}\n</personality>", soul.trim()));
             }
         }
 
         // 3. Tool definitions with per-tool strategies
-        let tool_section = sections::tools::build(self.tools);
+        let tool_section = sections::tools::build(self.inputs.tools);
         if !tool_section.is_empty() {
             parts.push(tool_section);
         }
 
         // 4. Core behavioral rules (agentic coding focus)
-        parts.push(sections::rules::build(self.tools));
+        parts.push(sections::rules::build(self.inputs.tools));
 
         // ═══ CACHE BOUNDARY ═══
-        // This marker tells the API where static content ends and dynamic begins.
-        // Content above this line can be cached across requests.
         parts.push("<!-- SYSTEM_PROMPT_DYNAMIC_BOUNDARY -->".to_string());
 
         // ═══ DYNAMIC SUFFIX (changes per session/turn) ═══
@@ -198,31 +185,14 @@ impl<'a> CodingPromptBuilder<'a> {
         // 5. Environment context
         parts.push(sections::environment::build(self.environment.as_ref()));
 
-        // 6. Project rules (loaded from workspace)
-        if let Some(rules) = self.project_rules {
-            if !rules.trim().is_empty() {
-                parts.push(format!(
-                    "<project_rules>\n\
-                     The following rules are specific to this project. Follow them strictly.\n\n\
-                     {}\n\
-                     </project_rules>",
-                    rules.trim()
-                ));
-            }
+        // 6. Project rules (shared helper from PromptInputs)
+        if let Some(rules_section) = self.inputs.project_rules_section() {
+            parts.push(rules_section);
         }
 
-        // 7. Memory context
-        if let Some(ctx) = self.memory_context {
-            if !ctx.trim().is_empty() {
-                parts.push(format!(
-                    "<memory>\n\
-                     The following is what you remember from previous conversations. \
-                     Use this to maintain continuity, but do not mention it unless relevant.\n\n\
-                     {}\n\
-                     </memory>",
-                    ctx.trim()
-                ));
-            }
+        // 7. Memory context (shared helper from PromptInputs)
+        if let Some(memory_section) = self.inputs.memory_section() {
+            parts.push(memory_section);
         }
 
         // 8. Critical reminders (last = highest salience via recency bias)

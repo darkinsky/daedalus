@@ -31,6 +31,24 @@ use super::tool_router::ToolRouter;
 /// Default maximum number of tool-calling rounds per user message.
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 200;
 
+/// Grouped prompt-related configuration for the ChatAgent.
+///
+/// Consolidates the 5 prompt-related fields that were previously scattered
+/// across the `ChatAgent` struct, improving readability and making it clear
+/// which fields participate in system prompt construction.
+struct PromptConfig {
+    /// Custom system prompt override (from CLI `--system-prompt`).
+    prompt_override: Option<String>,
+    /// Custom agent name for prompt building.
+    agent_name: Option<String>,
+    /// Soul/personality content loaded from SOUL.md.
+    soul: Option<String>,
+    /// Project rules content loaded from DAEDALUS.md files.
+    project_rules: Option<String>,
+    /// Prompt assembly style (default vs coding).
+    style: PromptStyle,
+}
+
 /// Chat mode — multi-turn conversation with optional tool calling.
 ///
 /// Cross-cutting concerns (tracing, logging) are handled by the middleware
@@ -46,16 +64,8 @@ pub struct ChatAgent {
     memory_factory: Box<dyn MemoryFactory>,
     /// Unified tool router (shared via Arc for core handler access).
     tool_router: Arc<ToolRouter>,
-    /// Custom system prompt override.
-    prompt_override: Option<String>,
-    /// Custom agent name for prompt building.
-    agent_name: Option<String>,
-    /// Soul/personality content loaded from SOUL.md.
-    soul: Option<String>,
-    /// Project rules content loaded from DAEDALUS.md files.
-    project_rules: Option<String>,
-    /// Prompt assembly style (default vs coding).
-    prompt_style: PromptStyle,
+    /// Prompt construction parameters (override, name, soul, rules, style).
+    prompt_config: PromptConfig,
     /// Workspace for file I/O.
     workspace: Option<Workspace>,
     /// Maximum tool-calling rounds per user message.
@@ -119,11 +129,13 @@ impl ChatAgent {
             system_prompt,
             memory_factory,
             tool_router: Arc::new(ToolRouter::new()),
-            prompt_override,
-            agent_name: config.agent_name.clone(),
-            soul: config.soul.clone(),
-            project_rules: config.project_rules.clone(),
-            prompt_style: config.prompt_style.clone(),
+            prompt_config: PromptConfig {
+                prompt_override,
+                agent_name: config.agent_name.clone(),
+                soul: config.soul.clone(),
+                project_rules: config.project_rules.clone(),
+                style: config.prompt_style.clone(),
+            },
             workspace: None,
             max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
             tracing_manager: None,
@@ -287,12 +299,12 @@ impl ChatAgent {
     fn reset_with_updated_prompt(&mut self) {
         let tools = self.tool_router.tool_infos();
         self.system_prompt = Self::build_prompt(
-            self.prompt_override.as_deref(),
-            self.agent_name.as_deref(),
-            self.soul.as_deref(),
-            self.project_rules.as_deref(),
+            self.prompt_config.prompt_override.as_deref(),
+            self.prompt_config.agent_name.as_deref(),
+            self.prompt_config.soul.as_deref(),
+            self.prompt_config.project_rules.as_deref(),
             &tools,
-            &self.prompt_style,
+            &self.prompt_config.style,
             self.workspace.as_ref(),
         );
         self.session = self.create_session_with_migration();
@@ -409,7 +421,7 @@ impl ChatAgent {
                         return pipeline.with(Box::new(TracingTurnMiddleware::new(
                             Arc::clone(mgr),
                             self.session.id.clone(),
-                            self.agent_name.clone(),
+                            self.prompt_config.agent_name.clone(),
                             self.llm.model_name().to_string(),
                             self.llm.provider_name().to_string(),
                         )));

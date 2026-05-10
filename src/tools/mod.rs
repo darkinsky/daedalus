@@ -1,5 +1,5 @@
 pub mod bash;
-mod edit_file;
+pub(crate) mod edit_file;
 mod fs_utils;
 mod get_file_info;
 mod grep_search;
@@ -28,6 +28,10 @@ pub(crate) use fs_utils::format_size;
 
 // Re-export rg pre-initialization for eager startup outside async context.
 pub(crate) use grep_search::ensure_rg_init;
+
+// Re-export file modification tracking for session-level context management.
+#[allow(unused_imports)]
+pub(crate) use edit_file::get_modified_files;
 
 // ── Tool execution events ──
 
@@ -176,6 +180,26 @@ pub trait BuiltinTool: Send + Sync {
 
     /// Execute the tool with the given arguments and return the result as text.
     async fn execute(&self, arguments: serde_json::Value) -> Result<String>;
+
+    /// Whether this tool only reads data without modifying the filesystem or state.
+    ///
+    /// Used by the permission system to distinguish read-only operations
+    /// (which can run without confirmation) from write operations.
+    /// Default: `true` (most tools are read-only; write tools override this).
+    #[allow(dead_code)]
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
+    /// Whether this tool is safe to run concurrently with other tool calls.
+    ///
+    /// Tools that modify files should return `false` to prevent race conditions
+    /// when the LLM issues parallel tool calls targeting the same resource.
+    /// Default: `true` (read-only tools are always concurrency-safe).
+    #[allow(dead_code)]
+    fn is_concurrency_safe(&self) -> bool {
+        self.is_read_only()
+    }
 
     /// Convert to OpenAI function-calling JSON format.
     fn to_openai_json(&self) -> serde_json::Value {

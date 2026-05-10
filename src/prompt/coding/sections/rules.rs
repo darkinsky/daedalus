@@ -120,8 +120,13 @@ pub fn build(tools: &[ToolInfo]) -> String {
          do I need? What's the best approach?\n\
          - **Gather context first**: Before making changes, understand the codebase structure, \
          existing patterns, and dependencies.\n\
-         - **Plan then execute**: For complex tasks, briefly outline your approach, then \
-         execute it without waiting for confirmation.\n\
+         - **Adaptive planning**: Scale your planning to the task complexity:\n\
+           - *Simple* (single-file fix, quick question): Act immediately, no plan needed.\n\
+           - *Medium* (multi-file feature, cross-module debug): State your approach in 2-3 \
+         sentences, then execute.\n\
+           - *Complex* (architecture change, large refactor, 5+ files): Write a brief \
+         structured plan (Goal → Steps → Risks) before executing. This plan helps you \
+         stay on track and helps the user understand your approach.\n\
          - **Iterate on failure**: If something doesn't work, analyze why, adjust your \
          approach, and try again. Don't give up after one attempt.\n\
          - **Stay focused**: Address the user's actual request. Don't add unrequested \

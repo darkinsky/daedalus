@@ -36,11 +36,17 @@ pub fn model_context_window(model: &str) -> Option<usize> {
             return Some(1_000_000);
         }
         // Claude Sonnet 4 — 1M context (expanded 2025-08 from 200K)
-        // Claude Opus 4 — 200K (original), but Sonnet 4 got 1M
         if m.contains("sonnet-4") || m.contains("sonnet4") {
             return Some(1_000_000);
         }
-        if m.contains("opus-4") || m.contains("opus4") || m.contains("claude-4") {
+        // Claude Opus 4 — 200K (original)
+        if m.contains("opus-4") || m.contains("opus4") {
+            return Some(200_000);
+        }
+        // Claude 4 (unspecified variant) — default to 200K (conservative)
+        // This must come AFTER the specific sonnet-4/opus-4 checks above,
+        // otherwise it would swallow all Claude 4 variants.
+        if m.contains("claude-4") {
             return Some(200_000);
         }
         // Claude 3.7 Sonnet — 200K context (2025-02)
@@ -291,6 +297,9 @@ mod tests {
         assert_eq!(model_context_window("claude-sonnet-4-20250514"), Some(1_000_000));
         // Claude Opus 4 — 200K
         assert_eq!(model_context_window("claude-opus-4-20250514"), Some(200_000));
+        // Claude 4 (unspecified variant) — 200K (conservative fallback)
+        assert_eq!(model_context_window("claude-4"), Some(200_000));
+        assert_eq!(model_context_window("claude-4-20250601"), Some(200_000));
         // Claude 3.7 — 200K
         assert_eq!(model_context_window("claude-3-7-sonnet-20250219"), Some(200_000));
         // Claude 3.5 — 200K

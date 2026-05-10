@@ -76,6 +76,10 @@ pub mod server;
 pub mod client;
 
 // Phase 2: HTTP/SSE transport
+// These modules (~1500 lines) are not yet integrated into the main agent flow.
+// They are tightly coupled (http_client depends on transport types), so they
+// must be gated together. TODO: gate behind `acp-server` feature flag once
+// Phase 2 is integrated or the type dependency is broken.
 #[allow(dead_code)]
 pub mod transport;
 #[allow(dead_code)]

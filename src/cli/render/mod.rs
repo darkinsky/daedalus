@@ -16,6 +16,7 @@ mod tool_output;
 mod summarize;
 mod tool_event;
 mod lists;
+mod streaming;
 
 use chrono::Local;
 use crossterm::style::{Attribute, Color, Stylize};
@@ -38,6 +39,12 @@ pub(in crate::cli) use lists::{agents_list, skills_list, tools_list};
 #[allow(unused_imports)]
 pub(in crate::cli) use tool_event::tool_event;
 pub(in crate::cli) use tool_event::ToolEventFormatter;
+
+// Streaming response rendering lives in the `streaming` submodule.
+pub(in crate::cli) use streaming::{
+    stream_response_header, stream_text_chunk,
+    stream_reasoning_chunk, stream_reasoning_header, stream_done,
+};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -317,68 +324,6 @@ pub fn response(content: &str) {
     for line in rendered.to_string().lines() {
         println!("  {}", line);
     }
-}
-
-/// Print the streaming response header (before any chunks arrive).
-pub fn stream_response_header() {
-    let ts = Local::now().format("%H:%M:%S");
-    println!();
-    println!(
-        "  {} {}",
-        "🤖 Response".with(Color::Cyan).attribute(Attribute::Bold),
-        format!("[{}]", ts).with(Color::DarkGrey),
-    );
-    // Print the indent prefix for the first line of streaming content
-    print!("  ");
-    use std::io::Write;
-    let _ = std::io::stdout().flush();
-}
-
-/// Print a streaming text chunk (no newline, no markdown processing).
-///
-/// This is called for each `StreamText` event during streaming mode.
-/// The text is printed raw (without markdown rendering) for real-time
-/// display. The full response will be re-rendered with markdown after
-/// streaming completes.
-pub fn stream_text_chunk(text: &str) {
-    use std::io::Write;
-    // Handle newlines in the chunk: indent continuation lines
-    let mut first = true;
-    for line in text.split('\n') {
-        if !first {
-            print!("\n  ");
-        }
-        print!("{}", line);
-        first = false;
-    }
-    let _ = std::io::stdout().flush();
-}
-
-/// Print a streaming reasoning chunk.
-pub fn stream_reasoning_chunk(text: &str) {
-    use std::io::Write;
-    print!("{}", text.with(Color::DarkGrey));
-    let _ = std::io::stdout().flush();
-}
-
-/// Print the streaming reasoning header.
-pub fn stream_reasoning_header() {
-    let ts = Local::now().format("%H:%M:%S");
-    println!();
-    println!(
-        "  {} {} {}",
-        "💭".to_string(),
-        "Reasoning:".with(Color::DarkGrey).attribute(Attribute::Italic),
-        format!("[{}]", ts).with(Color::DarkGrey),
-    );
-    print!("  {}  ", "┊".with(Color::DarkGrey));
-    use std::io::Write;
-    let _ = std::io::stdout().flush();
-}
-
-/// Finish the streaming output (print a final newline).
-pub fn stream_done() {
-    println!();
 }
 
 /// Print a compact token-usage / elapsed-time line after each response.
