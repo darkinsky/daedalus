@@ -260,15 +260,23 @@ pub(crate) fn truncate_tool_history(history: &[ToolRound], cfg: &TruncationConfi
                 let effective_limit = (tier_limit as f64 * density_multiplier) as usize;
 
                 if resp.content.len() > effective_limit {
-                    let truncated = crate::tools::truncate_at_char_boundary(
-                        &resp.content,
-                        effective_limit,
-                    );
-                    resp.content = format!(
-                        "{}...(truncated, {} bytes total)",
-                        truncated,
-                        resp.content.len()
-                    );
+                    // Use head+tail truncation for file content and bash output,
+                    // which preserves both the beginning (imports/declarations)
+                    // and end (implementations/results) of the output.
+                    let truncated_content = if should_use_head_tail_truncation(tool_name) && effective_limit >= 200 {
+                        truncate_head_tail(&resp.content, effective_limit)
+                    } else {
+                        let truncated = crate::tools::truncate_at_char_boundary(
+                            &resp.content,
+                            effective_limit,
+                        );
+                        format!(
+                            "{}...(truncated, {} bytes total)",
+                            truncated,
+                            resp.content.len()
+                        )
+                    };
+                    resp.content = truncated_content;
                 }
             }
 
@@ -306,6 +314,49 @@ fn tool_density_multiplier(tool_name: &str) -> f64 {
         // Default: standard density
         _ => 1.0,
     }
+}
+
+/// Check if a tool produces output that benefits from head+tail truncation.
+///
+/// For tools like `read_file`, the beginning (imports, struct definitions) and
+/// end (function implementations, tests) are both valuable. Simple head-only
+/// truncation loses the tail, which often contains the most relevant code.
+fn should_use_head_tail_truncation(tool_name: &str) -> bool {
+    matches!(tool_name, "read_file" | "bash")
+}
+
+/// Truncate content preserving both head and tail portions.
+///
+/// Allocates 60% of the budget to the head (imports, declarations) and
+/// 40% to the tail (implementations, tests). Inserts a clear separator
+/// showing how many lines were omitted.
+fn truncate_head_tail(content: &str, max_bytes: usize) -> String {
+    let head_budget = max_bytes * 60 / 100;
+    let tail_budget = max_bytes * 40 / 100;
+
+    let head = crate::tools::truncate_at_char_boundary(content, head_budget);
+
+    // Find the tail: start from the end, walk backwards to find a valid boundary
+    let tail_start = if content.len() > tail_budget {
+        let candidate = content.len() - tail_budget;
+        // Find the next newline after candidate to avoid splitting a line
+        content[candidate..].find('\n')
+            .map(|pos| candidate + pos + 1)
+            .unwrap_or(candidate)
+    } else {
+        0
+    };
+    let tail = &content[tail_start..];
+
+    // Count omitted lines for the separator
+    let head_end_line = head.matches('\n').count();
+    let tail_start_line = content[..tail_start].matches('\n').count();
+    let omitted_lines = tail_start_line.saturating_sub(head_end_line);
+
+    format!(
+        "{}\n\n... [{} lines omitted] ...\n\n{}",
+        head, omitted_lines, tail
+    )
 }
 
 /// Estimate the total character count of a tool history.

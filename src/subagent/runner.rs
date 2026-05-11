@@ -401,11 +401,63 @@ impl SubagentRunner {
             shared_notes: Some(shared_notes),
         };
 
-        let LoopResult { outcome, usage, tool_history } = run_tool_loop(
+        let loop_result = run_tool_loop(
             llm,
             &cfg,
             &loop_ctx,
-        ).await?;
+        ).await;
+
+        // ── Lightweight checkpoint: recover partial results on failure ──
+        //
+        // If the tool loop fails (e.g., LLM API error mid-execution), check
+        // if the subagent has recorded any notes via take_note. If so, return
+        // those notes as a partial result instead of propagating the error.
+        // This prevents the lead agent from losing ALL work when a subagent
+        // fails after 20+ successful rounds.
+        let LoopResult { outcome, usage, tool_history } = match loop_result {
+            Ok(result) => result,
+            Err(e) => {
+                // Check if we have partial notes to salvage
+                let partial_notes: Vec<String> = if let Ok(notes) = shared_notes.lock() {
+                    notes.clone()
+                } else {
+                    Vec::new()
+                };
+
+                if partial_notes.is_empty() {
+                    // No notes recorded — propagate the error as-is
+                    return Err(e);
+                }
+
+                // We have partial work! Return it as a degraded result.
+                tracing::warn!(
+                    agent = %definition.name,
+                    notes_count = partial_notes.len(),
+                    error = %e,
+                    "Subagent failed but has partial notes — returning as degraded result"
+                );
+
+                let partial_content = format!(
+                    "[Subagent '{}' encountered an error after recording {} findings]\n\n\
+                     Error: {}\n\n\
+                     Partial findings recovered from notes:\n{}",
+                    definition.name,
+                    partial_notes.len(),
+                    e,
+                    partial_notes.iter().enumerate()
+                        .map(|(i, note)| format!("{}. {}", i + 1, note))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+
+                return Ok(SubagentResult {
+                    agent_name: definition.name.clone(),
+                    content: partial_content,
+                    usage: None,
+                    tool_rounds: 0, // Unknown — loop failed before returning
+                });
+            }
+        };
 
         let tool_rounds = tool_history.len();
         let content = match outcome {

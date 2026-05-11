@@ -336,6 +336,14 @@ pub fn build_tool_definition(registry: &SubagentRegistry) -> Option<serde_json::
                     "task": {
                         "type": "string",
                         "description": "A clear, self-contained description of the task for the subagent. Include all necessary context since the subagent has no access to the main conversation history.",
+                    },
+                    "max_rounds": {
+                        "type": "integer",
+                        "description": "Optional: override the maximum number of tool-calling rounds for this task. Use a lower value (10-20) for simple/focused tasks, higher (40-80) for complex multi-file tasks. If not specified, uses the subagent's default.",
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Optional: override the model for this task. Use 'haiku' for simple exploration/listing tasks, 'sonnet' for complex reasoning/review tasks. If not specified, uses the subagent's configured model.",
                     }
                 },
                 "required": ["agent_name", "task"],
@@ -403,9 +411,23 @@ impl BuiltinTool for SubagentTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: task"))?;
 
+        // Optional: LLM can override max_rounds based on task complexity
+        let max_rounds_override = arguments
+            .get("max_rounds")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+
+        // Optional: LLM can override model for this specific task
+        let model_override = arguments
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         tracing::info!(
             agent = %agent_name,
             task_len = task.len(),
+            max_rounds_override = ?max_rounds_override,
+            model_override = ?model_override,
             "LLM invoked spawn_subagent"
         );
 
@@ -437,6 +459,17 @@ impl BuiltinTool for SubagentTool {
         let mut definition = definition.clone();
         if shared_context.is_some() {
             definition.shared_context = shared_context;
+        }
+
+        // Apply runtime overrides from the LLM's tool call arguments.
+        // These allow the orchestrator to dynamically tune subagent behavior
+        // based on task complexity without changing the static YAML config.
+        if let Some(rounds) = max_rounds_override {
+            // Clamp to reasonable bounds: min 5, max 200
+            definition.max_turns = Some(rounds.clamp(5, 200));
+        }
+        if let Some(ref model) = model_override {
+            definition.model = Some(model.clone());
         }
 
         self.ctx.emit_start(agent_name, &effective_task);
