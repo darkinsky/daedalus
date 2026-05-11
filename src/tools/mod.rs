@@ -13,6 +13,25 @@ pub(crate) mod text_utils;
 pub(crate) mod web_search;
 mod write_file;
 
+use bash::BashConfig;
+use web_search::WebSearchConfig;
+
+// ── Unified tool configuration ──
+
+/// Top-level `tools:` section in the YAML configuration file.
+///
+/// Aggregates per-tool configuration. Only tools that need external
+/// credentials or environment-specific tuning have config sections here.
+/// All tools work with zero configuration using sensible defaults.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct ToolsConfig {
+    /// Web search tool configuration (provider, API key, etc.).
+    pub web_search: WebSearchConfig,
+    /// Bash tool configuration (timeouts, output limits).
+    pub bash: BashConfig,
+}
+
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -224,7 +243,15 @@ pub struct BuiltinToolRegistry {
 
 impl BuiltinToolRegistry {
     /// Create a new registry with the default set of built-in tools.
+    ///
+    /// Uses default configuration for all tools. For custom configuration,
+    /// use `new_with_config()`.
     pub fn new() -> Self {
+        Self::new_with_config(BashConfig::default())
+    }
+
+    /// Create a new registry with custom tool configuration.
+    pub fn new_with_config(bash_config: BashConfig) -> Self {
         let tools: Vec<Box<dyn BuiltinTool>> = vec![
             Box::new(read_file::ReadFileTool),
             Box::new(write_file::WriteFileTool),
@@ -234,7 +261,7 @@ impl BuiltinToolRegistry {
             Box::new(search_files::SearchFilesTool),
             Box::new(grep_search::GrepSearchTool),
             Box::new(get_file_info::GetFileInfoTool),
-            Box::new(bash::BashTool),
+            Box::new(bash::BashTool::new(bash_config)),
             Box::new(take_note::TakeNoteTool::new(take_note::new_shared_notes())),
         ];
 
@@ -272,6 +299,22 @@ impl BuiltinToolRegistry {
             "Registered dynamic built-in tool"
         );
         self.tools.push(tool);
+    }
+
+    /// Replace an existing tool by name with a new instance.
+    ///
+    /// If a tool with the same name already exists, it is removed and the
+    /// new tool is inserted in its place. If no tool with that name exists,
+    /// the new tool is simply appended.
+    pub fn replace_tool(&mut self, tool: Box<dyn BuiltinTool>) {
+        let name = tool.name().to_string();
+        if let Some(pos) = self.tools.iter().position(|t| t.name() == name) {
+            self.tools[pos] = tool;
+            tracing::debug!(tool = %name, "Replaced built-in tool with configured instance");
+        } else {
+            self.tools.push(tool);
+            tracing::debug!(tool = %name, "Registered new built-in tool (no existing to replace)");
+        }
     }
 
     /// Return the total number of built-in tools.

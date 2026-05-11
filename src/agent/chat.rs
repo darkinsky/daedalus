@@ -263,6 +263,14 @@ impl ChatAgent {
         self.middleware_config = config;
     }
 
+    /// Replace the bash tool with one using custom configuration.
+    ///
+    /// Called during bootstrap when the user has configured custom bash
+    /// settings (timeout, output limits) in the `tools.bash` YAML section.
+    pub fn set_bash_config(&mut self, config: crate::tools::bash::BashConfig) {
+        self.router_mut_exclusive().replace_bash_config(config);
+    }
+
     /// Return the shared session cost handle for external access (e.g., CLI `/cost`).
     #[allow(dead_code)]
     pub fn session_cost(&self) -> &SharedSessionCost {

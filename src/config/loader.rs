@@ -23,7 +23,7 @@ use super::logging::LogConfig;
 use crate::agent_tracing::TracingConfig;
 use crate::middleware::config::MiddlewareConfig;
 use crate::acp::tool::AcpConfig;
-use crate::tools::web_search::WebSearchConfig;
+use crate::tools::ToolsConfig;
 
 /// Top-level YAML configuration file structure.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -45,8 +45,11 @@ struct DaedalusConfigFile {
     middleware: MiddlewareConfig,
     /// ACP (Agent Communication Protocol) configuration.
     acp: AcpConfig,
-    /// Web search tool configuration.
-    web_search: WebSearchConfig,
+    /// Unified tool configuration section.
+    tools: ToolsConfig,
+    /// Legacy: top-level web_search key (deprecated, use `tools.web_search` instead).
+    /// Kept for backward compatibility — merged into `tools.web_search` if present.
+    web_search: Option<crate::tools::web_search::WebSearchConfig>,
 }
 
 /// Intermediate configuration state between YAML parsing and AgentConfig construction.
@@ -65,8 +68,8 @@ pub struct RawConfig {
     pub middleware: MiddlewareConfig,
     /// ACP (Agent Communication Protocol) configuration.
     pub acp: AcpConfig,
-    /// Web search tool configuration.
-    pub web_search: WebSearchConfig,
+    /// Unified tool configuration.
+    pub tools: ToolsConfig,
 }
 
 impl RawConfig {
@@ -115,7 +118,19 @@ pub fn load_from_workspace(workspace: &Workspace) -> Result<(RawConfig, LogConfi
         tracing: file_config.tracing,
         middleware: file_config.middleware,
         acp: file_config.acp,
-        web_search: file_config.web_search,
+        tools: {
+            let mut tools = file_config.tools;
+            // Backward compatibility: if the legacy top-level `web_search` key
+            // is present and the new `tools.web_search` was not explicitly set
+            // (still at default), use the legacy value. This allows users who
+            // haven't migrated to the new `tools:` section to keep working.
+            if let Some(legacy_ws) = file_config.web_search.filter(|_| {
+                tools.web_search == crate::tools::web_search::WebSearchConfig::default()
+            }) {
+                tools.web_search = legacy_ws;
+            }
+            tools
+        },
     };
 
     let mut log_config = file_config.logging;

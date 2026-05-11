@@ -40,12 +40,46 @@ const READ_ONLY_BLOCKED_PATTERNS: &[&str] = &[
     "mktemp", "mkdir ",
 ];
 
+// ── Configuration ──
+
+/// Bash tool configuration from YAML.
+///
+/// All fields are optional with sensible defaults. When not configured,
+/// the tool behaves identically to the previous hardcoded behavior.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct BashConfig {
+    /// Default timeout for commands in seconds (default: 30).
+    pub default_timeout: u64,
+    /// Maximum allowed timeout in seconds to prevent DoS (default: 300).
+    pub max_timeout: u64,
+    /// Maximum output size in bytes (default: 262144 = 256KB).
+    pub max_output_bytes: usize,
+}
+
+impl Default for BashConfig {
+    fn default() -> Self {
+        Self {
+            default_timeout: DEFAULT_TIMEOUT_SECS,
+            max_timeout: MAX_TIMEOUT_SECS,
+            max_output_bytes: MAX_OUTPUT_BYTES,
+        }
+    }
+}
+
 // ── bash ──
 
 /// Execute a bash command and return its output.
-pub struct BashTool;
+pub struct BashTool {
+    config: BashConfig,
+}
 
 impl BashTool {
+    /// Create a new BashTool with the given configuration.
+    pub fn new(config: BashConfig) -> Self {
+        Self { config }
+    }
+
     /// Check if a command is allowed in read-only mode.
     ///
     /// Returns `Ok(())` if allowed, or `Err` with an explanation if blocked.
@@ -164,8 +198,8 @@ impl BuiltinTool for BashTool {
         let timeout_secs = arguments
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
-            .unwrap_or(DEFAULT_TIMEOUT_SECS)
-            .min(MAX_TIMEOUT_SECS);
+            .unwrap_or(self.config.default_timeout)
+            .min(self.config.max_timeout);
 
         tracing::info!(
             command = %command_str,
@@ -205,8 +239,8 @@ impl BuiltinTool for BashTool {
 
         // Build result
         let exit_code = output.status.code().unwrap_or(-1);
-        let stdout = truncate_output(&output.stdout, MAX_OUTPUT_BYTES);
-        let stderr = truncate_output(&output.stderr, MAX_OUTPUT_BYTES);
+        let stdout = truncate_output(&output.stdout, self.config.max_output_bytes);
+        let stderr = truncate_output(&output.stderr, self.config.max_output_bytes);
 
         let mut result = String::new();
 
@@ -259,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_bash_tool_schema() {
-        let tool = BashTool;
+        let tool = BashTool::new(BashConfig::default());
         assert_eq!(tool.name(), "bash");
         let schema = tool.input_schema();
         assert_eq!(schema["type"], "object");
@@ -270,7 +304,7 @@ mod tests {
 
     #[test]
     fn test_to_openai_json() {
-        let tool = BashTool;
+        let tool = BashTool::new(BashConfig::default());
         let json = tool.to_openai_json();
         assert_eq!(json["type"], "function");
         assert_eq!(json["function"]["name"], "bash");
@@ -297,7 +331,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_echo() {
-        let tool = BashTool;
+        let tool = BashTool::new(BashConfig::default());
         let args = serde_json::json!({"command": "echo hello"});
         let result = tool.execute(args).await.unwrap();
         assert_eq!(result, "hello");
@@ -305,7 +339,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_with_stderr() {
-        let tool = BashTool;
+        let tool = BashTool::new(BashConfig::default());
         let args = serde_json::json!({"command": "echo out && echo err >&2"});
         let result = tool.execute(args).await.unwrap();
         assert!(result.contains("out"));
@@ -315,7 +349,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_nonzero_exit() {
-        let tool = BashTool;
+        let tool = BashTool::new(BashConfig::default());
         let args = serde_json::json!({"command": "exit 42"});
         let result = tool.execute(args).await.unwrap();
         assert!(result.contains("[exit code: 42]"));
@@ -323,7 +357,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_with_working_directory() {
-        let tool = BashTool;
+        let tool = BashTool::new(BashConfig::default());
         let args = serde_json::json!({
             "command": "pwd",
             "working_directory": "/tmp"
@@ -334,7 +368,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_missing_command() {
-        let tool = BashTool;
+        let tool = BashTool::new(BashConfig::default());
         let args = serde_json::json!({});
         let result = tool.execute(args).await;
         assert!(result.is_err());
@@ -342,7 +376,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_invalid_working_directory() {
-        let tool = BashTool;
+        let tool = BashTool::new(BashConfig::default());
         let args = serde_json::json!({
             "command": "echo test",
             "working_directory": "/nonexistent/path/that/does/not/exist"
@@ -353,7 +387,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_timeout() {
-        let tool = BashTool;
+        let tool = BashTool::new(BashConfig::default());
         let args = serde_json::json!({
             "command": "sleep 10",
             "timeout_secs": 1

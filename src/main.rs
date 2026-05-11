@@ -79,7 +79,7 @@ async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard
     let tracing_config = raw_config.tracing.clone();
     let middleware_config = raw_config.middleware.clone();
     let acp_config = raw_config.acp.clone();
-    let web_search_config = raw_config.web_search.clone();
+    let tools_config = raw_config.tools.clone();
 
     // Apply CLI overrides to the raw config before building AgentConfig
     apply_cli_overrides(&args, &mut raw_config);
@@ -128,7 +128,7 @@ async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard
     }
 
     // Build the agent with all extensions
-    let agent = build_agent(&args, &workspace, &agent_config, tracing_manager, middleware_config, acp_config, web_search_config).await?;
+    let agent = build_agent(&args, &workspace, &agent_config, tracing_manager, middleware_config, acp_config, tools_config).await?;
 
     Ok((agent, args, _log_guard))
 }
@@ -141,7 +141,7 @@ async fn build_agent(
     tracing_manager: Arc<agent_tracing::TracingManager>,
     middleware_config: middleware::config::MiddlewareConfig,
     acp_config: acp::AcpConfig,
-    web_search_config: tools::web_search::WebSearchConfig,
+    tools_config: tools::ToolsConfig,
 ) -> Result<agent::ChatAgent> {
     let skip_extensions = args.bare;
 
@@ -160,6 +160,11 @@ async fn build_agent(
     let mut agent = agent::ChatAgent::new_with_workspace(provider, agent_config, workspace.clone());
     agent.set_tracing_manager(tracing_manager);
     agent.set_middleware_config(middleware_config);
+    // Only replace the bash tool if the user configured non-default settings,
+    // avoiding unnecessary tool replacement during bootstrap.
+    if tools_config.bash != tools::bash::BashConfig::default() {
+        agent.set_bash_config(tools_config.bash.clone());
+    }
     if let Some(manager) = mcp_manager {
         agent.attach_mcp(manager);
     }
@@ -189,7 +194,7 @@ async fn build_agent(
     }
 
     // Register web_search tool with the configured provider
-    let web_search_tool = tools::web_search::WebSearchTool::new(web_search_config);
+    let web_search_tool = tools::web_search::WebSearchTool::new(tools_config.web_search);
     agent.install_acp_tool(Box::new(web_search_tool));
 
     // Apply tool filtering from CLI args

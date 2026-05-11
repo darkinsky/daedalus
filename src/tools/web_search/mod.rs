@@ -11,7 +11,7 @@
 //! └── infoquest.rs   — InfoQuest backend (time range filtering)
 //! ```
 //!
-//! The backend is selected via YAML configuration (`web_search.provider`) or
+//! The backend is selected via YAML configuration (`tools.web_search.provider`) or
 //! defaults to DuckDuckGo if not configured.
 
 mod duckduckgo;
@@ -43,7 +43,7 @@ pub enum WebSearchProvider {
 }
 
 /// Web search configuration from YAML.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct WebSearchConfig {
     /// Which search provider to use.
@@ -81,7 +81,7 @@ impl WebSearchTool {
             .or_else(|| std::env::var(env_var).ok())
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "API key required for {:?} provider. Set `web_search.api_key` in config or {} env var.",
+                    "API key required for {:?} provider. Set `tools.web_search.api_key` in config or {} env var.",
                     self.config.provider,
                     env_var
                 )

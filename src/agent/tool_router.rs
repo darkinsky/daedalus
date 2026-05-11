@@ -9,6 +9,7 @@ use crate::subagent::{SubagentRegistry, SubagentRunner};
 use crate::subagent::tool::SubagentEventSink;
 use crate::agent_tracing::SharedTracingHook;
 use crate::tools::{BuiltinToolRegistry, ToolInfo};
+use crate::tools::bash::BashConfig;
 
 /// Tool filter for --allowed-tools / --disallowed-tools CLI flags.
 ///
@@ -84,8 +85,13 @@ pub struct ToolRouter {
 impl ToolRouter {
     /// Create a new tool router with built-in tools and no MCP servers.
     pub fn new() -> Self {
+        Self::with_bash_config(BashConfig::default())
+    }
+
+    /// Create a new tool router with custom bash tool configuration.
+    pub fn with_bash_config(bash_config: BashConfig) -> Self {
         Self {
-            builtin: BuiltinToolRegistry::new(),
+            builtin: BuiltinToolRegistry::new_with_config(bash_config),
             mcp: None,
             skills: Arc::new(SkillRegistry::new()),
             subagents: Arc::new(SubagentRegistry::new()),
@@ -93,6 +99,14 @@ impl ToolRouter {
             shared_tracing_hook: SharedTracingHook::new(),
             tool_filter: None,
         }
+    }
+
+    /// Replace the bash tool with one using the given configuration.
+    ///
+    /// Called during bootstrap when the user has configured custom bash
+    /// settings (timeout, output limits) in the `tools.bash` YAML section.
+    pub fn replace_bash_config(&mut self, config: BashConfig) {
+        self.builtin.replace_tool(Box::new(crate::tools::bash::BashTool::new(config)));
     }
 
     /// Install a ready-to-use skill registry into the router.

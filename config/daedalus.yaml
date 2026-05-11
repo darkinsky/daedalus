@@ -92,16 +92,31 @@ tracing:
     - type: file
       format: yaml
 
-# ── Web Search Configuration ──
-# web_search:
-#   # Provider: "duckduckgo" (default, free), "tavily", "exa", "infoquest"
-#   provider: "duckduckgo"
+# ── Tool Configuration ──
+# Per-tool settings. Only tools that need external credentials or
+# environment-specific tuning have config sections here.
+# All tools work with zero configuration using sensible defaults.
 #
-#   # API key (optional, can also use env vars: TAVILY_API_KEY, EXA_API_KEY, INFOQUEST_API_KEY)
-#   # api_key: "your-api-key"
+# tools:
+#   web_search:
+#     # Provider: "duckduckgo" (default, free), "tavily", "exa", "infoquest"
+#     provider: "duckduckgo"
 #
-#   # API base URL override (optional, for self-hosted instances)
-#   # api_base: "https://api.tavily.com"
+#     # API key (optional, can also use env vars: TAVILY_API_KEY, EXA_API_KEY, INFOQUEST_API_KEY)
+#     # api_key: "your-api-key"
 #
-#   # Maximum number of results (default: 5, max: 10)
-#   # max_results: 5
+#     # API base URL override (optional, for self-hosted instances)
+#     # api_base: "https://api.tavily.com"
+#
+#     # Maximum number of results (default: 5, max: 10)
+#     # max_results: 5
+#
+#   bash:
+#     # Default timeout for commands in seconds (default: 30)
+#     default_timeout: 30
+#
+#     # Maximum allowed timeout in seconds (default: 300)
+#     max_timeout: 300
+#
+#     # Maximum output size in bytes (default: 262144 = 256KB)
+#     # max_output_bytes: 262144
