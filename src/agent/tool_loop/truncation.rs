@@ -178,6 +178,16 @@ impl TruncationConfig {
 ///
 /// Tool calls (function name + arguments) are always kept in full — they're
 /// small and provide important structural context.
+///
+/// ## Information-density-aware truncation
+///
+/// Different tools produce outputs with different information densities:
+/// - `grep_search`: Every line is a match — high density, preserve more
+/// - `read_file`: Often contains imports/whitespace — lower density
+/// - `bash`: Output varies, but structure info (head/tail) is most useful
+///
+/// The truncation limit is scaled by a per-tool multiplier to preserve
+/// more content from high-density tools.
 pub(crate) fn truncate_tool_history(history: &[ToolRound], cfg: &TruncationConfig) -> Vec<ToolRound> {
     if history.is_empty() {
         return Vec::new();
@@ -231,13 +241,28 @@ pub(crate) fn truncate_tool_history(history: &[ToolRound], cfg: &TruncationConfi
             break; // We're within budget — stop truncating.
         }
 
+        // Pre-collect tool names for density-aware truncation (avoids borrow conflict)
+        let tool_names: Vec<String> = result[i].calls.iter()
+            .map(|c| c.function_name.clone())
+            .collect();
+
         // Apply progressively harsher tiers to this single round
         for &tier_limit in &tiers {
-            for resp in &mut result[i].responses {
-                if resp.content.len() > tier_limit {
+            for (resp_idx, resp) in result[i].responses.iter_mut().enumerate() {
+                // Information-density-aware truncation: scale the limit based
+                // on the tool that produced this response. High-density tools
+                // (grep_search) get more space; low-density tools (read_file)
+                // get less.
+                let tool_name = tool_names.get(resp_idx)
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
+                let density_multiplier = tool_density_multiplier(tool_name);
+                let effective_limit = (tier_limit as f64 * density_multiplier) as usize;
+
+                if resp.content.len() > effective_limit {
                     let truncated = crate::tools::truncate_at_char_boundary(
                         &resp.content,
-                        tier_limit,
+                        effective_limit,
                     );
                     resp.content = format!(
                         "{}...(truncated, {} bytes total)",
@@ -257,6 +282,30 @@ pub(crate) fn truncate_tool_history(history: &[ToolRound], cfg: &TruncationConfi
     }
 
     result
+}
+
+/// Return a truncation multiplier based on the tool's output information density.
+///
+/// Tools with higher information density (every line is valuable) get a higher
+/// multiplier, meaning they retain more content during truncation. Tools with
+/// lower density (lots of boilerplate, imports, whitespace) get a lower multiplier.
+///
+/// This ensures the same token budget preserves more useful information overall.
+fn tool_density_multiplier(tool_name: &str) -> f64 {
+    match tool_name {
+        // High density: every line is a search match with context
+        "grep_search" => 1.5,
+        // High density: file listings are compact and structural
+        "list_directory" | "search_files" => 1.3,
+        // Medium-high: bash output varies but is often dense
+        "bash" => 1.2,
+        // Medium: file content has imports/whitespace padding
+        "read_file" | "get_file_info" => 0.8,
+        // Low density: edit results are confirmations, not information
+        "edit_file" | "multi_edit" | "write_file" => 0.5,
+        // Default: standard density
+        _ => 1.0,
+    }
 }
 
 /// Estimate the total character count of a tool history.

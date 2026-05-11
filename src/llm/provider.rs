@@ -18,12 +18,22 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::time::Duration;
 
 use super::adapter::{self, ApiAdapter};
 use super::{
     ChatMessage, ChatOptions, ChatResponse, LlmApi, LlmConfig,
     StreamChunk, ToolCall, ToolRound,
 };
+
+/// Maximum number of retries for transient LLM API errors (429, 5xx).
+const MAX_RETRIES: u32 = 3;
+/// Initial backoff delay between retries.
+const INITIAL_BACKOFF: Duration = Duration::from_secs(2);
+/// HTTP request timeout (covers connect + response time).
+const HTTP_TIMEOUT: Duration = Duration::from_secs(300);
+/// HTTP connect timeout.
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Unified LLM provider backed by reqwest HTTP client.
 ///
@@ -53,7 +63,11 @@ impl LlmProvider {
             .to_string();
 
         let adapter = adapter::create_adapter(&config);
-        let client = Client::new();
+        let client = Client::builder()
+            .timeout(HTTP_TIMEOUT)
+            .connect_timeout(HTTP_CONNECT_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| Client::new());
 
         tracing::info!(
             model = %config.model,
@@ -111,10 +125,18 @@ impl LlmProvider {
         headers
     }
 
-    /// Send an HTTP request and return the parsed JSON body.
+    /// Send an HTTP request with automatic retry for transient errors.
+    ///
+    /// Retries on:
+    /// - HTTP 429 (rate limit) — with exponential backoff
+    /// - HTTP 5xx (server errors) — with exponential backoff
+    /// - Network/timeout errors — with exponential backoff
+    ///
+    /// Does NOT retry on:
+    /// - HTTP 4xx (client errors, except 429) — these are permanent failures
+    /// - JSON parse errors — indicates a bug, not transient
     async fn send_request(&self, body: &Value) -> Result<Value> {
         let url = self.adapter.endpoint(&self.base_url, &self.config.model);
-        let headers = self.build_headers();
 
         tracing::debug!(
             url = %url,
@@ -130,58 +152,103 @@ impl LlmProvider {
             tracing::trace!(request_body = %body, "LLM API request body (full)");
         }
 
-        let start = std::time::Instant::now();
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("LLM HTTP request error: {}", e))?;
-        let http_elapsed_ms = start.elapsed().as_millis() as u64;
+        let mut last_error = None;
+        for attempt in 0..=MAX_RETRIES {
+            if attempt > 0 {
+                let backoff = INITIAL_BACKOFF * 2u32.pow(attempt - 1);
+                tracing::warn!(
+                    attempt,
+                    backoff_ms = backoff.as_millis() as u64,
+                    "Retrying LLM API request after transient error"
+                );
+                tokio::time::sleep(backoff).await;
+            }
 
-        let status = response.status();
-        let response_text = response
-            .text()
-            .await
-            .map_err(|e| anyhow::anyhow!("LLM response read error: {}", e))?;
+            let headers = self.build_headers();
+            let start = std::time::Instant::now();
+            let response = match self
+                .client
+                .post(&url)
+                .headers(headers)
+                .json(body)
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    // Network/timeout error — retryable
+                    tracing::warn!(
+                        attempt,
+                        error = %e,
+                        "LLM HTTP request failed (network/timeout)"
+                    );
+                    last_error = Some(anyhow::anyhow!("LLM HTTP request error: {}", e));
+                    continue;
+                }
+            };
+            let http_elapsed_ms = start.elapsed().as_millis() as u64;
 
-        tracing::debug!(
-            status = %status,
-            response_len = response_text.len(),
-            http_elapsed_ms = http_elapsed_ms,
-            "LLM API response received"
-        );
+            let status = response.status();
+            let response_text = response
+                .text()
+                .await
+                .map_err(|e| anyhow::anyhow!("LLM response read error: {}", e))?;
 
-        if std::env::var("DAEDALUS_TRACE_BODIES").as_deref() == Ok("1") {
-            tracing::trace!(response_body = %response_text, "LLM API response body (full)");
+            tracing::debug!(
+                status = %status,
+                response_len = response_text.len(),
+                http_elapsed_ms = http_elapsed_ms,
+                attempt,
+                "LLM API response received"
+            );
+
+            if std::env::var("DAEDALUS_TRACE_BODIES").as_deref() == Ok("1") {
+                tracing::trace!(response_body = %response_text, "LLM API response body (full)");
+            }
+
+            // Check for retryable HTTP status codes
+            if status.as_u16() == 429 || status.is_server_error() {
+                tracing::warn!(
+                    status = %status,
+                    attempt,
+                    "LLM API returned retryable error"
+                );
+                last_error = Some(anyhow::anyhow!(
+                    "LLM API error (HTTP {}): {}",
+                    status.as_u16(),
+                    &response_text[..response_text.len().min(200)]
+                ));
+                continue;
+            }
+
+            let response_body: Value = serde_json::from_str(&response_text)
+                .map_err(|e| {
+                    let preview = if response_text.len() <= 500 {
+                        &response_text
+                    } else {
+                        &response_text[..500]
+                    };
+                    anyhow::anyhow!("LLM response parse error: {} (body: {})", e, preview)
+                })?;
+
+            if !status.is_success() {
+                let error_msg = response_body
+                    .get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Unknown error");
+                return Err(anyhow::anyhow!(
+                    "LLM API error (HTTP {}): {}",
+                    status.as_u16(),
+                    error_msg
+                ));
+            }
+
+            return Ok(response_body);
         }
 
-        let response_body: Value = serde_json::from_str(&response_text)
-            .map_err(|e| {
-                let preview = if response_text.len() <= 500 {
-                    &response_text
-                } else {
-                    &response_text[..500]
-                };
-                anyhow::anyhow!("LLM response parse error: {} (body: {})", e, preview)
-            })?;
-
-        if !status.is_success() {
-            let error_msg = response_body
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or("Unknown error");
-            return Err(anyhow::anyhow!(
-                "LLM API error (HTTP {}): {}",
-                status.as_u16(),
-                error_msg
-            ));
-        }
-
-        Ok(response_body)
+        // All retries exhausted
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("LLM API request failed after {} retries", MAX_RETRIES)))
     }
 
     /// Send a streaming HTTP request and return a channel of StreamChunks.

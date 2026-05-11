@@ -18,6 +18,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::agent_tracing::{TracingManager, TraceContext, TraceMetadata};
+use crate::agent::tool_loop::SnapshotParentSpanId;
 use crate::llm::ToolResponse;
 
 use super::super::{
@@ -126,13 +127,27 @@ impl ToolMiddleware for TracingToolMiddleware {
         // Read trace context from extensions (injected by TracingTurnMiddleware)
         let ctx = request.extensions.get::<Arc<TraceContext>>().cloned();
 
+        // Read the snapshotted parent span ID (injected by execute_round_via_pipeline).
+        // When present, use it to ensure parallel tool calls share the same parent
+        // instead of accidentally nesting under each other.
+        let snapshot_parent = request.extensions.get::<SnapshotParentSpanId>().cloned();
+
         let mut tool_span = if let Some(ref ctx) = ctx {
             if ctx.is_enabled() {
-                Some(ctx.start_tool_call(
-                    &request.call.function_name,
-                    &request.source,
-                    &request.call.arguments,
-                ).await)
+                if let Some(SnapshotParentSpanId(parent_id)) = snapshot_parent {
+                    Some(ctx.start_tool_call_with_parent(
+                        &request.call.function_name,
+                        &request.source,
+                        &request.call.arguments,
+                        parent_id,
+                    ).await)
+                } else {
+                    Some(ctx.start_tool_call(
+                        &request.call.function_name,
+                        &request.source,
+                        &request.call.arguments,
+                    ).await)
+                }
             } else {
                 None
             }

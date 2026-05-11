@@ -121,8 +121,35 @@ impl SubagentToolContext {
 
 // ── Shared helpers ──
 
+/// Maximum output size (in characters) for a subagent result returned to the
+/// lead agent. This prevents the lead agent's synthesis round from being
+/// overwhelmed when multiple subagents each produce very long outputs.
+///
+/// 20K chars ≈ 5K-7K tokens. With 5-6 parallel subagents, the lead agent's
+/// synthesis prompt stays under ~40K tokens (manageable for any model).
+const MAX_SUBAGENT_OUTPUT_CHARS: usize = 20_000;
+
 /// Format a successful SubagentResult into the output string for the main agent.
+///
+/// If the subagent's output exceeds `MAX_SUBAGENT_OUTPUT_CHARS`, it is truncated
+/// with a notice. This ensures the lead agent's synthesis round doesn't exceed
+/// its context budget when aggregating results from many parallel subagents.
 fn format_result(result: &SubagentResult) -> String {
+    let content = if result.content.len() > MAX_SUBAGENT_OUTPUT_CHARS {
+        let truncated = crate::tools::truncate_at_char_boundary(
+            &result.content,
+            MAX_SUBAGENT_OUTPUT_CHARS,
+        );
+        format!(
+            "{}...\n\n[Output truncated: {} chars total, showing first {}]",
+            truncated,
+            result.content.len(),
+            MAX_SUBAGENT_OUTPUT_CHARS,
+        )
+    } else {
+        result.content.clone()
+    };
+
     format!(
         "[Subagent '{}' completed — {} tool rounds, {} tokens used]\n\n{}",
         result.agent_name,
@@ -133,8 +160,57 @@ fn format_result(result: &SubagentResult) -> String {
             .and_then(|u| u.total_tokens)
             .map(|t| t.to_string())
             .unwrap_or_else(|| "unknown".to_string()),
-        result.content,
+        content,
     )
+}
+
+/// Extract `<shared_context>...</shared_context>` from a task description.
+///
+/// The orchestrator can embed project-wide context in the task description
+/// using this XML-like tag. We extract it so it can be injected into the
+/// subagent's system prompt (via `build_effective_prompt_with_context`),
+/// which enables:
+/// 1. **Breaking information silos** — all parallel subagents share the same
+///    project overview without needing to re-explore
+/// 2. **Prefix caching** — shared context in the system prompt is cached
+///    across all tool-calling rounds (vs. user message which isn't)
+/// 3. **Cross-module awareness** — subagents can understand interfaces and
+///    dependencies with modules outside their assigned scope
+///
+/// Returns `(effective_task, shared_context)` where `effective_task` is the
+/// task with the shared_context block removed.
+fn extract_shared_context(task: &str) -> (String, Option<String>) {
+    const OPEN_TAG: &str = "<shared_context>";
+    const CLOSE_TAG: &str = "</shared_context>";
+
+    if let Some(start) = task.find(OPEN_TAG) {
+        if let Some(end) = task.find(CLOSE_TAG) {
+            // Ensure close tag comes after open tag (malformed input guard)
+            if end <= start {
+                return (task.to_string(), None);
+            }
+            let context_start = start + OPEN_TAG.len();
+            let context = task[context_start..end].trim().to_string();
+
+            // Remove the shared_context block from the task
+            let mut effective_task = String::with_capacity(task.len());
+            effective_task.push_str(task[..start].trim());
+            let after = task[end + CLOSE_TAG.len()..].trim();
+            if !after.is_empty() {
+                if !effective_task.is_empty() {
+                    effective_task.push_str("\n\n");
+                }
+                effective_task.push_str(after);
+            }
+
+            if context.is_empty() {
+                return (effective_task, None);
+            }
+            return (effective_task, Some(context));
+        }
+    }
+
+    (task.to_string(), None)
 }
 
 // ── Factory functions (moved from registry.rs to eliminate circular dependency) ──
@@ -221,6 +297,18 @@ pub fn build_tool_definition(registry: &SubagentRegistry) -> Option<serde_json::
          doubling the cost. Instead, spawn the specialized subagent directly.\n\
          - For code review tasks, spawn 'code-reviewer' directly — it has all the tools \
          it needs (read_file, grep_search, bash, etc.) to explore and review independently.\n\n\
+         ORCHESTRATOR EFFICIENCY — Minimize exploration before dispatching:\n\
+         - Do NOT spend multiple rounds exploring the codebase before spawning subagents.\n\
+         - Use ONE bash command to gather all needed info (file list + LOC stats) in a single call.\n\
+         - Maximum 2 rounds of exploration before you MUST start dispatching subagents.\n\
+         - If you need a plan agent to partition work, spawn it immediately — don't pre-explore.\n\n\
+         SYNTHESIS & VALIDATION — When collecting subagent results:\n\
+         - Subagents annotate findings with confidence levels: [HIGH], [MEDIUM], [LOW].\n\
+         - For Critical/High-severity findings marked [MEDIUM] or [LOW], verify them yourself \
+         (read the cited file:line) before including in your final output.\n\
+         - Cross-reference findings across subagents: if subagent A reports an issue in a \
+         module that subagent B also reviewed, check for consistency.\n\
+         - Do NOT blindly concatenate subagent outputs — synthesize, deduplicate, and validate.\n\n\
          The subagent will execute the task independently and return a summary of results.",
         agent_list.join("\n")
     );
@@ -340,13 +428,29 @@ impl BuiltinTool for SubagentTool {
             )
         })?;
 
-        self.ctx.emit_start(agent_name, task);
+        // Extract <shared_context>...</shared_context> from the task if present.
+        // The orchestrator can embed project-wide context in the task description
+        // using this tag. We extract it and inject it into the definition so it
+        // appears in the subagent's system prompt (not the user message), enabling
+        // prefix caching across rounds.
+        let (effective_task, shared_context) = extract_shared_context(task);
+        let mut definition = definition.clone();
+        if shared_context.is_some() {
+            definition.shared_context = shared_context;
+        }
 
-        // Start subagent tracing span if trace context is available
+        self.ctx.emit_start(agent_name, &effective_task);
+
+        // Start subagent tracing span if trace context is available.
+        // We use the shared context to create the subagent_call span (so it
+        // nests under the current tool_call span), then fork the context with
+        // the subagent_call span as the initial parent. This gives the subagent
+        // an isolated span stack, preventing parallel subagents from interfering
+        // with each other's parent-child relationships.
         let trace_ctx = self.ctx.tracing_hook.read();
         let mut subagent_span = if let Some(ref ctx) = trace_ctx {
             if ctx.is_enabled() {
-                Some(ctx.start_subagent_call(agent_name, task).await)
+                Some(ctx.start_subagent_call(agent_name, &effective_task).await)
             } else {
                 None
             }
@@ -354,16 +458,21 @@ impl BuiltinTool for SubagentTool {
             None
         };
 
-        // Build tracing hook for the subagent's tool loop
-        let subagent_tracing_hook = trace_ctx.as_ref().map(|ctx| {
-            TracingHook::new(Arc::clone(ctx))
-        });
+        // Build tracing hook for the subagent's tool loop.
+        // Fork the context so the subagent gets its own span stack, seeded
+        // with the subagent_call span as the root parent.
+        let subagent_tracing_hook = if let (Some(ctx), Some(span)) = (&trace_ctx, &subagent_span) {
+            let forked = ctx.fork(Some(span.span_id().to_string()));
+            Some(TracingHook::new(Arc::new(forked)))
+        } else {
+            None
+        };
 
         // Execute the subagent task (pass through the event callback)
         let callback = self.ctx.read_callback();
         let subagent_start = std::time::Instant::now();
         let result = self.ctx.runner.run(
-            definition, task, callback.as_ref(), subagent_tracing_hook.as_ref(),
+            &definition, &effective_task, callback.as_ref(), subagent_tracing_hook.as_ref(),
         ).await;
         let subagent_elapsed_ms = subagent_start.elapsed().as_millis() as u64;
 

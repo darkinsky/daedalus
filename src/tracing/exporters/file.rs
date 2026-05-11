@@ -9,6 +9,9 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
+
 use crate::llm::TokenUsage;
 use crate::agent_tracing::collector::TracingCollector;
 use crate::agent_tracing::config::{ContentFlags, FileFormat};
@@ -379,9 +382,15 @@ fn serialize_trace_yaml(trace: &Trace, flags: ContentFlags) -> String {
         .collect();
 
     if !root_spans.is_empty() || !trace.spans.is_empty() {
+        // Track seen system prompt content hashes for deduplication.
+        // When the same system prompt appears in multiple LLM calls,
+        // only the first occurrence is rendered in full; subsequent
+        // occurrences show a short "(same as first system prompt)" note.
+        let mut seen_system_prompts: HashSet<u64> = HashSet::new();
+
         out.push_str("  spans:\n");
         for root in &root_spans {
-            serialize_span_yaml(&mut out, root, &trace.spans, 2, flags);
+            serialize_span_yaml(&mut out, root, &trace.spans, 2, flags, &mut seen_system_prompts);
         }
         // Also print orphan spans (parent not in this trace) at root level
         let root_ids: Vec<&str> = root_spans.iter().map(|s| s.span_id.as_str()).collect();
@@ -390,7 +399,7 @@ fn serialize_trace_yaml(trace: &Trace, flags: ContentFlags) -> String {
                 && !root_ids.contains(&span.span_id.as_str())
                 && !has_parent_in_trace(span, &trace.spans)
             {
-                serialize_span_yaml(&mut out, span, &trace.spans, 2, flags);
+                serialize_span_yaml(&mut out, span, &trace.spans, 2, flags, &mut seen_system_prompts);
             }
         }
     }
@@ -409,7 +418,14 @@ fn has_parent_in_trace(span: &Span, all_spans: &[Span]) -> bool {
 }
 
 /// Recursively serialize a span and its children in YAML-like tree format.
-fn serialize_span_yaml(out: &mut String, span: &Span, all_spans: &[Span], indent: usize, flags: ContentFlags) {
+fn serialize_span_yaml(
+    out: &mut String,
+    span: &Span,
+    all_spans: &[Span],
+    indent: usize,
+    flags: ContentFlags,
+    seen_system_prompts: &mut HashSet<u64>,
+) {
     let pad = " ".repeat(indent * 2);
     let status_str = match &span.status {
         SpanStatus::Running => "running",
@@ -465,6 +481,21 @@ fn serialize_span_yaml(out: &mut String, span: &Span, all_spans: &[Span], indent
                 out.push_str(&format!("{}input_messages: ({} messages)\n", detail_pad, input_messages.len()));
                 for (i, msg) in input_messages.iter().enumerate() {
                     out.push_str(&format!("{}  [{}] role={}, len={}\n", detail_pad, i, msg.role, msg.content_len));
+                    // Deduplicate system prompts: only render full content on first occurrence.
+                    // Subsequent identical system prompts show a short reference instead.
+                    if msg.role == "system" {
+                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                        msg.content_preview.hash(&mut hasher);
+                        let hash = hasher.finish();
+                        if !seen_system_prompts.insert(hash) {
+                            // Already seen this system prompt — show a short reference
+                            out.push_str(&format!(
+                                "{}      content: \"(same as first system prompt, {} chars)\"\n",
+                                detail_pad, msg.content_len
+                            ));
+                            continue;
+                        }
+                    }
                     // content_preview already contains full content when llm_input is true
                     // (truncation was applied at span creation time in context.rs)
                     out.push_str(&format!("{}      content: \"{}\"\n", detail_pad, maybe_truncate(&msg.content_preview, 200, flags.llm_input)));
@@ -597,7 +628,7 @@ fn serialize_span_yaml(out: &mut String, span: &Span, all_spans: &[Span], indent
         .filter(|s| s.parent_span_id.as_deref() == Some(&span.span_id))
         .collect();
     for child in children {
-        serialize_span_yaml(out, child, all_spans, indent + 1, flags);
+        serialize_span_yaml(out, child, all_spans, indent + 1, flags, seen_system_prompts);
     }
 }
 /// Get a short type tag for the span type.

@@ -52,6 +52,18 @@ pub struct SubagentDefinition {
     /// Shell command to run after the subagent completes execution.
     /// The command receives the subagent result via stdin.
     pub on_complete: Option<String>,
+    /// Optional shared context injected by the orchestrator.
+    ///
+    /// When set, this read-only context is included in the subagent's system
+    /// prompt as a `<shared_context>` section. It typically contains:
+    /// - Project architecture overview
+    /// - Key shared types and traits
+    /// - Cross-module dependency map
+    ///
+    /// This breaks the information silo between parallel subagents by giving
+    /// each one a common understanding of the project. Not persisted to disk;
+    /// only set at runtime by the orchestrator when spawning subagents.
+    pub shared_context: Option<String>,
 }
 
 /// Permission mode for subagent tool execution.

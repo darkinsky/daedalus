@@ -92,11 +92,16 @@ impl SubagentRunner {
         //    environment context, and safety constraints.
         //    This aligns with Claude Code's SubAgent prompt construction:
         //    base prompt + tool inventory + usage strategy + env + constraints.
+        //
+        //    When shared_context is set (by the orchestrator), it is injected
+        //    as a read-only <shared_context> section, breaking the information
+        //    silo between parallel subagents.
         let tool_infos = filtered_tools.tool_infos();
-        let effective_prompt = prompt::build_effective_prompt(
+        let effective_prompt = prompt::build_effective_prompt_with_context(
             &definition.system_prompt,
             &tool_infos,
             has_tools,
+            definition.shared_context.as_deref(),
         );
 
         // 4. Build messages: enhanced system prompt + user task.

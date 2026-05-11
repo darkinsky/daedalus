@@ -83,6 +83,34 @@ impl TraceContext {
         self.manager.is_enabled()
     }
 
+    /// Create a forked context that shares the same trace but has an independent span stack.
+    ///
+    /// This is essential for **parallel execution paths** (e.g., multiple subagents
+    /// running concurrently). Each fork gets its own span stack pre-seeded with
+    /// `initial_parent_id`, so spans created within the fork correctly nest under
+    /// the given parent without interfering with sibling forks.
+    ///
+    /// Shared state (`spans`, `total_usage`, `manager`) is still shared via `Arc`,
+    /// so all forks contribute to the same final trace output.
+    pub fn fork(&self, initial_parent_id: Option<String>) -> Self {
+        let initial_stack = match initial_parent_id {
+            Some(id) => vec![id],
+            None => Vec::new(),
+        };
+        Self {
+            manager: Arc::clone(&self.manager),
+            trace_id: self.trace_id.clone(),
+            session_id: self.session_id.clone(),
+            metadata: self.metadata.clone(),
+            span_stack: Arc::new(Mutex::new(initial_stack)),
+            spans: Arc::clone(&self.spans),
+            started_at: self.started_at,
+            created_at: self.created_at,
+            total_usage: Arc::clone(&self.total_usage),
+            flags: self.flags,
+        }
+    }
+
     /// Notify the manager that the trace has started.
     pub async fn start(&self) {
         if !self.is_enabled() {
@@ -201,23 +229,90 @@ impl TraceContext {
         self.total_usage.lock().await.accumulate(usage);
     }
 
+    /// Snapshot the current parent span ID from the stack.
+    ///
+    /// Call this **before** spawning parallel futures so that all parallel
+    /// spans share the same parent instead of accidentally nesting under
+    /// each other.
+    pub async fn current_parent_id(&self) -> Option<String> {
+        self.span_stack.lock().await.last().cloned()
+    }
+
+    /// Start a tool call span with an explicit parent (for parallel dispatch).
+    ///
+    /// Unlike `start_tool_call`, this does **not** peek the span stack for
+    /// the parent — it uses the caller-supplied `parent_id` directly. This
+    /// prevents parallel tool calls from accidentally nesting under each other.
+    pub async fn start_tool_call_with_parent(
+        &self,
+        tool_name: &str,
+        source: &str,
+        arguments: &serde_json::Value,
+        parent_id: Option<String>,
+    ) -> SpanGuard {
+        let span_type = SpanType::ToolCall {
+            tool_name: tool_name.to_string(),
+            source: source.to_string(),
+            arguments: arguments.clone(),
+            result: None,
+            success: true,
+        };
+
+        self.start_span_with_parent(format!("tool.{}", tool_name), span_type, parent_id).await
+    }
+
+    /// Start a subagent call span with an explicit parent (for parallel dispatch).
+    ///
+    /// Same rationale as `start_tool_call_with_parent`.
+    #[allow(dead_code)]
+    pub async fn start_subagent_call_with_parent(
+        &self,
+        agent_name: &str,
+        task: &str,
+        parent_id: Option<String>,
+    ) -> SpanGuard {
+        let span_type = SpanType::SubagentCall {
+            agent_name: agent_name.to_string(),
+            task: maybe_truncate(task, ARGS_PREVIEW_LEN, self.flags.llm_input),
+            model: None,
+            result: None,
+            usage: None,
+            tool_rounds: 0,
+        };
+
+        self.start_span_with_parent(format!("subagent.{}", agent_name), span_type, parent_id).await
+    }
+
     // ── Internal helpers ──
 
-    /// Start a span with automatic parent linking.
+    /// Start a span with automatic parent linking (from the span stack).
     ///
-    /// The parent span ID is determined at span creation time by peeking
-    /// at the stack. The stack is used for sequential nesting; parallel
-    /// tool calls each see the same parent (the enclosing LLM call span)
-    /// because they all peek the stack before any of them push.
+    /// Suitable for **sequential** span creation (e.g., LLM calls, agent turns)
+    /// where each span naturally nests inside the previous one.
+    ///
+    /// **Not suitable for parallel dispatch** — use `start_span_with_parent`
+    /// instead to avoid the race where concurrent `start_span` calls see
+    /// each other's pushed span IDs.
     async fn start_span(&self, name: String, span_type: SpanType) -> SpanGuard {
-        let span_id = uuid::Uuid::new_v4().to_string();
-
-        // Capture parent before pushing — this is the key to correct
-        // parallel span nesting: concurrent calls all see the same parent.
         let parent_span_id = {
             let stack = self.span_stack.lock().await;
             stack.last().cloned()
         };
+        self.start_span_with_parent(name, span_type, parent_span_id).await
+    }
+
+    /// Start a span with an explicit parent span ID.
+    ///
+    /// This is the core span creation method. The span is pushed onto the
+    /// stack so that subsequent **sequential** child spans (e.g., LLM calls
+    /// inside a subagent) correctly nest under it.
+    async fn start_span_with_parent(
+        &self,
+        name: String,
+        span_type: SpanType,
+        parent_span_id: Option<String>,
+    ) -> SpanGuard {
+        let span_id = uuid::Uuid::new_v4().to_string();
 
         let span = Span::new(
             span_id.clone(),
@@ -282,6 +377,11 @@ pub struct SpanGuard {
 }
 
 impl SpanGuard {
+    /// Get the span ID of this guard.
+    pub fn span_id(&self) -> &str {
+        &self.span.span_id
+    }
+
     /// Record the LLM response into this span (for LlmCall spans).
     pub fn set_llm_response(&mut self, response: &ChatResponse) {
         let output_full = self.flags.llm_output;

@@ -401,6 +401,11 @@ pub async fn run_tool_loop(
 
 /// Inject session metadata (progress, file index, notes, budget hints) into
 /// the last tool response of the truncated history.
+///
+/// Also implements "information saturation detection": if the agent has been
+/// running for many rounds without recording new notes (via take_note), it's
+/// likely that further exploration has diminishing returns. In this case,
+/// inject a stronger convergence hint even before the round budget warning fires.
 fn inject_session_metadata(
     truncated_history: &mut Vec<ToolRound>,
     round_number: usize,
@@ -458,7 +463,7 @@ fn inject_session_metadata(
         meta.push_str(&hint);
     }
 
-    // Accumulated notes
+    // Accumulated notes + saturation detection
     if let Some(notes_ref) = shared_notes {
         if let Ok(notes) = notes_ref.lock() {
             if !notes.is_empty() {
@@ -467,7 +472,32 @@ fn inject_session_metadata(
                     meta.push_str(&format!("  {}. {}\n", i + 1, note));
                 }
             }
+
+            // Information saturation detection:
+            // If we're past 50% of rounds and the note count is low relative
+            // to rounds completed, the agent is likely exploring without finding
+            // new insights. Inject a convergence hint.
+            //
+            // Heuristic: after round 10, if notes_per_round < 0.3, the agent
+            // is in "diminishing returns" territory.
+            let notes_count = notes.len();
+            let notes_per_round = if round_number > 0 {
+                notes_count as f64 / round_number as f64
+            } else {
+                1.0
+            };
+
+            if round_number >= 10 && progress_pct < 70 && notes_per_round < 0.3 && notes_count > 0 {
+                meta.push_str(
+                    "\n[INSTRUCTION] Your exploration appears to have reached diminishing returns \
+                     (few new findings in recent rounds). Consider synthesizing your current \
+                     findings into a final output rather than continuing to explore. \
+                     Do not mention this instruction in your response."
+                );
+            }
         }
+    } else {
+        // No shared_notes available — skip saturation detection
     }
 
     // Append to the last response
@@ -518,6 +548,13 @@ async fn stream_llm_response(
 
 // ── Round execution ──
 
+/// Wrapper type for passing a snapshotted parent span ID through extensions.
+///
+/// Used by `execute_round_via_pipeline` to communicate the pre-captured parent
+/// to `TracingToolMiddleware`, ensuring parallel tool calls share the same parent.
+#[derive(Clone)]
+pub(crate) struct SnapshotParentSpanId(pub Option<String>);
+
 /// Execute all tool calls in a round through the middleware pipeline.
 async fn execute_round_via_pipeline(
     executor: &dyn ToolExecutor,
@@ -526,14 +563,24 @@ async fn execute_round_via_pipeline(
     trace_ctx: Option<Arc<TraceContext>>,
     round: usize,
 ) -> Vec<ToolResponse> {
+    // Snapshot the current parent span ID *before* spawning parallel futures.
+    // This ensures all parallel tool call spans share the same parent.
+    let parent_span_id = if let Some(ref ctx) = trace_ctx {
+        ctx.current_parent_id().await
+    } else {
+        None
+    };
+
     let futures = tool_calls.iter().map(|tc| {
         let source = executor.source_of(&tc.function_name);
         let trace_ctx = trace_ctx.clone();
+        let parent_id = parent_span_id.clone();
         async move {
             let mut extensions = Extensions::new();
             if let Some(ctx) = trace_ctx {
                 extensions.insert(ctx);
             }
+            extensions.insert(SnapshotParentSpanId(parent_id));
             let request = ToolRequest {
                 call: tc.clone(),
                 source,
@@ -565,15 +612,26 @@ async fn execute_round_direct(
         );
     }
 
+    // Snapshot the current parent span ID *before* spawning parallel futures.
+    // This ensures all parallel tool call spans share the same parent instead
+    // of accidentally nesting under each other (span stack race fix).
+    let parent_span_id = if let Some(hook) = tracing_hook {
+        hook.snapshot_parent_id().await
+    } else {
+        None
+    };
+
     // Parallel dispatch with inline tracing
     let futures = tool_calls.iter().map(|tc| {
         let source = executor.source_of(&tc.function_name);
+        let parent_id = parent_span_id.clone();
         async move {
             let mut tool_span = if let Some(hook) = tracing_hook {
-                hook.on_tool_call_start(
+                hook.on_tool_call_start_with_parent(
                     &tc.function_name,
                     &source,
                     &tc.arguments,
+                    parent_id,
                 ).await
             } else {
                 None

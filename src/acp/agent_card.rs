@@ -293,6 +293,7 @@ mod tests {
             isolation: crate::subagent::IsolationMode::None,
             on_start: None,
             on_complete: None,
+            shared_context: None,
         };
 
         let card = AgentCard::from(&def);

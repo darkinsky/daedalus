@@ -111,6 +111,7 @@ impl TracingHook {
     }
 
     /// Record that a tool call is about to start.
+    #[allow(dead_code)]
     pub async fn on_tool_call_start(
         &self,
         tool_name: &str,
@@ -121,6 +122,32 @@ impl TracingHook {
             return None;
         }
         Some(self.ctx.start_tool_call(tool_name, source, arguments).await)
+    }
+
+    /// Record that a tool call is about to start, with an explicit parent.
+    ///
+    /// Use this in parallel dispatch paths to avoid the span stack race.
+    /// Call `snapshot_parent_id()` before spawning futures, then pass the
+    /// result here.
+    pub async fn on_tool_call_start_with_parent(
+        &self,
+        tool_name: &str,
+        source: &str,
+        arguments: &serde_json::Value,
+        parent_id: Option<String>,
+    ) -> Option<super::SpanGuard> {
+        if !self.is_enabled() {
+            return None;
+        }
+        Some(self.ctx.start_tool_call_with_parent(tool_name, source, arguments, parent_id).await)
+    }
+
+    /// Snapshot the current parent span ID from the stack.
+    ///
+    /// Call this **before** spawning parallel futures so that all parallel
+    /// spans share the same parent.
+    pub async fn snapshot_parent_id(&self) -> Option<String> {
+        self.ctx.current_parent_id().await
     }
 
     /// Record that a subagent call is about to start.

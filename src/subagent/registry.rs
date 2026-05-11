@@ -126,6 +126,7 @@ mod tests {
             isolation: crate::subagent::IsolationMode::default(),
             on_start: None,
             on_complete: None,
+            shared_context: None,
         }
     }
 

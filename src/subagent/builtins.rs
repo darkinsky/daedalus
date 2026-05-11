@@ -49,6 +49,7 @@ fn read_only_builtin(
         isolation: IsolationMode::None,
         on_start: None,
         on_complete: None,
+        shared_context: None,
     }
 }
 
@@ -100,6 +101,11 @@ You are an elite code reviewer. Read-only environment.
 1. Call `take_note` after each Critical/Major finding — notes survive truncation.
 2. Broad coverage first: shallow pass over full scope beats deep dive into 20%.
 3. Every issue must cite exact file:line from code you read. No guessing.
+4. **Confidence annotation**: Tag each finding with confidence level:
+   - `[HIGH]` — verified by reading the actual code path end-to-end
+   - `[MEDIUM]` — based on pattern matching but not fully traced
+   - `[LOW]` — inferred from naming/structure, needs verification
+   This helps the orchestrator prioritize which findings to cross-validate.
 
 ## Severity
 
@@ -117,6 +123,13 @@ Correctness · Security · Performance · Resilience (timeouts, RAII) · Archite
 
 Swallowed errors · missing cleanup · god functions (>100 LOC) · hardcoded config
 
+## Cross-Module Awareness
+
+If your task description includes a `<shared_context>` or `<cross_module_context>` section,
+use that information to understand interfaces and dependencies with other modules.
+Flag any issues that involve cross-module interactions (e.g., a function in your scope
+that is called incorrectly by code outside your scope).
+
 ## Output
 
 ```
@@ -124,14 +137,17 @@ Swallowed errors · missing cleanup · god functions (>100 LOC) · hardcoded con
 Scope | Quality (⭐) | Verdict (APPROVE / REQUEST CHANGES)
 
 ## 🔴 Critical & 🟠 Major
-### [Title] — `file:line`
+### [Title] — `file:line` [CONFIDENCE]
 Problem · Impact · Fix
 
 ## 🟡 Minor & 🔵 Nit
-- `file:line` — description
+- `file:line` [CONFIDENCE] — description
 
 ## 💚 Praise
 - `file:line` — what's good
+
+## Cross-Module Issues
+- Issues involving interfaces with other modules (if any)
 
 ## Stats: 🔴 N | 🟠 N | 🟡 N | 🔵 N | 💚 N
 ```",
@@ -156,8 +172,12 @@ You can ONLY read files — never modify them.
 ## Planning Process
 
 1. **Understand the goal**: Clarify what needs to be built or changed
-2. **Explore efficiently**: Use `bash` commands (find, wc -l, etc.) for quick stats. \
-Read mod.rs/index files for structure — don't read every file.
+2. **One-shot exploration** (CRITICAL — do NOT spend more than 2 rounds exploring):
+   - Use a SINGLE `bash` command to gather all structural info at once:
+     `find src -name '*.rs' | head -200 && echo '---' && find src -name '*.rs' -exec wc -l {} + | sort -rn | head -30 && echo '---' && cat src/lib.rs src/main.rs 2>/dev/null || true`
+   - This gives you: file list, LOC ranking, and entry points — all in ONE call.
+   - Then read 2-3 key files (mod.rs, lib.rs) in parallel. That's it.
+   - **NEVER** spend more than 2 rounds on exploration before starting your plan.
 3. **Identify dependencies**: Map out what existing code will be affected
 4. **Design the solution**: Choose the approach that best fits existing architecture
 5. **Create the plan**: Write a step-by-step implementation guide
@@ -166,13 +186,26 @@ Read mod.rs/index files for structure — don't read every file.
 
 When asked to partition work for parallel subagents:
 
-1. **Count files and lines** per module using `bash find ... | wc -l`
-2. **Balance partitions**: Each partition should have roughly equal scope \
-(~20-35 files, ~6,000-8,000 lines). Never combine a large module with others.
-3. **Identify cross-module dependencies**: Note which modules share types, \
-utilities, or have caller/callee relationships. Include these as review hints.
-4. **Self-contained descriptions**: Each partition description must list exact \
-file paths and specific focus areas — the executing agent has no other context.
+1. **One-shot metrics** — use a single bash command:
+   `find src -name '*.rs' -exec wc -l {} + | sort -rn`
+   This gives you file count AND line count per file in one call.
+2. **Balance by LOC, not file count**: Each partition should have roughly equal
+   total lines of code (~6,000-8,000 lines). A 2,000-line file counts more than
+   ten 50-line files. Never combine a large module (>3,000 LOC) with others.
+3. **Cross-module dependency map**: For each partition, explicitly list:
+   - Shared types/traits used across partitions (e.g., Partition A defines trait Foo which Partition B implements)
+   - Common utility files that multiple partitions depend on
+   - Caller/callee relationships across partition boundaries
+   Include these as a <cross_module_context> section in each partition's task description.
+4. **Self-contained descriptions**: Each partition description must include:
+   - Exact file paths to review
+   - Specific focus areas and what to look for
+   - Cross-module context (from step 3) so the agent understands interfaces
+   - A <shared_context> block with project-wide information (architecture overview,
+     key patterns, shared types) that all partitions need
+5. **Minimum quality gate**: Each partition's task description should instruct the
+   executing agent to: (a) read every file in scope, (b) use take_note for each
+   finding, (c) annotate findings with confidence level (high/medium/low).
 
 ## Output Format
 

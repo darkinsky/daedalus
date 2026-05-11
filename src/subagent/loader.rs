@@ -170,6 +170,7 @@ impl SubagentLoader {
                         .unwrap_or_default(),
                     on_start: front_matter.on_start,
                     on_complete: front_matter.on_complete,
+                    shared_context: None,
                 });
             }
         }
@@ -190,6 +191,7 @@ impl SubagentLoader {
             isolation: IsolationMode::default(),
             on_start: None,
             on_complete: None,
+            shared_context: None,
         })
     }
 
