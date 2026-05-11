@@ -15,6 +15,7 @@
 
 use std::collections::VecDeque;
 
+use chrono::Local;
 use crossterm::style::{Attribute, Color, Stylize};
 
 use crate::tools::{truncate_chars, ToolEvent};
@@ -133,7 +134,7 @@ impl ToolEventFormatter {
 
     fn format_llm_response(
         &self,
-        _round: usize,
+        round: usize,
         reasoning: Option<&str>,
         content: &str,
         usage: Option<&crate::llm::TokenUsage>,
@@ -210,19 +211,20 @@ impl ToolEventFormatter {
         elapsed_ms: u64,
     ) -> Vec<String> {
         let mut lines = Vec::new();
+        let ts = Local::now().format("%H:%M:%S");
         let elapsed_str = format_elapsed(elapsed_ms);
 
         // Expanded thinking with up to 8 lines
         if let Some(r) = reasoning {
             if !r.is_empty() {
-                let line_count = r.lines().count();
-                let first_line = r.lines().next().unwrap_or("");
-                let preview = truncate_chars(first_line, 80);
+                lines.push(String::new());
                 lines.push(format!(
                     "  {} {} {}",
                     "💭".to_string(),
-                    format!("\"{}\"", preview).with(Color::DarkGrey),
-                    format!("({} lines)", line_count).with(Color::DarkGrey),
+                    format!("Thinking (round {})", round)
+                        .with(Color::DarkGrey)
+                        .attribute(Attribute::Italic),
+                    format!("[{} | {}]", ts, elapsed_str).with(Color::DarkGrey),
                 ));
                 let reasoning_lines: Vec<&str> = r.lines().collect();
                 let show_count = reasoning_lines.len().min(8);
@@ -246,15 +248,30 @@ impl ToolEventFormatter {
 
         // Expanded LLM output with up to 4 lines
         if !content.is_empty() {
-            let line_count = content.lines().count();
-            let first_line = content.lines().next().unwrap_or("");
-            let preview = truncate_chars(first_line, 80);
             lines.push(format!(
-                "  {} {} {}",
+                "  {} {}",
                 "📝".to_string(),
-                format!("\"{}\"", preview).with(Color::Grey),
-                format!("({} lines)", line_count).with(Color::DarkGrey),
+                format!("LLM output (round {})", round)
+                    .with(Color::White)
+                    .attribute(Attribute::Italic),
             ));
+            let content_lines: Vec<&str> = content.lines().collect();
+            let show_count = content_lines.len().min(4);
+            for line in &content_lines[..show_count] {
+                lines.push(format!(
+                    "  {}  {}",
+                    "│".with(Color::DarkGrey),
+                    truncate_chars(line, 120).with(Color::Grey),
+                ));
+            }
+            if content_lines.len() > 4 {
+                lines.push(format!(
+                    "  {}  {}",
+                    "│".with(Color::DarkGrey),
+                    format!("... ({} more lines)", content_lines.len() - 4)
+                        .with(Color::DarkGrey),
+                ));
+            }
         }
 
         // Token stats
@@ -266,8 +283,8 @@ impl ToolEventFormatter {
             };
             parts.push(format!("llm {}", elapsed_str));
             lines.push(format!(
-                "    {}",
-                parts.join(" · ").with(Color::DarkGrey),
+                "  {}",
+                format!("  {}", parts.join(" · ")).with(Color::DarkGrey),
             ));
         }
 
@@ -305,7 +322,7 @@ impl ToolEventFormatter {
     fn format_call_start(
         &mut self,
         tool_name: &str,
-        _source: &str,
+        source: &str,
         arguments: &serde_json::Value,
     ) -> FormattedOutput {
         let tag = self.next_start_tag();
@@ -445,7 +462,7 @@ impl ToolEventFormatter {
         agent_name: &str,
         success: bool,
         tool_rounds: usize,
-        _result_preview: &str,
+        result_preview: &str,
         usage: Option<&crate::llm::TokenUsage>,
         elapsed_ms: u64,
     ) -> Vec<String> {
