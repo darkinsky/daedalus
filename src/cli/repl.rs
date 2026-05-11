@@ -389,7 +389,7 @@ async fn handle_compact(agent: &mut dyn AgentMode, instruction: Option<&str>, ra
             println!(
                 "  {} {}",
                 "✓".with(Color::Green).attribute(Attribute::Bold),
-                message.with(Color::DarkGrey),
+                message.with(Color::Grey),
             );
             println!();
         }
@@ -427,7 +427,7 @@ pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
     let mut rl = Editor::with_config(config)?;
     rl.set_helper(Some(helper));
 
-    let prompt = format!("{} ", ">".with(Color::Cyan).attribute(Attribute::Bold));
+    let prompt = format!("{} ", ">".with(Color::Blue).attribute(Attribute::Bold));
 
     loop {
         let readline = rl.readline(&prompt);

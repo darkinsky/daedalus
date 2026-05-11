@@ -33,7 +33,7 @@ pub(in crate::cli) fn tools_list(agent: &dyn AgentMetadata) {
         println!(
             "    {}  {}",
             tool.name.with(Color::Cyan),
-            format!("({})", tool.source).with(Color::DarkGrey),
+            format!("({})", tool.source).with(Color::Grey),
         );
         if !tool.description.is_empty() {
             print_dim(&format!("      {}", tool.description));
@@ -99,7 +99,7 @@ pub(in crate::cli) fn agents_list(agent: &dyn AgentMetadata) {
         println!(
             "    {}  {}",
             info.name.as_str().with(Color::Cyan),
-            format!("({})", info.source).with(Color::DarkGrey),
+            format!("({})", info.source).with(Color::Grey),
         );
         if !info.description.is_empty() {
             let first_line = info.description.lines().next().unwrap_or("").trim();

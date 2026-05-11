@@ -112,7 +112,7 @@ fn emit_success(
                     eprintln!(
                         "{}",
                         format!("💭 Reasoning:\n{}", reasoning)
-                            .with(Color::DarkGrey)
+                            .with(Color::DarkCyan)
                     );
                     eprintln!();
                 }

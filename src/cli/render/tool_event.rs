@@ -165,7 +165,7 @@ impl StatusArea {
                 let summary_part = if summary.is_empty() {
                     String::new()
                 } else {
-                    format!("  {}", summary).with(Color::DarkGrey).to_string()
+                    format!("  {}", summary).with(Color::Grey).to_string()
                 };
                 format!(
                     "  {}  {} {}{}",
@@ -297,10 +297,9 @@ impl ToolEventFormatter {
                 lines.push(format!(
                     "  {} {} {}",
                     "💭".to_string(),
-                    format!("\"{}\"", preview).with(Color::DarkGrey),
-                    format!("({} lines)", line_count).with(Color::DarkGrey),
-                ));
-            }
+                    format!("\"{}\"" , preview).with(Color::DarkCyan),
+                    format!("({} lines)", line_count).with(Color::Grey),
+                ));            }
         }
 
         // Collapsed LLM output: single line with preview
@@ -326,7 +325,7 @@ impl ToolEventFormatter {
             parts.push(format!("llm {}", elapsed_str));
             lines.push(format!(
                 "    {}",
-                parts.join(" · ").with(Color::DarkGrey),
+                parts.join(" · ").with(Color::Grey),
             ));
         }
 
@@ -353,7 +352,7 @@ impl ToolEventFormatter {
                     "  {} {} {}",
                     "💭".to_string(),
                     format!("Thinking (round {})", round)
-                        .with(Color::DarkGrey)
+                        .with(Color::DarkBlue)
                         .attribute(Attribute::Italic),
                     format!("[{} | {}]", ts, elapsed_str).with(Color::DarkGrey),
                 ));
@@ -362,16 +361,16 @@ impl ToolEventFormatter {
                 for line in &reasoning_lines[..show_count] {
                     lines.push(format!(
                         "  {}  {}",
-                        "┊".with(Color::DarkGrey),
-                        truncate_chars(line, 120).with(Color::DarkGrey),
+                        "┊".with(Color::DarkBlue),
+                        truncate_chars(line, 120).with(Color::DarkCyan),
                     ));
                 }
                 if reasoning_lines.len() > 8 {
                     lines.push(format!(
                         "  {}  {}",
-                        "┊".with(Color::DarkGrey),
+                        "┊".with(Color::DarkBlue),
                         format!("... ({} more lines)", reasoning_lines.len() - 8)
-                            .with(Color::DarkGrey),
+                            .with(Color::Grey),
                     ));
                 }
             }
@@ -392,7 +391,7 @@ impl ToolEventFormatter {
                 lines.push(format!(
                     "  {}  {}",
                     "│".with(Color::DarkGrey),
-                    truncate_chars(line, 120).with(Color::Grey),
+                    truncate_chars(line, 120).with(Color::White),
                 ));
             }
             if content_lines.len() > 4 {
@@ -400,7 +399,7 @@ impl ToolEventFormatter {
                     "  {}  {}",
                     "│".with(Color::DarkGrey),
                     format!("... ({} more lines)", content_lines.len() - 4)
-                        .with(Color::DarkGrey),
+                        .with(Color::Grey),
                 ));
             }
         }
@@ -415,7 +414,7 @@ impl ToolEventFormatter {
             parts.push(format!("llm {}", elapsed_str));
             lines.push(format!(
                 "  {}",
-                format!("  {}", parts.join(" · ")).with(Color::DarkGrey),
+                format!("  {}", parts.join(" · ")).with(Color::Grey),
             ));
         }
 
@@ -436,14 +435,14 @@ impl ToolEventFormatter {
             vec![format!(
                 "  🔧 {} {}",
                 format!("Tool round {}", round)
-                    .with(Color::Cyan)
+                    .with(Color::Blue)
                     .attribute(Attribute::Bold),
                 format!("[{}]", ts).with(Color::DarkGrey),
             )]
         } else {
             vec![format!(
                 "  {} {}",
-                format!("── round {} ", round).with(Color::Cyan).attribute(Attribute::Bold),
+                format!("── round {} ", round).with(Color::Blue).attribute(Attribute::Bold),
                 "─".repeat(40).with(Color::DarkGrey),
             )]
         }
@@ -519,7 +518,7 @@ impl ToolEventFormatter {
                 icon.with(color),
                 tag_prefix.as_str().with(color).attribute(Attribute::Bold),
                 tool_name.with(Color::White),
-                format!("  ({} lines, {})", line_count, elapsed_str).with(Color::DarkGrey),
+                format!("  ({} lines, {})", line_count, elapsed_str).with(Color::Grey),
             )
         } else {
             let first_line = result_content.lines().next().unwrap_or("");
@@ -528,8 +527,8 @@ impl ToolEventFormatter {
                 icon.with(color),
                 tag_prefix.as_str().with(color).attribute(Attribute::Bold),
                 tool_name.with(color),
-                truncate_chars(first_line, 80).with(Color::DarkGrey),
-                format!("({})", elapsed_str).with(Color::DarkGrey),
+                truncate_chars(first_line, 80).with(Color::Grey),
+                format!("({})", elapsed_str).with(Color::Grey),
             )
         };
 
@@ -554,7 +553,7 @@ impl ToolEventFormatter {
             FormattedOutput::Lines(vec![
                 format!(
                     "  {}",
-                    format!("  {} tool call(s) completed in {} [{}]", tool_count, elapsed_str, ts).with(Color::DarkGrey),
+                    format!("  {} tool call(s) completed in {} [{}]", tool_count, elapsed_str, ts).with(Color::Grey),
                 ),
                 String::new(),
             ])
@@ -563,7 +562,7 @@ impl ToolEventFormatter {
             // before printing the round summary.
             let summary_line = format!(
                 "    {}",
-                format!("{} calls, {}", tool_count, elapsed_str).with(Color::DarkGrey),
+                format!("{} calls, {}", tool_count, elapsed_str).with(Color::Grey),
             );
             if prev > 0 {
                 FormattedOutput::StatusAreaUpdate {
@@ -592,7 +591,7 @@ impl ToolEventFormatter {
                         .attribute(Attribute::Bold),
                     "—".with(Color::DarkGrey),
                 ),
-                format!("    {}", preview.with(Color::DarkGrey)),
+                format!("    {}", preview.with(Color::Grey)),
                 String::new(),
             ]
         } else {
@@ -603,7 +602,7 @@ impl ToolEventFormatter {
                     .with(Color::Magenta)
                     .attribute(Attribute::Bold),
                 "—".with(Color::DarkGrey),
-                preview.with(Color::DarkGrey),
+                preview.with(Color::Grey),
             )]
         }
     }
@@ -635,11 +634,11 @@ impl ToolEventFormatter {
                 "  {} {} {}",
                 icon.with(color),
                 format!("Subagent '{}' completed", agent_name).with(color),
-                format!("({} tool rounds, {}{})", tool_rounds, elapsed_str, token_info).with(Color::DarkGrey),
+                format!("({} tool rounds, {}{})", tool_rounds, elapsed_str, token_info).with(Color::Grey),
             )];
             let preview = truncate_chars(result_preview, 120);
             if !preview.is_empty() {
-                lines.push(format!("    {}", preview.with(Color::DarkGrey)));
+                lines.push(format!("    {}", preview.with(Color::Grey)));
             }
             lines.push(String::new());
             lines
@@ -648,7 +647,7 @@ impl ToolEventFormatter {
                 "  {} {} {}",
                 icon.with(color),
                 format!("Subagent '{}'", agent_name).with(color),
-                format!("({} rounds, {}{})", tool_rounds, elapsed_str, token_info).with(Color::DarkGrey),
+                format!("({} rounds, {}{})", tool_rounds, elapsed_str, token_info).with(Color::Grey),
             )]
         }
     }

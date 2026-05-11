@@ -133,7 +133,7 @@ fn accumulate_usage<'a>(usages: impl Iterator<Item = Option<&'a TokenUsage>>) ->
 
 /// Print a dim/muted line to stdout (for secondary information).
 pub(super) fn print_dim(text: &str) {
-    println!("{}", text.with(Color::DarkGrey));
+    println!("{}", text.with(Color::Grey));
 }
 
 /// Print a key-value line with the key in dim and the value in the given color.
@@ -152,7 +152,7 @@ pub fn banner(agent: &dyn AgentMetadata) {
     println!();
     println!(
         "{}  {}",
-        "🏛️ Daedalus".with(Color::Cyan).attribute(Attribute::Bold),
+        "🏛️ Daedalus".with(Color::Blue).attribute(Attribute::Bold),
         format!("v{}", VERSION).with(Color::DarkGrey),
     );
     println!();
@@ -197,7 +197,7 @@ pub fn help() {
         println!(
             "    {}  {}",
             format!("{:<12}", cmd).with(Color::Cyan),
-            desc.with(Color::DarkGrey),
+            desc.with(Color::Grey),
         );
     }
     println!();
@@ -220,7 +220,7 @@ pub fn cost(cost: &SessionCost) {
     print_key_value("Requests:", &cost.requests().to_string(), Color::White);
     print_key_value("Prompt tokens:", &cost.prompt_tokens().to_string(), Color::White);
     print_key_value("Completion tokens:", &cost.completion_tokens().to_string(), Color::White);
-    print_key_value("Total tokens:", &cost.total_tokens().to_string(), Color::Cyan);
+    print_key_value("Total tokens:", &cost.total_tokens().to_string(), Color::Blue);
     if cost.subagent_invocations() > 0 {
         println!();
         println!(
@@ -233,7 +233,7 @@ pub fn cost(cost: &SessionCost) {
         print_key_value("Invocations:", &cost.subagent_invocations().to_string(), Color::White);
         print_key_value("Prompt tokens:", &cost.subagent_prompt_tokens().to_string(), Color::White);
         print_key_value("Completion tokens:", &cost.subagent_completion_tokens().to_string(), Color::White);
-        print_key_value("Total tokens:", &cost.subagent_total_tokens().to_string(), Color::Cyan);
+        print_key_value("Total tokens:", &cost.subagent_total_tokens().to_string(), Color::Blue);
         println!();
         print_key_value(
             "Grand total:",
@@ -250,7 +250,7 @@ pub fn cost(cost: &SessionCost) {
 pub fn model_info(agent: &dyn AgentMetadata) {
     println!();
     print_key_value("Provider:", agent.provider_name(), Color::White);
-    print_key_value("Model:", agent.model_name(), Color::Cyan);
+    print_key_value("Model:", agent.model_name(), Color::Blue);
     print_key_value("Mode:", agent.mode_name(), Color::White);
     if agent.has_tools() {
         print_key_value("Tools:", &format!("{} available", agent.tool_count()), Color::Green);
@@ -276,7 +276,7 @@ pub fn spinner() -> ProgressBar {
                 "⠋ ▊", "⠙ ▊", "⠹ ▊", "⠸ ▊", "⠼ ▊",
                 "⠴  ", "⠦  ", "⠧  ", "⠇  ", "⠏  ",
             ])
-            .template("  {spinner:.cyan} {msg} {elapsed:.dim}")
+            .template("  {spinner:.blue} {msg} {elapsed:.dim}")
             .expect("invalid spinner template"),
     );
     pb.set_message("Thinking…");
@@ -296,14 +296,14 @@ pub fn reasoning_content(reasoning: &str) {
     println!(
         "  {} {} {}",
         "💭".to_string(),
-        "Reasoning:".with(Color::DarkGrey).attribute(Attribute::Italic),
+        "Reasoning:".with(Color::DarkBlue).attribute(Attribute::Italic),
         format!("[{}]", ts).with(Color::DarkGrey),
     );
     for line in reasoning.lines() {
         println!(
             "  {}  {}",
-            "┊".with(Color::DarkGrey),
-            line.with(Color::DarkGrey),
+            "┊".with(Color::DarkBlue),
+            line.with(Color::DarkCyan),
         );
     }
 }
@@ -317,7 +317,7 @@ pub fn response(content: &str) {
     println!();
     println!(
         "  {} {}",
-        "🤖 Response".with(Color::Cyan).attribute(Attribute::Bold),
+        "🤖 Response".with(Color::Blue).attribute(Attribute::Bold),
         format!("[{}]", ts).with(Color::DarkGrey),
     );
     let rendered = skin.term_text(content);
@@ -345,7 +345,7 @@ pub fn response_footer(usage: Option<&TokenUsage>, elapsed: f64, context_window:
         println!();
         println!(
             "  {} {}",
-            parts.join(" · ").with(Color::DarkGrey),
+            parts.join(" · ").with(Color::Grey),
             format!("[{}]", ts).with(Color::DarkGrey),
         );
     }
@@ -437,7 +437,7 @@ pub fn turn_summary(
     println!(
         "  {} {}",
         "\u{1F4CA} Turn Summary"
-            .with(Color::Cyan)
+            .with(Color::Blue)
             .attribute(Attribute::Bold),
         format!("[{}]", ts).with(Color::DarkGrey),
     );
@@ -455,7 +455,7 @@ pub fn turn_summary(
         println!(
             "    {} {}",
             "Lead:".with(Color::White).attribute(Attribute::Bold),
-            parts.join(" \u{00b7} ").with(Color::DarkGrey),
+            parts.join(" \u{00b7} ").with(Color::Grey),
         );
     }
 
@@ -477,7 +477,7 @@ pub fn turn_summary(
             "    {} {} {}",
             icon,
             format!("{}:", sa.agent_name).with(Color::Magenta),
-            parts.join(" \u{00b7} ").with(Color::DarkGrey),
+            parts.join(" \u{00b7} ").with(Color::Grey),
         );
     }
 
@@ -514,7 +514,7 @@ pub fn turn_summary(
                     format_number(grand_prompt), format_number(grand_completion),
                     ctx_info, total_elapsed,
                 )
-                .with(Color::DarkGrey),
+                .with(Color::Grey),
             );
         }
     }

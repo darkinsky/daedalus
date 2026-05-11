@@ -13,7 +13,7 @@ pub fn stream_response_header() {
     println!();
     println!(
         "  {} {}",
-        "🤖 Response".with(Color::Cyan).attribute(Attribute::Bold),
+        "🤖 Response".with(Color::Blue).attribute(Attribute::Bold),
         format!("[{}]", ts).with(Color::DarkGrey),
     );
     // Print the indent prefix for the first line of streaming content
@@ -45,7 +45,7 @@ pub fn stream_text_chunk(text: &str) {
 /// Print a streaming reasoning chunk.
 pub fn stream_reasoning_chunk(text: &str) {
     use std::io::Write;
-    print!("{}", text.with(Color::DarkGrey));
+    print!("{}", text.with(Color::DarkCyan));
     let _ = std::io::stdout().flush();
 }
 
@@ -56,10 +56,10 @@ pub fn stream_reasoning_header() {
     println!(
         "  {} {} {}",
         "💭".to_string(),
-        "Reasoning:".with(Color::DarkGrey).attribute(Attribute::Italic),
+        "Reasoning:".with(Color::DarkBlue).attribute(Attribute::Italic),
         format!("[{}]", ts).with(Color::DarkGrey),
     );
-    print!("  {}  ", "┊".with(Color::DarkGrey));
+    print!("  {}  ", "┊".with(Color::DarkBlue));
     use std::io::Write;
     let _ = std::io::stdout().flush();
 }
