@@ -25,7 +25,7 @@ use once_cell::sync::Lazy;
 use tokio::fs;
 
 use super::BuiltinTool;
-use super::fs_utils::{get_optional_bool, get_required_string, resolve_path};
+use super::fs_utils::{get_optional_bool, get_required_string, resolve_path, EDITING_FILES};
 
 /// Maximum file size allowed for editing (10 MB).
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
@@ -33,17 +33,10 @@ const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
 /// Number of context lines to show around each change in the diff snippet.
 const DIFF_CONTEXT_LINES: usize = 3;
 
-/// Global set of files currently being edited (concurrency guard).
-///
-/// Prevents race conditions when the LLM issues parallel edit_file calls
-/// targeting the same file.
-static EDITING_FILES: Lazy<Mutex<HashSet<PathBuf>>> = Lazy::new(|| Mutex::new(HashSet::new()));
-
 /// Global set of files modified during this session (file history tracking).
 ///
 /// Used for context management — knowing which files are "dirty".
 static MODIFIED_FILES: Lazy<Mutex<HashSet<PathBuf>>> = Lazy::new(|| Mutex::new(HashSet::new()));
-
 /// Precise file editing via search-and-replace.
 pub struct EditFileTool;
 

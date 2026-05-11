@@ -169,12 +169,12 @@ impl Curator {
             let excess = section.bullets.len() - config.max_bullets_per_section;
 
             // Prefer evicting bullets below the retention threshold.
-            let below_threshold = section.bullets
+            let _below_threshold = section.bullets
                 .iter()
                 .take_while(|b| b.reinforcement_count < config.min_reinforcement_for_retention)
                 .count();
 
-            let to_evict = excess.max(below_threshold.min(excess));
+            let to_evict = excess; // Sort order ensures below-threshold bullets are evicted first.
             section.bullets.drain(..to_evict);
 
             tracing::debug!(

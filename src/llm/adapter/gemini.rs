@@ -31,7 +31,8 @@ impl ApiAdapter for GeminiAdapter {
         // Gemini uses Bearer token or x-goog-api-key
         headers.insert(
             "x-goog-api-key",
-            HeaderValue::from_str(api_key).unwrap(),
+            HeaderValue::from_bytes(api_key.as_bytes())
+                .expect("API key contains invalid header bytes"),
         );
         headers
     }

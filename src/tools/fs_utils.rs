@@ -168,6 +168,18 @@ pub fn format_size(bytes: u64) -> String {
 /// and can significantly slow down searches if traversed.
 pub const IGNORED_DIRS: &[&str] = &["node_modules", "target", "__pycache__", ".git"];
 
+// ── Shared file editing lock ──
+
+use std::collections::HashSet;
+use std::sync::Mutex;
+use once_cell::sync::Lazy;
+
+/// Global set of files currently being edited (concurrency guard).
+///
+/// Shared between `edit_file` and `multi_edit` to prevent race conditions
+/// when the LLM issues parallel edit operations on the same file.
+pub(crate) static EDITING_FILES: Lazy<Mutex<HashSet<PathBuf>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+
 #[cfg(test)]
 mod tests {
     use super::*;

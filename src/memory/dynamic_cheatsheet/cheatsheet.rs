@@ -478,17 +478,18 @@ impl DynamicCheatsheet {
 
         // Phase 1: Prefer evicting entries below the retention threshold.
         let threshold = self.config.min_reinforcement_for_retention;
-        let below_threshold = self.entries
+        let _below_threshold = self.entries
             .iter()
             .take_while(|e| e.reinforcement_count < threshold)
             .count();
 
         let excess = self.entries.len() - self.config.max_entries;
-        // Evict at most `excess` entries, preferring those below threshold.
-        let to_evict = excess.min(below_threshold).max(
-            // Phase 2: If below-threshold entries aren't enough, evict more.
-            excess,
-        );
+        // Phase 1: Evict entries below the retention threshold first.
+        // Phase 2: If below-threshold entries aren't enough, evict the
+        // remaining excess from the lowest-reinforcement entries.
+        let to_evict = excess; // Always evict exactly `excess` entries.
+        // The sort order ensures below-threshold entries are evicted first,
+        // since they appear at the front (lowest reinforcement_count).
         self.entries.drain(..to_evict);
 
         tracing::debug!(

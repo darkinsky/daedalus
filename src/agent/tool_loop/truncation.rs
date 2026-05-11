@@ -336,13 +336,25 @@ fn truncate_head_tail(content: &str, max_bytes: usize) -> String {
 
     let head = crate::tools::truncate_at_char_boundary(content, head_budget);
 
-    // Find the tail: start from the end, walk backwards to find a valid boundary
+    // Find the tail: start from the end, walk backwards to find a valid char boundary
     let tail_start = if content.len() > tail_budget {
         let candidate = content.len() - tail_budget;
-        // Find the next newline after candidate to avoid splitting a line
-        content[candidate..].find('\n')
-            .map(|pos| candidate + pos + 1)
-            .unwrap_or(candidate)
+        // Ensure candidate is on a valid UTF-8 char boundary to avoid panic
+        let safe_candidate = {
+            let mut pos = candidate;
+            while pos < content.len() && !content.is_char_boundary(pos) {
+                pos += 1;
+            }
+            pos
+        };
+        // Find the next newline after safe_candidate to avoid splitting a line
+        if safe_candidate < content.len() {
+            content[safe_candidate..].find('\n')
+                .map(|pos| safe_candidate + pos + 1)
+                .unwrap_or(safe_candidate)
+        } else {
+            safe_candidate
+        }
     } else {
         0
     };

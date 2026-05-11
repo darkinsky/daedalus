@@ -18,7 +18,7 @@ pub(crate) mod context_pressure;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -31,7 +31,7 @@ use crate::middleware::pipeline::ToolPipeline;
 use crate::tools::{ToolEvent, ToolEventCallback};
 use crate::agent_tracing::{TracingHook, TraceContext};
 
-use super::duplicate_detector::{annotate_responses, DuplicateAction, DuplicateDetector};
+use super::duplicate_detector::{annotate_responses, fingerprint, DuplicateAction, DuplicateDetector};
 
 // Re-export public types from submodules.
 pub use truncation::TruncationConfig;
@@ -145,6 +145,7 @@ pub async fn run_tool_loop(
     let mut total_usage = TokenUsage::default();
     let mut last_reasoning: Option<String> = None;
     let mut duplicate_detector = DuplicateDetector::new();
+    let mut read_only_cache = ReadOnlyCache::new();
 
     // ── Session-level tracking (never truncated) ──
     let mut files_read: HashSet<String> = HashSet::new();
@@ -237,10 +238,27 @@ pub async fn run_tool_loop(
         );
 
         let response = if use_streaming {
-            stream_llm_response(llm, ctx, &truncated_history).await?
+            match stream_llm_response(llm, ctx, &truncated_history).await {
+                Ok(r) => r,
+                Err(e) => {
+                    // Finish LLM span with error before propagating
+                    if let Some(span) = llm_span {
+                        span.finish_error(e.to_string()).await;
+                    }
+                    return Err(e);
+                }
+            }
         } else {
-            llm.chat_with_tools(ctx.messages, ctx.tools, &truncated_history, None)
-                .await?
+            match llm.chat_with_tools(ctx.messages, ctx.tools, &truncated_history, None).await {
+                Ok(r) => r,
+                Err(e) => {
+                    // Finish LLM span with error before propagating
+                    if let Some(span) = llm_span {
+                        span.finish_error(e.to_string()).await;
+                    }
+                    return Err(e);
+                }
+            }
         };
 
         let llm_elapsed_ms = llm_start.elapsed().as_millis() as u64;
@@ -298,18 +316,24 @@ pub async fn run_tool_loop(
         let tool_calls = response.tool_calls;
         let tool_start = Instant::now();
 
-        // Execute all tool calls
-        let mut responses = if let Some(pipeline) = ctx.tool_pipeline {
-            let trace_ctx = ctx.tracing_hook.map(|h| h.context_arc());
-            execute_round_via_pipeline(
-                ctx.executor, &tool_calls, pipeline, trace_ctx, round_number,
-            ).await
-        } else {
-            execute_round_direct(ctx.executor, &tool_calls, ctx.on_tool_event, ctx.tracing_hook).await
-        };
+        // Invalidate read-only cache if any write tool is in this round
+        if tool_calls.iter().any(|tc| is_write_tool(&tc.function_name)) {
+            read_only_cache.invalidate();
+        }
 
-        // Check for runaway duplicate calls
-        match duplicate_detector.record_round(&tool_calls) {
+        // Execute all tool calls (with read-only cache for eligible tools)
+        let (mut responses, cache_hits) = execute_with_cache(
+            ctx, &tool_calls, &mut read_only_cache, round_number,
+        ).await;
+
+        // Check for runaway duplicate calls.
+        // Exclude cache-hit calls from duplicate detection — they are zero-cost
+        // and should not count toward the "LLM is stuck" streak.
+        let non_cached_calls: Vec<ToolCall> = tool_calls.iter().enumerate()
+            .filter(|(i, _)| !cache_hits.contains(i))
+            .map(|(_, tc)| tc.clone())
+            .collect();
+        match duplicate_detector.record_round(&non_cached_calls) {
             DuplicateAction::Warn(warnings) => {
                 for w in &warnings {
                     tracing::warn!(
@@ -687,4 +711,142 @@ impl ToolNext for ToolExecutorCore {
     async fn run(&self, request: ToolRequest) -> ToolResponse {
         self.executor.execute(&request.call).await
     }
+}
+
+// ── Read-only tool result cache ──
+
+/// Tools whose results are safe to cache (read-only, deterministic within a session).
+const CACHEABLE_TOOLS: &[&str] = &[
+    "list_directory",
+    "search_files",
+    "get_file_info",
+];
+
+/// Tools that modify the filesystem or state, triggering cache invalidation.
+fn is_write_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "edit_file" | "multi_edit" | "write_file" | "bash"
+    )
+}
+
+/// Lightweight read-only tool result cache.
+///
+/// Caches results from deterministic read-only tools (like `list_directory`)
+/// to avoid redundant calls when the LLM requests the same information
+/// multiple times within a session.
+///
+/// Cache is invalidated when any write tool (`edit_file`, `write_file`,
+/// `bash`) is executed, since those may change the filesystem state.
+struct ReadOnlyCache {
+    /// fingerprint → cached result content.
+    entries: HashMap<String, String>,
+    /// Number of cache hits (for logging).
+    hits: usize,
+}
+
+impl ReadOnlyCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            hits: 0,
+        }
+    }
+
+    /// Check if a tool call has a cached result.
+    fn get(&self, call: &ToolCall) -> Option<&String> {
+        if !CACHEABLE_TOOLS.contains(&call.function_name.as_str()) {
+            return None;
+        }
+        let fp = fingerprint(call);
+        self.entries.get(&fp)
+    }
+
+    /// Store a successful tool result in the cache.
+    fn put(&mut self, call: &ToolCall, content: &str) {
+        if !CACHEABLE_TOOLS.contains(&call.function_name.as_str()) {
+            return;
+        }
+        let fp = fingerprint(call);
+        self.entries.insert(fp, content.to_string());
+    }
+
+    /// Invalidate all cached entries (called when a write tool executes).
+    fn invalidate(&mut self) {
+        if !self.entries.is_empty() {
+            tracing::debug!(
+                entries = self.entries.len(),
+                "Read-only cache invalidated due to write operation"
+            );
+            self.entries.clear();
+        }
+    }
+}
+
+/// Execute tool calls with read-only caching.
+///
+/// For cacheable read-only tools, checks the cache first. On cache hit,
+/// returns the cached result immediately (with a hint appended so the LLM
+/// knows it's seeing cached data). On cache miss, executes normally and
+/// stores the result for future use.
+///
+/// Non-cacheable tools are always executed normally.
+/// Returns (responses, cache_hit_indices) — the set of indices that were served from cache.
+async fn execute_with_cache(
+    ctx: &LoopContext<'_>,
+    tool_calls: &[ToolCall],
+    cache: &mut ReadOnlyCache,
+    round_number: usize,
+) -> (Vec<ToolResponse>, HashSet<usize>) {
+    // Partition tool calls into cached hits and calls that need execution.
+    let mut results: Vec<Option<ToolResponse>> = vec![None; tool_calls.len()];
+    let mut to_execute: Vec<(usize, &ToolCall)> = Vec::new();
+    let mut hit_indices: HashSet<usize> = HashSet::new();
+
+    for (i, tc) in tool_calls.iter().enumerate() {
+        if let Some(cached_content) = cache.get(tc).cloned() {
+            cache.hits += 1;
+            hit_indices.insert(i);
+            tracing::debug!(
+                tool = %tc.function_name,
+                cache_hits = cache.hits,
+                round = round_number,
+                "Read-only cache hit — returning cached result"
+            );
+            let content = format!(
+                "{}\n\n[cached: this is the same result as a previous identical call]",
+                &cached_content
+            );
+            results[i] = Some(ToolResponse::new(&tc.call_id, content));
+        } else {
+            to_execute.push((i, tc));
+        }
+    }
+
+    // If all calls were cache hits, return immediately.
+    if to_execute.is_empty() {
+        return (results.into_iter().map(|r| r.unwrap()).collect(), hit_indices);
+    }
+
+    // Execute non-cached calls through the normal pipeline.
+    let uncached_calls: Vec<ToolCall> = to_execute.iter().map(|(_, tc)| (*tc).clone()).collect();
+    let executed_responses = if let Some(pipeline) = ctx.tool_pipeline {
+        let trace_ctx = ctx.tracing_hook.map(|h| h.context_arc());
+        execute_round_via_pipeline(
+            ctx.executor, &uncached_calls, pipeline, trace_ctx, round_number,
+        ).await
+    } else {
+        execute_round_direct(ctx.executor, &uncached_calls, ctx.on_tool_event, ctx.tracing_hook).await
+    };
+
+    // Merge executed results back and populate cache.
+    for ((original_idx, tc), resp) in to_execute.into_iter().zip(executed_responses.into_iter()) {
+        // Only cache successful results from cacheable tools.
+        if resp.success {
+            cache.put(tc, &resp.content);
+        }
+        results[original_idx] = Some(resp);
+    }
+
+    (results.into_iter().map(|r| r.unwrap()).collect(), hit_indices)
 }

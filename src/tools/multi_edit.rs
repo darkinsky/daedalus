@@ -22,17 +22,13 @@ use once_cell::sync::Lazy;
 use tokio::fs;
 
 use super::BuiltinTool;
-use super::fs_utils::{get_required_string, resolve_path};
+use super::fs_utils::{get_required_string, resolve_path, EDITING_FILES};
 
 /// Maximum file size allowed for editing (10 MB).
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
 
 /// Number of context lines to show around each change in the diff snippet.
 const DIFF_CONTEXT_LINES: usize = 3;
-
-/// Global set of files currently being edited (concurrency guard).
-/// Shared with edit_file via the same mechanism.
-static EDITING_FILES: Lazy<Mutex<HashSet<PathBuf>>> = Lazy::new(|| Mutex::new(HashSet::new()));
 
 /// Global set of files modified during this session.
 static MODIFIED_FILES: Lazy<Mutex<HashSet<PathBuf>>> = Lazy::new(|| Mutex::new(HashSet::new()));

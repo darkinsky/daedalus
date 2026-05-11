@@ -30,7 +30,8 @@ impl ApiAdapter for AnthropicAdapter {
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(
             "x-api-key",
-            HeaderValue::from_str(api_key).unwrap(),
+            HeaderValue::from_bytes(api_key.as_bytes())
+                .expect("API key contains invalid header bytes"),
         );
         headers.insert(
             "anthropic-version",

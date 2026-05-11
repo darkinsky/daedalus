@@ -54,7 +54,10 @@ impl LangfuseCollector {
             host,
             public_key,
             secret_key,
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
         }
     }
 

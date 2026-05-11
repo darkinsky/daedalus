@@ -177,26 +177,26 @@ impl<'a> CodingPromptBuilder<'a> {
         // 4. Core behavioral rules (agentic coding focus)
         parts.push(sections::rules::build(self.inputs.tools));
 
+        // 8. Critical reminders (last = highest salience via recency bias)
+        parts.push(sections::reminders::build());
+
         // ═══ CACHE BOUNDARY ═══
         parts.push("<!-- SYSTEM_PROMPT_DYNAMIC_BOUNDARY -->".to_string());
 
         // ═══ DYNAMIC SUFFIX (changes per session/turn) ═══
 
-        // 5. Environment context
+        // 9. Environment context
         parts.push(sections::environment::build(self.environment.as_ref()));
 
-        // 6. Project rules (shared helper from PromptInputs)
+        // 10. Project rules (shared helper from PromptInputs)
         if let Some(rules_section) = self.inputs.project_rules_section() {
             parts.push(rules_section);
         }
 
-        // 7. Memory context (shared helper from PromptInputs)
+        // 11. Memory context (shared helper from PromptInputs)
         if let Some(memory_section) = self.inputs.memory_section() {
             parts.push(memory_section);
         }
-
-        // 8. Critical reminders (last = highest salience via recency bias)
-        parts.push(sections::reminders::build());
 
         parts.join("\n\n")
     }

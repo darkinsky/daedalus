@@ -171,9 +171,11 @@ impl SubagentRunner {
         let mut config = self.parent_llm_config.clone();
 
         if let Some(ref model) = definition.model {
-            // Map shorthand names to full model IDs.
+            // Map shorthand names to full model IDs, aware of the current adapter.
             // Returns None for "inherit" — leave config.model unchanged (use parent).
-            if let Some(resolved) = Self::resolve_model_name(model) {
+            let adapter = config.adapter_kind.as_deref();
+            let base_url = config.api_base.as_deref();
+            if let Some(resolved) = Self::resolve_model_name(model, adapter, base_url) {
                 config.model = resolved;
                 tracing::info!(
                     agent = %definition.name,
@@ -210,19 +212,99 @@ impl SubagentRunner {
 
     /// Resolve shorthand model names to full model identifiers.
     ///
-    /// Supports Claude Code-style shorthands: "haiku", "sonnet", "opus".
-    /// Full model IDs are passed through unchanged.
+    /// Maps abstract performance tiers ("fast", "default", "strong") and
+    /// legacy Claude shorthands ("haiku", "sonnet", "opus") to concrete
+    /// model IDs based on the current adapter/provider.
     ///
-    /// "inherit" means use the parent's model (caller is responsible for not
-    /// overriding `config.model` in this case).
-    fn resolve_model_name(name: &str) -> Option<String> {
-        match name.to_lowercase().as_str() {
-            "haiku" => Some("claude-3-5-haiku-20241022".to_string()),
-            "sonnet" => Some("claude-sonnet-4-20250514".to_string()),
-            "opus" => Some("claude-opus-4-20250514".to_string()),
-            "inherit" => None, // Signal: keep parent config unchanged
-            _ => Some(name.to_string()), // Full model ID passed through
+    /// Supported shorthands:
+    /// - "fast" / "haiku"  → lightweight model for simple tasks
+    /// - "default" / "sonnet" → balanced model for most tasks
+    /// - "strong" / "opus" → most capable model for complex tasks
+    /// - "inherit" → use parent's model (returns None)
+    /// - anything else → passed through as-is (assumed to be a full model ID)
+    fn resolve_model_name(name: &str, adapter_kind: Option<&str>, base_url: Option<&str>) -> Option<String> {
+        let normalized = name.to_lowercase();
+        let tier = match normalized.as_str() {
+            "fast" | "haiku" => "fast",
+            "default" | "sonnet" => "default",
+            "strong" | "opus" => "strong",
+            "inherit" => return None,
+            _ => return Some(name.to_string()),
+        };
+
+        // Determine the effective provider from adapter_kind first, then
+        // fall back to inferring from base_url. This fixes the case where
+        // DeepSeek uses the OpenAI adapter (adapter_kind=None or "openai")
+        // but should map shorthands to DeepSeek models, not Claude.
+        let provider = Self::infer_provider(adapter_kind, base_url);
+        let model = match provider.as_str() {
+            "deepseek" => match tier {
+                "fast" => "deepseek-v4-flash",
+                "default" | "strong" => "deepseek-v4-pro",
+                _ => unreachable!(),
+            },
+            "gemini" | "google" => match tier {
+                "fast" => "gemini-2.5-flash",
+                "default" => "gemini-2.5-pro",
+                "strong" => "gemini-2.5-pro",
+                _ => unreachable!(),
+            },
+            "venus" | "anthropic" => match tier {
+                "fast" => "claude-3-5-haiku-20241022",
+                "default" => "claude-sonnet-4-20250514",
+                "strong" => "claude-opus-4-20250514",
+                _ => unreachable!(),
+            },
+            // Unknown provider → default to Claude models (safe fallback)
+            _ => match tier {
+                "fast" => "claude-3-5-haiku-20241022",
+                "default" => "claude-sonnet-4-20250514",
+                "strong" => "claude-opus-4-20250514",
+                _ => unreachable!(),
+            },
+        };
+
+        Some(model.to_string())
+    }
+
+    /// Infer the provider name from adapter_kind and base_url.
+    ///
+    /// Priority: explicit adapter_kind > base_url domain inference.
+    /// This handles the common case where DeepSeek uses the OpenAI adapter
+    /// (adapter_kind is None or "openai") but the base_url reveals the
+    /// actual provider.
+    fn infer_provider(adapter_kind: Option<&str>, base_url: Option<&str>) -> String {
+        // 1. If adapter_kind explicitly identifies a non-OpenAI provider, use it.
+        if let Some(kind) = adapter_kind {
+            let lower = kind.to_lowercase();
+            match lower.as_str() {
+                "deepseek" | "anthropic" | "venus" | "gemini" | "google" => {
+                    return lower;
+                }
+                // "openai" or unknown → fall through to URL inference
+                _ => {}
+            }
         }
+
+        // 2. Infer from base_url domain.
+        if let Some(url) = base_url {
+            let url_lower = url.to_lowercase();
+            if url_lower.contains("deepseek.com") {
+                return "deepseek".to_string();
+            }
+            if url_lower.contains("anthropic.com") {
+                return "anthropic".to_string();
+            }
+            if url_lower.contains("googleapis.com") || url_lower.contains("google.com") {
+                return "gemini".to_string();
+            }
+            if url_lower.contains("venus.oa.com") {
+                return "venus".to_string();
+            }
+        }
+
+        // 3. Default: assume OpenAI-compatible (Claude models as safe default)
+        "openai".to_string()
     }
 
     /// Build a filtered `BuiltinToolRegistry` based on the subagent's tool config.

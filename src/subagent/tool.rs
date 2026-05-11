@@ -343,7 +343,7 @@ pub fn build_tool_definition(registry: &SubagentRegistry) -> Option<serde_json::
                     },
                     "model": {
                         "type": "string",
-                        "description": "Optional: override the model for this task. Use 'haiku' for simple exploration/listing tasks, 'sonnet' for complex reasoning/review tasks. If not specified, uses the subagent's configured model.",
+                        "description": "Optional: override the model for this task. Use 'fast' for simple exploration/listing tasks (maps to the provider's lightweight model), 'default' for balanced tasks, 'strong' for complex reasoning/review tasks (maps to the provider's most capable model). If not specified, inherits the parent agent's model.",
                     }
                 },
                 "required": ["agent_name", "task"],

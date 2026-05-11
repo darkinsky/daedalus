@@ -55,9 +55,21 @@ impl BuiltinTool for SearchFilesTool {
             anyhow::bail!("'{}' is not a directory", path.display());
         }
 
+        // Strip leading glob wildcard characters that LLMs commonly add.
+        // e.g., "*.rs" → ".rs", "**/*.py" → ".py"
         let pattern_lower = pattern.to_lowercase();
+        let pattern_clean = pattern_lower
+            .trim_start_matches(|c: char| c == '*' || c == '?')
+            .trim_start_matches('/')
+            .trim_start_matches(|c: char| c == '*' || c == '?');
+        // If stripping left nothing useful, fall back to the original
+        let pattern_clean = if pattern_clean.is_empty() {
+            pattern_lower.as_str()
+        } else {
+            pattern_clean
+        };
         let mut results = Vec::new();
-        search_recursive(&path, &pattern_lower, max_results, &mut results).await?;
+        search_recursive(&path, pattern_clean, max_results, &mut results).await?;
 
         if results.is_empty() {
             return Ok(format!(

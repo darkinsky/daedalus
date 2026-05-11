@@ -75,7 +75,10 @@ impl Retriever {
             embedder,
             config: config.clone(),
             chroma_url: config.chroma_url.clone(),
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             collection_name,
         }
     }

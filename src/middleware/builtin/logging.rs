@@ -55,15 +55,22 @@ impl TurnMiddleware for LoggingTurnMiddleware {
 
         // ── Before: log request ──
         let llm_input = format_messages_for_log(&request.messages);
+        // Log full LLM input at DEBUG level only to prevent sensitive data leakage.
+        tracing::debug!(
+            session_id = %self.session_id,
+            request_id = request_id,
+            llm_input = llm_input.as_str(),
+            "LLM request: full message context (DEBUG)"
+        );
+        let user_input_preview = truncate_at_char_boundary(request.user_input, 500);
         tracing::info!(
             session_id = %self.session_id,
             request_id = request_id,
             provider = %self.provider,
             model = %self.model,
             role = "user",
-            message = request.user_input,
+            message = &*user_input_preview,
             message_count = request.messages.len(),
-            llm_input = llm_input.as_str(),
             "LLM request: user input"
         );
 
@@ -109,14 +116,27 @@ impl LoggingTurnMiddleware {
             );
         }
 
+        // Truncate content for INFO level to prevent sensitive data leakage.
+        // Full content is available at DEBUG level.
+        let content_preview = truncate_at_char_boundary(&response.content, 500);
+        let is_truncated = response.content.len() > 500;
+        if is_truncated {
+            tracing::debug!(
+                session_id = %session_id,
+                request_id = request_id,
+                full_content = response.content.as_str(),
+                "LLM response: full content (DEBUG)"
+            );
+        }
         tracing::info!(
             session_id = %session_id,
             request_id = request_id,
             provider = %provider,
             model = %model,
             role = "assistant",
-            message = response.content.as_str(),
+            message = &*content_preview,
             content_len = response.content.len(),
+            content_truncated = is_truncated,
             has_reasoning = response.reasoning_content.as_ref().map_or(false, |r| !r.is_empty()),
             reasoning_len = response.reasoning_content.as_ref().map_or(0, |r| r.len()),
             tool_call_count = response.tool_calls.len(),

@@ -26,7 +26,8 @@ impl ApiAdapter for OpenAiAdapter {
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(
             AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", api_key)).unwrap(),
+            HeaderValue::from_bytes(format!("Bearer {}", api_key).as_bytes())
+                .expect("API key contains invalid header bytes"),
         );
         headers
     }
