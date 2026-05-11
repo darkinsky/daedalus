@@ -184,25 +184,55 @@ fn build_tool_event_callback(
         };
         match output {
             FormattedOutput::InlineProgress(line) => {
-                // Print without newline — will be overwritten by ToolCallComplete
+                // Print without newline — will be overwritten later
                 use std::io::Write;
-                // Clear the line first in case the new line is shorter
                 print!("\r\x1B[2K{}", line);
                 let _ = std::io::stdout().flush();
             }
-            FormattedOutput::Lines(lines) => {
-                // In compact mode, ToolCallComplete overwrites the inline progress line.
-                // In verbose mode, there's no pending inline, so just print normally.
-                let should_overwrite_first = matches!(event, ToolEvent::ToolCallComplete { .. })
-                    && !crate::cli::is_verbose();
-                for (i, line) in lines.iter().enumerate() {
-                    if should_overwrite_first && i == 0 {
-                        // Overwrite the inline progress line
-                        print!("\r\x1B[2K{}", line);
-                        println!();
-                    } else {
-                        println!("{}", line);
+            FormattedOutput::StatusAreaUpdate {
+                graduated_lines,
+                active_lines,
+                prev_area_lines,
+            } => {
+                // Bazel-style multi-line status area refresh.
+                //
+                // The status area is a block of N lines at the bottom of
+                // the output. On each update we:
+                //   1. Move the cursor to the start of the previous status area
+                //   2. Clear those lines
+                //   3. Print graduated (completed) lines — these are permanent
+                //   4. Print new active (in-progress) lines — these will be
+                //      erased on the next update
+                //
+                // The last active line is printed *with* a newline (println!)
+                // to keep cursor tracking simple. `rendered_lines` in StatusArea
+                // always equals the number of println! calls for active lines.
+                use std::io::Write;
+                if prev_area_lines > 0 {
+                    // Move cursor to the beginning of the previous status area.
+                    // Each previous active line was printed with println! (has \n),
+                    // so we move up `prev_area_lines` lines.
+                    print!("\x1B[{}A", prev_area_lines);
+                    for _ in 0..prev_area_lines {
+                        print!("\x1B[2K\n");
                     }
+                    // Move back up to where we started clearing
+                    print!("\x1B[{}A", prev_area_lines);
+                }
+                // Print graduated lines (permanent — these won't be erased)
+                for line in &graduated_lines {
+                    println!("{}", line);
+                }
+                // Print active lines (refreshable status area)
+                // All lines use println! so cursor tracking is straightforward.
+                for line in &active_lines {
+                    println!("{}", line);
+                }
+                let _ = std::io::stdout().flush();
+            }
+            FormattedOutput::Lines(lines) => {
+                for line in &lines {
+                    println!("{}", line);
                 }
             }
         }

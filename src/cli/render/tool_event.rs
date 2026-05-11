@@ -6,9 +6,12 @@
 //!
 //! ## Output modes
 //!
-//! - **Compact** (default): Tool calls use inline refresh — `ToolCallStart`
-//!   emits a single line without a trailing newline, and `ToolCallComplete`
-//!   overwrites it via `\r`. Thinking/LLM output collapsed to single lines.
+//! - **Compact** (default): Tool calls use a **multi-line status area** that
+//!   refreshes in-place (like bazel's build status). `ToolCallStart` adds a
+//!   line to the status area; `ToolCallComplete` removes it and "graduates"
+//!   the completed line above the refreshable region. The status area is
+//!   erased and redrawn using ANSI cursor-up (`\x1B[nA`) + clear-line
+//!   (`\x1B[2K`) sequences. Thinking/LLM output collapsed to single lines.
 //! - **Verbose** (`--verbose` / `DAEDALUS_VERBOSE=1`): Full multi-line output
 //!   with expanded thinking, tool argument details, diff previews, and
 //!   per-round token statistics.
@@ -25,16 +28,32 @@ use super::summarize::{edit_diff_preview, summarize_tool_args};
 /// Output produced by the formatter for a single event.
 ///
 /// Most events produce `Lines` (printed with `println!`). In compact mode,
-/// tool call starts produce `InlineProgress` — a single line printed with
-/// `print!` (no trailing newline) so the subsequent `ToolCallComplete` can
-/// overwrite it via `\r`.
+/// tool calls use `StatusAreaUpdate` — a multi-line region that is redrawn
+/// in-place using ANSI cursor movement (like bazel's build status area).
 pub(in crate::cli) enum FormattedOutput {
     /// Normal lines to print with `println!`.
     Lines(Vec<String>),
     /// A single in-progress line to print with `print!` (no trailing newline).
-    /// Only used in compact mode. The caller should `\r`-overwrite it when
-    /// the matching Complete arrives.
+    /// Only used in compact mode for non-tool events that need inline display.
+    #[allow(dead_code)]
     InlineProgress(String),
+    /// Multi-line status area update (compact mode only).
+    ///
+    /// The caller should erase the previous status area (using `prev_area_lines`
+    /// to know how many lines to move up and clear), then print the new lines.
+    /// Completed tool lines are "graduated" — printed permanently above the
+    /// status area so they don't get erased on the next update.
+    StatusAreaUpdate {
+        /// Lines that have just completed and should be printed permanently
+        /// (above the refreshable area). These are "graduated" from the status.
+        graduated_lines: Vec<String>,
+        /// Current in-progress tool lines (the refreshable status area).
+        /// Printed without final newline on the last line if `active_count > 0`.
+        active_lines: Vec<String>,
+        /// How many terminal lines the *previous* status area occupied.
+        /// The caller uses this to move the cursor up and erase before reprinting.
+        prev_area_lines: usize,
+    },
 }
 
 /// Render a tool-execution event into fully styled terminal lines.
@@ -45,6 +64,9 @@ pub(super) fn format_tool_event_lines(event: &ToolEvent) -> Vec<String> {
     match ToolEventFormatter::new().format(event) {
         FormattedOutput::Lines(lines) => lines,
         FormattedOutput::InlineProgress(line) => vec![line],
+        FormattedOutput::StatusAreaUpdate { graduated_lines, active_lines, .. } => {
+            [graduated_lines, active_lines].concat()
+        }
     }
 }
 
@@ -66,6 +88,95 @@ pub(in crate::cli) struct ToolEventFormatter {
     /// Whether the last output was an InlineProgress (no trailing newline).
     /// Used to know if we need to print a newline before the next output.
     pub(in crate::cli) has_pending_inline: bool,
+    /// Status area state for compact mode multi-line refresh.
+    status_area: StatusArea,
+}
+
+/// Tracks the in-place refreshable status area for compact mode.
+///
+/// Models a bazel-like status region at the bottom of the terminal output:
+/// completed tools "graduate" upward as permanent lines, while in-progress
+/// tools occupy a refreshable area that is redrawn on each event.
+struct StatusArea {
+    /// Currently active (in-progress) tools: (tag, tool_name, summary).
+    active: Vec<(String, String, String)>,
+    /// Number of terminal lines the status area occupied on the last render.
+    /// Used to calculate how far to move the cursor up when erasing.
+    rendered_lines: usize,
+}
+
+impl StatusArea {
+    fn new() -> Self {
+        Self {
+            active: Vec::new(),
+            rendered_lines: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.active.clear();
+        self.rendered_lines = 0;
+    }
+
+    /// Add an active tool and return a StatusAreaUpdate.
+    fn add_active(
+        &mut self,
+        tag: String,
+        tool_name: String,
+        summary: String,
+    ) -> FormattedOutput {
+        let prev = self.rendered_lines;
+        self.active.push((tag, tool_name, summary));
+        let active_lines = self.render_active_lines();
+        self.rendered_lines = active_lines.len();
+        FormattedOutput::StatusAreaUpdate {
+            graduated_lines: vec![],
+            active_lines,
+            prev_area_lines: prev,
+        }
+    }
+
+    /// Complete a tool (by tag) and return a StatusAreaUpdate with the
+    /// completed line graduated.
+    fn complete_tool(
+        &mut self,
+        tag: &str,
+        completed_line: String,
+    ) -> FormattedOutput {
+        let prev = self.rendered_lines;
+        // Remove the matching active entry
+        if let Some(pos) = self.active.iter().position(|(t, _, _)| t == tag) {
+            self.active.remove(pos);
+        }
+        let active_lines = self.render_active_lines();
+        self.rendered_lines = active_lines.len();
+        FormattedOutput::StatusAreaUpdate {
+            graduated_lines: vec![completed_line],
+            active_lines,
+            prev_area_lines: prev,
+        }
+    }
+
+    /// Render the current active tools as styled lines.
+    fn render_active_lines(&self) -> Vec<String> {
+        self.active
+            .iter()
+            .map(|(tag, tool_name, summary)| {
+                let summary_part = if summary.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {}", summary).with(Color::DarkGrey).to_string()
+                };
+                format!(
+                    "  {}  {} {}{}",
+                    "▸".with(Color::Yellow),
+                    tag.as_str().with(Color::Yellow).attribute(Attribute::Bold),
+                    tool_name.as_str().with(Color::White).attribute(Attribute::Bold),
+                    summary_part,
+                )
+            })
+            .collect()
+    }
 }
 
 impl ToolEventFormatter {
@@ -75,6 +186,7 @@ impl ToolEventFormatter {
             next_index: 0,
             pending_tags: VecDeque::new(),
             has_pending_inline: false,
+            status_area: StatusArea::new(),
         }
     }
 
@@ -85,16 +197,16 @@ impl ToolEventFormatter {
 
     /// Render a single event, updating internal numbering state.
     pub(in crate::cli) fn format(&mut self, event: &ToolEvent) -> FormattedOutput {
-        match event {
+        let output = match event {
             ToolEvent::RoundStart { round } => FormattedOutput::Lines(self.format_round_start(*round)),
             ToolEvent::ToolCallStart { tool_name, source, arguments } => {
                 self.format_call_start(tool_name, source, arguments)
             }
             ToolEvent::ToolCallComplete { tool_name, success, result_content, elapsed_ms } => {
-                FormattedOutput::Lines(self.format_call_complete(tool_name, *success, result_content, *elapsed_ms))
+                self.format_call_complete(tool_name, *success, result_content, *elapsed_ms)
             }
             ToolEvent::RoundComplete { tool_count, elapsed_ms } => {
-                FormattedOutput::Lines(Self::format_round_complete(*tool_count, *elapsed_ms))
+                self.format_round_complete(*tool_count, *elapsed_ms)
             }
             ToolEvent::LlmResponse { round, reasoning, content, usage, elapsed_ms } => {
                 FormattedOutput::Lines(self.format_llm_response(*round, reasoning.as_deref(), content, usage.as_ref(), *elapsed_ms))
@@ -118,6 +230,25 @@ impl ToolEventFormatter {
                         .with(Color::DarkGrey),
                 )])
             }
+        };
+
+        // If the output is `Lines` but there's an active status area,
+        // convert to `StatusAreaUpdate` so the caller erases the stale
+        // status lines before printing the new content.
+        if let FormattedOutput::Lines(lines) = output {
+            let prev = self.status_area.rendered_lines;
+            if prev > 0 {
+                self.status_area.reset();
+                FormattedOutput::StatusAreaUpdate {
+                    graduated_lines: lines,
+                    active_lines: vec![],
+                    prev_area_lines: prev,
+                }
+            } else {
+                FormattedOutput::Lines(lines)
+            }
+        } else {
+            output
         }
     }
 
@@ -298,6 +429,7 @@ impl ToolEventFormatter {
         self.next_index = 0;
         self.pending_tags.clear();
         self.has_pending_inline = false;
+        self.status_area.reset();
 
         if self.verbose() {
             let ts = Local::now().format("%H:%M:%S");
@@ -346,24 +478,16 @@ impl ToolEventFormatter {
             }
             FormattedOutput::Lines(lines)
         } else {
-            // Compact: single inline-progress line
+            // Compact: multi-line status area refresh (bazel-style)
             let summary = summarize_tool_args(tool_name, arguments)
                 .map(|s| {
                     let first = s.lines().next().unwrap_or(&s);
-                    format!("  {}", truncate_chars(first, 80))
+                    truncate_chars(first, 80)
                 })
                 .unwrap_or_default();
 
-            let line = format!(
-                "  {}  {} {}{}",
-                "▸".with(Color::Yellow),
-                tag.as_str().with(Color::Yellow).attribute(Attribute::Bold),
-                tool_name.with(Color::White).attribute(Attribute::Bold),
-                summary.with(Color::DarkGrey),
-            );
-
-            self.has_pending_inline = true;
-            FormattedOutput::InlineProgress(line)
+            self.has_pending_inline = false;
+            self.status_area.add_active(tag, tool_name.to_string(), summary)
         }
     }
 
@@ -375,55 +499,81 @@ impl ToolEventFormatter {
         success: bool,
         result_content: &str,
         elapsed_ms: u64,
-    ) -> Vec<String> {
+    ) -> FormattedOutput {
         let (icon, color) = if success { ("✓", Color::Green) } else { ("✗", Color::Red) };
-        let tag_prefix = self.pending_tags
+        let tag = self.pending_tags
             .pop_front()
-            .map(|t| format!("{} ", t))
             .unwrap_or_default();
+        let tag_prefix = if tag.is_empty() {
+            String::new()
+        } else {
+            format!("{} ", tag)
+        };
         let elapsed_str = format_elapsed(elapsed_ms);
         self.has_pending_inline = false;
 
-        if success {
+        let completed_line = if success {
             let line_count = result_content.lines().count();
-            vec![format!(
+            format!(
                 "  {}  {}{}{}",
                 icon.with(color),
                 tag_prefix.as_str().with(color).attribute(Attribute::Bold),
                 tool_name.with(Color::White),
                 format!("  ({} lines, {})", line_count, elapsed_str).with(Color::DarkGrey),
-            )]
+            )
         } else {
             let first_line = result_content.lines().next().unwrap_or("");
-            vec![format!(
+            format!(
                 "  {}  {}{}: {} {}",
                 icon.with(color),
                 tag_prefix.as_str().with(color).attribute(Attribute::Bold),
                 tool_name.with(color),
                 truncate_chars(first_line, 80).with(Color::DarkGrey),
                 format!("({})", elapsed_str).with(Color::DarkGrey),
-            )]
+            )
+        };
+
+        if self.verbose() {
+            FormattedOutput::Lines(vec![completed_line])
+        } else {
+            // Compact: graduate the completed tool from the status area
+            self.status_area.complete_tool(&tag, completed_line)
         }
     }
 
     // ── Round complete ──
 
-    fn format_round_complete(tool_count: usize, elapsed_ms: u64) -> Vec<String> {
+    fn format_round_complete(&mut self, tool_count: usize, elapsed_ms: u64) -> FormattedOutput {
+        // Clear any remaining status area state
+        let prev = self.status_area.rendered_lines;
+        self.status_area.reset();
+
         let elapsed_str = format_elapsed(elapsed_ms);
         if crate::cli::is_verbose() {
             let ts = Local::now().format("%H:%M:%S");
-            vec![
+            FormattedOutput::Lines(vec![
                 format!(
                     "  {}",
                     format!("  {} tool call(s) completed in {} [{}]", tool_count, elapsed_str, ts).with(Color::DarkGrey),
                 ),
                 String::new(),
-            ]
+            ])
         } else {
-            vec![format!(
+            // In compact mode, we need to erase any leftover status area lines
+            // before printing the round summary.
+            let summary_line = format!(
                 "    {}",
                 format!("{} calls, {}", tool_count, elapsed_str).with(Color::DarkGrey),
-            )]
+            );
+            if prev > 0 {
+                FormattedOutput::StatusAreaUpdate {
+                    graduated_lines: vec![summary_line],
+                    active_lines: vec![],
+                    prev_area_lines: prev,
+                }
+            } else {
+                FormattedOutput::Lines(vec![summary_line])
+            }
         }
     }
 

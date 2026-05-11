@@ -289,6 +289,15 @@ fn build_text_stderr_callback() -> ToolEventCallback {
             FormattedOutput::InlineProgress(line) => {
                 eprintln!("{}", line);
             }
+            FormattedOutput::StatusAreaUpdate { graduated_lines, active_lines, .. } => {
+                // In print mode, no cursor manipulation — just print all lines.
+                for line in graduated_lines {
+                    eprintln!("{}", line);
+                }
+                for line in active_lines {
+                    eprintln!("{}", line);
+                }
+            }
             FormattedOutput::Lines(lines) => {
                 for line in lines {
                     eprintln!("{}", line);
