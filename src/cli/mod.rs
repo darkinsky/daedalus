@@ -12,12 +12,37 @@ mod render;
 mod repl;
 
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 
 use crate::agent::AgentMode;
 
 pub use cli_args::{CliArgs, CliPromptStyle, OutputFormat};
+
+// ── Verbose output mode ──
+
+/// Global flag controlling CLI output verbosity.
+///
+/// When `true`, tool events are rendered in verbose mode (multi-line with
+/// full argument details, expanded thinking, diff previews). When `false`
+/// (default), output uses compact inline-refresh mode.
+///
+/// Set once during bootstrap via `set_verbose()`. Also respects the
+/// `DAEDALUS_VERBOSE` environment variable.
+static VERBOSE_OUTPUT: AtomicBool = AtomicBool::new(false);
+
+/// Enable or disable verbose CLI output.
+///
+/// Called during bootstrap based on `--verbose` flag or `DAEDALUS_VERBOSE` env.
+pub fn set_verbose(verbose: bool) {
+    VERBOSE_OUTPUT.store(verbose, Ordering::Relaxed);
+}
+
+/// Check if verbose CLI output is enabled.
+pub(crate) fn is_verbose() -> bool {
+    VERBOSE_OUTPUT.load(Ordering::Relaxed)
+}
 
 /// Run an interactive REPL loop in Claude Code style.
 ///

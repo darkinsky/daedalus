@@ -270,6 +270,7 @@ fn build_stream_json_callback() -> ToolEventCallback {
 fn build_text_stderr_callback() -> ToolEventCallback {
     use std::sync::Mutex;
     use super::render::ToolEventFormatter;
+    use super::render::tool_event::FormattedOutput;
 
     let formatter = Arc::new(Mutex::new(ToolEventFormatter::new()));
     Arc::new(move |event: ToolEvent| {
@@ -278,12 +279,21 @@ fn build_text_stderr_callback() -> ToolEventCallback {
         if matches!(event, ToolEvent::StreamText { .. } | ToolEvent::StreamReasoning { .. } | ToolEvent::StreamDone) {
             return;
         }
-        let rendered = {
+        let output = {
             let mut fmt = formatter.lock().expect("tool event formatter poisoned");
             fmt.format(&event)
         };
-        for line in rendered {
-            eprintln!("{}", line);
+        // In print mode (stderr), inline progress is not useful since
+        // stderr is typically not a terminal. Just print all lines normally.
+        match output {
+            FormattedOutput::InlineProgress(line) => {
+                eprintln!("{}", line);
+            }
+            FormattedOutput::Lines(lines) => {
+                for line in lines {
+                    eprintln!("{}", line);
+                }
+            }
         }
     })
 }

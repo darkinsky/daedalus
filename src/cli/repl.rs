@@ -14,6 +14,7 @@ use super::commands::{self, Command};
 use super::completer::SlashCommandHelper;
 use super::render;
 use super::render::ToolEventFormatter;
+use super::render::tool_event::FormattedOutput;
 
 /// Handle a parsed slash command. Returns `true` if the REPL should exit.
 async fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &SharedSessionCost) -> Result<bool> {
@@ -167,12 +168,43 @@ fn build_tool_event_callback(
 
         // Pause the spinner so tool output is not interleaved
         spinner.finish_and_clear();
-        let rendered = {
+        let output = {
             let mut fmt = formatter.lock().expect("tool event formatter poisoned");
+            // If there's a pending inline progress line and we're about to
+            // print something new (not a ToolCallComplete which overwrites it),
+            // we need to finish the pending line first.
+            if fmt.has_pending_inline {
+                if !matches!(event, ToolEvent::ToolCallComplete { .. }) {
+                    // Abandon the inline progress — print a newline to finalize it
+                    println!();
+                    fmt.has_pending_inline = false;
+                }
+            }
             fmt.format(&event)
         };
-        for line in rendered {
-            println!("{}", line);
+        match output {
+            FormattedOutput::InlineProgress(line) => {
+                // Print without newline — will be overwritten by ToolCallComplete
+                use std::io::Write;
+                // Clear the line first in case the new line is shorter
+                print!("\r\x1B[2K{}", line);
+                let _ = std::io::stdout().flush();
+            }
+            FormattedOutput::Lines(lines) => {
+                // In compact mode, ToolCallComplete overwrites the inline progress line.
+                // In verbose mode, there's no pending inline, so just print normally.
+                let should_overwrite_first = matches!(event, ToolEvent::ToolCallComplete { .. })
+                    && !crate::cli::is_verbose();
+                for (i, line) in lines.iter().enumerate() {
+                    if should_overwrite_first && i == 0 {
+                        // Overwrite the inline progress line
+                        print!("\r\x1B[2K{}", line);
+                        println!();
+                    } else {
+                        println!("{}", line);
+                    }
+                }
+            }
         }
         // Restart spinner for the next LLM round
         spinner.reset_elapsed();

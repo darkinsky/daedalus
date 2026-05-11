@@ -14,7 +14,7 @@
 
 mod tool_output;
 mod summarize;
-mod tool_event;
+pub(in crate::cli) mod tool_event;
 mod lists;
 mod streaming;
 

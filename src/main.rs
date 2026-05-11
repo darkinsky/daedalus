@@ -92,6 +92,11 @@ async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard
         config::init_logging(&log_config)?
     };
 
+    // Set CLI output verbosity (controls tool event rendering detail level).
+    // --verbose flag or DAEDALUS_VERBOSE=1 env var enables verbose output.
+    let verbose = args.verbose || std::env::var("DAEDALUS_VERBOSE").map(|v| v == "1").unwrap_or(false);
+    cli::set_verbose(verbose);
+
     // Phase 2: Build AgentConfig (now tracing is available for soul file loading)
     let mut agent_config = raw_config.into_agent_config(&workspace);
 
