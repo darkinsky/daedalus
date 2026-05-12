@@ -25,8 +25,8 @@ pub fn truncate_chars(s: &str, max_chars: usize) -> String {
 /// - operates on **byte** budgets (useful for token-estimate guards)
 /// - returns a borrow (no allocation, no "…" suffix)
 ///
-/// Used by `agent::chat::summarize_tool_history` where we want a hard
-/// byte cap on each call/result entry before joining them.
+/// Used by `summarize_tool_history` where we want a hard byte cap on
+/// each tool call argument entry before joining them.
 pub fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
         return s;

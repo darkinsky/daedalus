@@ -125,24 +125,32 @@ impl TurnMiddleware for MemoryTurnMiddleware {
     }
 }
 
-/// Build a summary of tool calls and results for storing in memory.
+/// Build a compact summary of tool calls for storing in memory.
+///
+/// Only preserves tool names and arguments (truncated). Tool results are
+/// intentionally omitted — they are ephemeral (files may change, searches
+/// become stale) and their value is already captured in the assistant's
+/// response text. This reduces per-turn tool context from ~700 chars to
+/// ~80 chars per call, dramatically improving context utilization.
 pub fn summarize_tool_history(history: &[crate::llm::ToolRound]) -> String {
-    let mut parts = Vec::new();
+    let mut round_parts = Vec::new();
     for (round_idx, round) in history.iter().enumerate() {
-        for (i, call) in round.calls.iter().enumerate() {
-            let result = round
-                .responses
-                .get(i)
-                .map(|r| r.content.as_str())
-                .unwrap_or("(no result)");
-            parts.push(format!(
-                "[Tool call round {}: {}({}) -> {}]",
-                round_idx + 1,
-                call.function_name,
-                truncate_at_char_boundary(&call.arguments.to_string(), 200),
-                truncate_at_char_boundary(result, 500),
-            ));
-        }
+        let calls: Vec<String> = round
+            .calls
+            .iter()
+            .map(|call| {
+                format!(
+                    "{}({})",
+                    call.function_name,
+                    truncate_at_char_boundary(&call.arguments.to_string(), 120),
+                )
+            })
+            .collect();
+        round_parts.push(format!(
+            "[Tool call round {}: {}]",
+            round_idx + 1,
+            calls.join(", "),
+        ));
     }
-    parts.join("\n")
+    round_parts.join("\n")
 }

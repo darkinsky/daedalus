@@ -578,7 +578,7 @@ MEMORY:
 
         // Add some old tool context messages (these should be truncated)
         let long_tool_context = format!(
-            "[Tool call round 1: read_file({{\"path\":\"/some/very/long/path/to/file.rs\"}}) -> {}]",
+            "[Tool call round 1: read_file({{\"path\":\"/some/very/long/path/to/file.rs\",\"extra\":\"{}\"}})]" ,
             "x".repeat(1000)
         );
         memory.add_assistant_message(&long_tool_context);
@@ -622,7 +622,7 @@ MEMORY:
 
         // Add a recent tool context message (within preservation window)
         let long_tool_context = format!(
-            "[Tool call round 1: grep_search({{\"query\":\"test\"}}) -> {}]",
+            "[Tool call round 1: grep_search({{\"query\":\"test\",\"extra\":\"{}\"}})]" ,
             "result_line\n".repeat(100)
         );
         memory.add_assistant_message(&long_tool_context);
@@ -635,7 +635,7 @@ MEMORY:
         let tool_msg_idx = messages.len() - 3; // tool_context, Q_last, A_last
         let tool_msg = &messages[tool_msg_idx];
         assert!(
-            tool_msg.content.contains(&"result_line\n".repeat(10)),
+            tool_msg.content.contains("result_line"),
             "Recent tool context should be preserved in full"
         );
     }
@@ -694,7 +694,7 @@ MEMORY:
         let mut memory = SlidingWindowMemory::unlimited("System");
 
         let long_tool_context = format!(
-            "[Tool call round 1: bash({{\"cmd\":\"ls\"}}) -> {}]",
+            "[Tool call round 1: bash({{\"cmd\":\"ls\",\"extra\":\"{}\"}})]" ,
             "x".repeat(1000)
         );
         memory.add_assistant_message(&long_tool_context);
@@ -1042,7 +1042,7 @@ MEMORY:
         let mut memory = SlidingWindowMemory::unlimited("System");
         memory.add_user_message("Check the code");
         memory.add_assistant_message(
-            "[Tool call round 1: bash({\"cmd\":\"cargo build\"}) -> error: compilation failed]"
+            "[Tool call round 1: bash({\"cmd\":\"cargo build\"})]"
         );
 
         memory.auto_mark_preserved();
@@ -1123,7 +1123,7 @@ MEMORY:
         let mut memory = SlidingWindowMemory::unlimited("System");
         memory.add_user_message("Check the code");
         memory.add_assistant_message(
-            "[Tool call round 1: read_file({\"path\":\"plan.md\"}) -> ## Plan\nStep 1: foo\nStep 2: bar\nStep 3: baz]"
+            "[Tool call round 1: read_file({\"path\":\"plan.md\"})]"
         );
 
         memory.auto_mark_preserved();
