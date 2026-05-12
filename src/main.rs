@@ -80,6 +80,7 @@ async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard
     let middleware_config = raw_config.middleware.clone();
     let acp_config = raw_config.acp.clone();
     let tools_config = raw_config.tools.clone();
+    let permissions_config = raw_config.permissions.clone();
 
     // Apply CLI overrides to the raw config before building AgentConfig
     apply_cli_overrides(&args, &mut raw_config);
@@ -133,7 +134,7 @@ async fn bootstrap() -> Result<(agent::ChatAgent, cli::CliArgs, config::LogGuard
     }
 
     // Build the agent with all extensions
-    let agent = build_agent(&args, &workspace, &agent_config, tracing_manager, middleware_config, acp_config, tools_config).await?;
+    let agent = build_agent(&args, &workspace, &agent_config, tracing_manager, middleware_config, acp_config, tools_config, permissions_config).await?;
 
     Ok((agent, args, _log_guard))
 }
@@ -147,6 +148,7 @@ async fn build_agent(
     middleware_config: middleware::config::MiddlewareConfig,
     acp_config: acp::AcpConfig,
     tools_config: tools::ToolsConfig,
+    permissions_config: middleware::builtin::permission_rules::PermissionsConfig,
 ) -> Result<agent::ChatAgent> {
     let skip_extensions = args.bare;
 
@@ -204,6 +206,12 @@ async fn build_agent(
 
     // Apply tool filtering from CLI args
     apply_tool_filtering(args, &mut agent);
+
+    // Apply permission settings from CLI args
+    if args.skip_permissions {
+        agent.set_skip_permissions(true);
+    }
+    agent.set_permissions_config(permissions_config);
 
     // Apply max-turns override from CLI args
     if let Some(max_turns) = args.max_turns {

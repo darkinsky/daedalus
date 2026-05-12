@@ -31,7 +31,7 @@ use super::commands::SLASH_COMMANDS;
 // ── Public re-exports ──
 
 // Slash-command list views live in the `lists` submodule.
-pub(in crate::cli) use lists::{agents_list, skills_list, tools_list};
+pub(in crate::cli) use lists::{agents_list, permissions_list, skills_list, tools_list};
 
 // Tool-event rendering machinery. `ToolEventFormatter` is the stateful
 // primitive used by long-lived callbacks (REPL spinner, `--print` text

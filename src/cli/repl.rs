@@ -8,6 +8,11 @@ use rustyline::{CompletionType, Config, EditMode, Editor};
 
 use crate::agent::AgentMode;
 use crate::llm::TokenUsage;
+use crate::middleware::builtin::confirmation::{
+    self, ConfirmationReceiver, ConfirmationRequest, ToolRiskLevel, UserDecision,
+};
+use crate::middleware::builtin::permission_rules::RuleScope;
+use crate::middleware::builtin::permission_rules::PermissionRuleSet;
 use crate::middleware::builtin::cost::{SessionCost, SharedSessionCost};
 use crate::tools::{ToolEvent, ToolEventCallback};
 use super::commands::{self, Command};
@@ -48,6 +53,7 @@ async fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &Shar
         Command::Tools => render::tools_list(agent),
         Command::Skills => render::skills_list(agent),
         Command::Agents => render::agents_list(agent),
+        Command::Permissions => handle_permissions(agent),
         Command::Unknown(raw) => render::unknown_command(raw),
     }
     Ok(false)
@@ -258,8 +264,50 @@ struct StreamingState {
     /// Whether any reasoning was streamed during this turn.
     reasoning_was_streamed: bool,
 }
+/// Handle the `/permissions` command — display active permission rules.
+///
+/// Reads the live in-memory rules (including session rules and dynamically-added
+/// rules from "Always Allow" prompts), not a fresh load from disk.
+fn handle_permissions(agent: &dyn AgentMode) {
+    // Use the shared rules engine from the agent. This includes:
+    // - Session rules (in-memory only)
+    // - Project rules (from .daedalus/permissions.json + YAML config)
+    // - Global rules (from ~/.daedalus/permissions.json)
+    // Unlike loading fresh from disk, this also shows session-level rules
+    // and any rules added via "Always Allow" during this session.
+    let mode = agent.permission_mode_name();
+
+    if let Some(rules_arc) = agent.permission_rules() {
+        // Block briefly to read the rules — this is a slash command handler,
+        // not in the hot path.
+        let rt = tokio::runtime::Handle::current();
+        let all_rules: Vec<_> = rt.block_on(async {
+            let rules = rules_arc.lock().await;
+            rules.all_rules()
+                .into_iter()
+                .map(|(r, s)| (r.clone(), s))
+                .collect()
+        });
+        render::permissions_list(&all_rules, mode);
+    } else {
+        // Fallback: load from disk (no shared rules available)
+        let workspace_root = agent.workspace_root();
+        let rule_set = PermissionRuleSet::load(workspace_root.as_deref());
+        let all_rules: Vec<_> = rule_set.all_rules()
+            .into_iter()
+            .map(|(r, s)| (r.clone(), s))
+            .collect();
+        render::permissions_list(&all_rules, mode);
+    }
+}
+
 /// Send user input to the agent and render the response.
-async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &SharedSessionCost) {
+async fn handle_chat(
+    input: &str,
+    agent: &mut dyn AgentMode,
+    cost: &SharedSessionCost,
+    confirm_rx: &Arc<tokio::sync::Mutex<ConfirmationReceiver>>,
+) {
     tracing::debug!("User input: {}", input);
 
     // Show spinner while waiting for LLM response
@@ -277,6 +325,29 @@ async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &SharedSessio
 
     // Set the subagent event callback so subagent tool events are also rendered
     agent.set_subagent_event_callback(Some(Arc::clone(&tool_callback)));
+
+    // Spawn a background task to handle confirmation requests from the
+    // confirmation middleware. This runs concurrently with agent.chat().
+    let confirm_rx_clone = Arc::clone(confirm_rx);
+    let confirm_spinner = Arc::clone(&spinner);
+    let confirm_handle = tokio::spawn(async move {
+        let mut rx = confirm_rx_clone.lock().await;
+        while let Some(request) = rx.recv().await {
+            // Pause the spinner while showing the confirmation prompt
+            confirm_spinner.finish_and_clear();
+            // Use spawn_blocking for stdin I/O to avoid blocking the tokio runtime.
+            // The request (including response_tx) is moved into the blocking task
+            // so the oneshot response is sent from within the blocking context.
+            tokio::task::spawn_blocking(move || {
+                let decision = prompt_user_confirmation(&request);
+                let _ = request.response_tx.send(decision);
+            }).await.ok();
+            // Restart spinner
+            confirm_spinner.reset_elapsed();
+            confirm_spinner.set_message("Thinking\u{2026}");
+            confirm_spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+        }
+    });
 
     match agent.chat(input, Some(&tool_callback)).await {
         Ok(result) => {
@@ -365,6 +436,125 @@ async fn handle_chat(input: &str, agent: &mut dyn AgentMode, cost: &SharedSessio
             render::error(&e);
         }
     }
+
+    // Stop the confirmation handler task (no more requests expected this turn)
+    confirm_handle.abort();
+}
+
+/// Prompt the user for confirmation of a tool call.
+///
+/// Displays the tool call details and risk level, then reads a single
+/// character from stdin to determine the user's decision.
+fn prompt_user_confirmation(request: &ConfirmationRequest) -> UserDecision {
+    use std::io::Write;
+
+    let risk_label = match request.risk_level {
+        ToolRiskLevel::Sensitive => "Sensitive".with(Color::Yellow),
+        ToolRiskLevel::Dangerous => "Dangerous".with(Color::Red).attribute(Attribute::Bold),
+        ToolRiskLevel::ReadOnly => "ReadOnly".with(Color::Green), // shouldn't happen
+    };
+
+    let risk_reason = match request.risk_level {
+        ToolRiskLevel::Sensitive => "modifies files",
+        ToolRiskLevel::Dangerous => "arbitrary execution",
+        ToolRiskLevel::ReadOnly => "read-only",
+    };
+
+    // Print the confirmation prompt
+    println!();
+    println!(
+        "  {} {} wants to execute:",
+        "⚠️".with(Color::Yellow),
+        request.tool_name.clone().with(Color::Cyan).attribute(Attribute::Bold),
+    );
+    println!(
+        "  {}  {}",
+        "┃".with(Color::DarkGrey),
+        request.description.clone().with(Color::White),
+    );
+    println!(
+        "  {}",
+        "┃".with(Color::DarkGrey),
+    );
+    println!(
+        "  {}  Risk: {} ({})",
+        "┃".with(Color::DarkGrey),
+        risk_label,
+        risk_reason,
+    );
+    println!(
+        "  {}",
+        "┃".with(Color::DarkGrey),
+    );
+
+    // Build the options line based on whether we have a suggested pattern
+    let pattern_hint = if let Some(ref pattern) = request.suggested_pattern {
+        format!(
+            "  [{}] Always allow \"{}({})\"  ",
+            "a".with(Color::Magenta).attribute(Attribute::Bold),
+            request.tool_name,
+            pattern,
+        )
+    } else {
+        format!(
+            "  [{}] Always allow {}  ",
+            "a".with(Color::Magenta).attribute(Attribute::Bold),
+            request.tool_name,
+        )
+    };
+
+    print!(
+        "  {}  [{}] Allow once  [{}] Allow for session {}[{}] Deny  > ",
+        "┗━".with(Color::DarkGrey),
+        "y".with(Color::Green).attribute(Attribute::Bold),
+        "s".with(Color::Blue).attribute(Attribute::Bold),
+        pattern_hint,
+        "n".with(Color::Red).attribute(Attribute::Bold),
+    );
+    let _ = std::io::stdout().flush();
+
+    // Read user input (single line)
+    let decision = read_confirmation_input(request.suggested_pattern.clone());
+    println!();
+    decision
+}
+
+/// Read a single character of confirmation input from the terminal.
+///
+/// Falls back to "deny" if input cannot be read.
+fn read_confirmation_input(suggested_pattern: Option<String>) -> UserDecision {
+    let mut input = String::new();
+    match std::io::stdin().read_line(&mut input) {
+        Ok(_) => {
+            let trimmed = input.trim().to_lowercase();
+            match trimmed.as_str() {
+                "y" | "yes" | "" => UserDecision::AllowOnce,
+                "s" | "session" => UserDecision::AllowSession,
+                "a" | "always" => UserDecision::AlwaysAllow {
+                    scope: RuleScope::Project,
+                    pattern: suggested_pattern,
+                },
+                "ag" | "always-global" | "global" => UserDecision::AlwaysAllow {
+                    scope: RuleScope::Global,
+                    pattern: suggested_pattern,
+                },
+                "n" | "no" | "d" | "deny" => UserDecision::Deny,
+                _ => {
+                    // Unknown input — treat as deny for safety
+                    println!(
+                        "  {} Unknown input '{}', denying.",
+                        "⚠".with(Color::Yellow),
+                        trimmed,
+                    );
+                    UserDecision::Deny
+                }
+            }
+        }
+        Err(_) => {
+            // Can't read input — deny for safety
+            UserDecision::Deny
+        }
+    }
 }
 
 /// Handle the `/compact` command — compress conversation history.
@@ -414,6 +604,13 @@ pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
         .cloned()
         .unwrap_or_else(|| Arc::new(Mutex::new(SessionCost::new())));
 
+    // Set up the confirmation channel for interactive tool approval.
+    // The sender goes to the agent (passed through to the confirmation middleware),
+    // the receiver stays here to handle confirmation prompts in the terminal.
+    let (confirm_tx, confirm_rx) = confirmation::confirmation_channel();
+    agent.set_confirmation_sender(confirm_tx);
+    let confirm_rx = Arc::new(tokio::sync::Mutex::new(confirm_rx));
+
     render::banner(agent);
 
     // Configure rustyline with tab-completion support
@@ -455,7 +652,7 @@ pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
                 }
 
                 // ── Chat with the agent ──
-                handle_chat(input, agent, &cost).await;
+                handle_chat(input, agent, &cost, &confirm_rx).await;
             }
             Err(ReadlineError::Interrupted) => {
                 // Ctrl-C: just print a new line and continue

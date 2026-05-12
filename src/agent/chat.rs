@@ -16,6 +16,8 @@ use crate::middleware::builtin::logging::LoggingTurnMiddleware;
 use crate::middleware::builtin::memory::MemoryTurnMiddleware;
 use crate::middleware::builtin::cost::{CostTurnMiddleware, SessionCost, SharedSessionCost};
 use crate::middleware::builtin::metrics::MetricsTurnMiddleware;
+use crate::middleware::builtin::confirmation::ConfirmationSender;
+use crate::middleware::builtin::permission_rules::{PermissionsConfig, PermissionRuleSet, PermissionMode};
 use crate::middleware::config::MiddlewareConfig;
 use crate::prompt::PromptStyle;
 use crate::skill::SkillInfo;
@@ -81,6 +83,21 @@ pub struct ChatAgent {
     memory_handle: Option<crate::tools::recall_history::MemoryHandle>,
     /// Model context window size (in tokens) for truncation and compression.
     context_window: usize,
+    /// Channel to send confirmation requests to the CLI layer.
+    /// Set by the REPL during interactive mode.
+    confirmation_tx: Option<ConfirmationSender>,
+    /// Whether to bypass all permission checks (--dangerously-skip-permissions).
+    skip_permissions: bool,
+    /// Permission system configuration (from YAML).
+    permissions_config: PermissionsConfig,
+    /// Shared session-level approved tools (persists across turns within a session).
+    /// Wrapped in Arc so the same set is shared with every ConfirmationToolMiddleware instance.
+    session_approved: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Shared permission rules engine (persists across turns within a session).
+    /// Loaded once at startup; dynamically-added rules (via "Always Allow") survive across turns.
+    permission_rules: Arc<tokio::sync::Mutex<PermissionRuleSet>>,
+    /// Resolved permission mode (accounts for --dangerously-skip-permissions override).
+    permission_mode: PermissionMode,
 }
 
 impl ChatAgent {
@@ -143,6 +160,12 @@ impl ChatAgent {
             session_cost: Arc::new(std::sync::Mutex::new(SessionCost::new())),
             memory_handle: None,
             context_window: config.context_window,
+            confirmation_tx: None,
+            skip_permissions: false,
+            permissions_config: PermissionsConfig::default(),
+            session_approved: Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new())),
+            permission_rules: Arc::new(tokio::sync::Mutex::new(PermissionRuleSet::new())),
+            permission_mode: PermissionMode::Default,
         }
     }
 
@@ -271,6 +294,54 @@ impl ChatAgent {
         self.router_mut_exclusive().replace_bash_config(config);
     }
 
+    /// Set the confirmation channel for interactive tool approval.
+    ///
+    /// Called by the REPL layer to enable user confirmation prompts for
+    /// sensitive/dangerous tool calls. If not set, the confirmation
+    /// middleware is skipped.
+    #[allow(dead_code)]
+    pub fn set_confirmation_sender(&mut self, tx: ConfirmationSender) {
+        self.confirmation_tx = Some(tx);
+    }
+
+    /// Set whether to bypass all permission checks.
+    ///
+    /// When `true`, the confirmation middleware is a no-op and all tool
+    /// calls proceed without user approval. Corresponds to the
+    /// `--dangerously-skip-permissions` CLI flag.
+    pub fn set_skip_permissions(&mut self, skip: bool) {
+        self.skip_permissions = skip;
+        if skip {
+            tracing::warn!("Permission checks bypassed — all tool calls will execute without confirmation");
+        }
+    }
+
+    /// Set the permissions configuration from YAML.
+    ///
+    /// Also initializes the shared permission rules engine by loading
+    /// rules from disk and merging YAML config rules. This must be called
+    /// after the workspace is set.
+    pub fn set_permissions_config(&mut self, config: PermissionsConfig) {
+        let workspace_root = self.workspace.as_ref().map(|ws| ws.root().to_path_buf());
+        let rules = PermissionRuleSet::load_with_config(
+            workspace_root.as_deref(),
+            &config,
+        );
+        self.permission_mode = if self.skip_permissions {
+            PermissionMode::BypassPermissions
+        } else {
+            config.mode.clone()
+        };
+        self.permission_rules = Arc::new(tokio::sync::Mutex::new(rules));
+        self.permissions_config = config;
+    }
+
+    /// Return a reference to the shared permission rules (for /permissions display).
+    #[allow(dead_code)]
+    pub fn permission_rules(&self) -> &Arc<tokio::sync::Mutex<PermissionRuleSet>> {
+        &self.permission_rules
+    }
+
     /// Return the shared session cost handle for external access (e.g., CLI `/cost`).
     #[allow(dead_code)]
     pub fn session_cost(&self) -> &SharedSessionCost {
@@ -368,6 +439,11 @@ impl ChatAgent {
             on_tool_event,
             self.middleware_config.tool.clone(),
             self.context_window,
+            self.confirmation_tx.clone(),
+            self.skip_permissions,
+            Arc::clone(&self.session_approved),
+            Arc::clone(&self.permission_rules),
+            self.permission_mode.clone(),
         ));
 
         let mut pipeline = TurnPipeline::new(core);
@@ -521,6 +597,20 @@ impl AgentMetadata for ChatAgent {
     fn context_window(&self) -> usize {
         self.context_window
     }
+    fn workspace_root(&self) -> Option<std::path::PathBuf> {
+        self.workspace.as_ref().map(|ws| ws.root().to_path_buf())
+    }
+    fn permission_mode_name(&self) -> &str {
+        match self.permissions_config.mode {
+            crate::middleware::builtin::permission_rules::PermissionMode::Default => "default",
+            crate::middleware::builtin::permission_rules::PermissionMode::AcceptEdits => "acceptEdits",
+            crate::middleware::builtin::permission_rules::PermissionMode::BypassPermissions => "bypassPermissions",
+            crate::middleware::builtin::permission_rules::PermissionMode::Plan => "plan",
+        }
+    }
+    fn permission_rules(&self) -> Option<&Arc<tokio::sync::Mutex<PermissionRuleSet>>> {
+        Some(&self.permission_rules)
+    }
 }
 
 // ── AgentMode — pipeline-driven ──
@@ -566,6 +656,10 @@ impl AgentMode for ChatAgent {
 
     fn set_subagent_event_callback(&self, callback: Option<ToolEventCallback>) {
         self.tool_router.set_subagent_event_callback(callback);
+    }
+
+    fn set_confirmation_sender(&mut self, tx: ConfirmationSender) {
+        self.confirmation_tx = Some(tx);
     }
 
     async fn shutdown(&mut self) -> Result<()> {

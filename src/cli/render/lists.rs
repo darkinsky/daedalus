@@ -113,3 +113,55 @@ pub(in crate::cli) fn agents_list(agent: &dyn AgentMetadata) {
     );
     println!();
 }
+
+/// Print the `/permissions` output — list all active permission rules.
+pub(in crate::cli) fn permissions_list(
+    rules: &[(crate::middleware::builtin::permission_rules::PermissionRule,
+              crate::middleware::builtin::permission_rules::RuleScope)],
+    mode: &str,
+) {
+    use crate::middleware::builtin::permission_rules::{RuleDecision, RuleScope};
+
+    println!();
+    println!(
+        "{}",
+        format!("  Permission rules (mode: {}):", mode)
+            .with(Color::White)
+            .attribute(Attribute::Bold)
+    );
+    println!();
+
+    if rules.is_empty() {
+        print_dim("    No permission rules configured.");
+        print_dim("    Tool calls will prompt for confirmation as needed.");
+    } else {
+        for (rule, scope) in rules {
+            let decision_icon = match rule.decision {
+                RuleDecision::Allow => "✓".with(Color::Green),
+                RuleDecision::Deny => "✗".with(Color::Red),
+            };
+            let scope_label = match scope {
+                RuleScope::Session => "(session)".with(Color::Yellow),
+                RuleScope::Project => "(project)".with(Color::Blue),
+                RuleScope::Global => "(global)".with(Color::Grey),
+            };
+            let pattern_str = rule.pattern.as_deref().unwrap_or("*");
+            println!(
+                "    {} {}  {}({})  {}",
+                decision_icon,
+                scope_label,
+                rule.tool.as_str().with(Color::Cyan),
+                pattern_str.with(Color::White),
+                match rule.decision {
+                    RuleDecision::Allow => "allow".with(Color::Green),
+                    RuleDecision::Deny => "deny".with(Color::Red),
+                },
+            );
+        }
+    }
+
+    println!();
+    print_dim("    Rules are evaluated: session → project → global (first match wins).");
+    print_dim("    Use 'a' during confirmation prompts to add persistent rules.");
+    println!();
+}

@@ -11,15 +11,18 @@
 //! by outer middleware layers. This module focuses purely on the LLM ↔ tool
 //! interaction protocol.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::llm::{ChatResponse, LlmApi, ToolResponse};
+use crate::middleware::builtin::confirmation::{ConfirmationSender, ConfirmationToolMiddleware};
 use crate::middleware::builtin::event::EventToolMiddleware;
 use crate::middleware::builtin::logging::LoggingToolMiddleware;
 use crate::middleware::builtin::permission::{PermissionPolicy, PermissionToolMiddleware};
+use crate::middleware::builtin::permission_rules::{PermissionMode, PermissionRuleSet};
 use crate::middleware::builtin::tracing::TracingToolMiddleware;
 use crate::middleware::pipeline::ToolPipeline;
 use crate::middleware::{Extensions, TurnNext, TurnRequest, TurnResponse};
@@ -48,6 +51,17 @@ pub(crate) struct CoreTurnHandler {
     tool_middleware_config: Vec<MiddlewareEntry>,
     /// Model context window size (in tokens) for truncation scaling.
     context_window: usize,
+    /// Channel to send confirmation requests to the CLI layer.
+    /// `None` in non-interactive mode or when permissions are bypassed.
+    confirmation_tx: Option<ConfirmationSender>,
+    /// Whether to bypass all permission checks.
+    skip_permissions: bool,
+    /// Shared session-level approved tools (persists across turns).
+    session_approved: Arc<tokio::sync::Mutex<HashSet<String>>>,
+    /// Shared permission rules engine (persists across turns).
+    permission_rules: Arc<tokio::sync::Mutex<PermissionRuleSet>>,
+    /// Resolved permission mode.
+    permission_mode: PermissionMode,
 }
 
 impl CoreTurnHandler {
@@ -62,6 +76,11 @@ impl CoreTurnHandler {
         on_tool_event: Option<ToolEventCallback>,
         tool_middleware_config: Vec<MiddlewareEntry>,
         context_window: usize,
+        confirmation_tx: Option<ConfirmationSender>,
+        skip_permissions: bool,
+        session_approved: Arc<tokio::sync::Mutex<HashSet<String>>>,
+        permission_rules: Arc<tokio::sync::Mutex<PermissionRuleSet>>,
+        permission_mode: PermissionMode,
     ) -> Self {
         Self {
             llm,
@@ -70,6 +89,11 @@ impl CoreTurnHandler {
             on_tool_event,
             tool_middleware_config,
             context_window,
+            confirmation_tx,
+            skip_permissions,
+            session_approved,
+            permission_rules,
+            permission_mode,
         }
     }
 }
@@ -276,8 +300,9 @@ impl CoreTurnHandler {
 
         if self.tool_middleware_config.is_empty() {
             // ── Default stack (innermost first) ──
-            // event → tool_logging → permission → tracing
+            // event → confirmation → tool_logging → permission → tracing
             pipeline = self.add_tool_layer(pipeline, "event", &serde_json::Value::Null);
+            pipeline = self.add_tool_layer(pipeline, "confirmation", &serde_json::Value::Null);
             pipeline = self.add_tool_layer(pipeline, "tool_logging", &serde_json::Value::Null);
             pipeline = self.add_tool_layer(pipeline, "permission", &serde_json::Value::Null);
             pipeline = self.add_tool_layer(pipeline, "tracing", &serde_json::Value::Null);
@@ -316,6 +341,20 @@ impl CoreTurnHandler {
             // Accept both old name "logging" and new name "tool_logging"
             "tool_logging" | "logging" => {
                 pipeline.with(Box::new(LoggingToolMiddleware))
+            }
+            "confirmation" => {
+                if let Some(ref tx) = self.confirmation_tx {
+                    pipeline.with(Box::new(ConfirmationToolMiddleware::with_shared_state(
+                        tx.clone(),
+                        self.skip_permissions,
+                        Arc::clone(&self.session_approved),
+                        Arc::clone(&self.permission_rules),
+                        self.permission_mode.clone(),
+                    )))
+                } else {
+                    // No confirmation channel — skip (non-interactive or bypass mode)
+                    pipeline
+                }
             }
             "event" => {
                 if let Some(ref cb) = self.on_tool_event {

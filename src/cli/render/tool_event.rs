@@ -450,6 +450,10 @@ impl ToolEventFormatter {
 
     // ── Tool call start ──
 
+    /// Internal-only tools that should not appear in terminal output.
+    /// Their tag bookkeeping is still maintained for queue consistency.
+    const HIDDEN_TOOLS: &'static [&'static str] = &["take_note"];
+
     fn format_call_start(
         &mut self,
         tool_name: &str,
@@ -458,6 +462,12 @@ impl ToolEventFormatter {
     ) -> FormattedOutput {
         let tag = self.next_start_tag();
         self.pending_tags.push_back(tag.clone());
+
+        // Hide internal-only tools from terminal output
+        if Self::HIDDEN_TOOLS.contains(&tool_name) {
+            self.has_pending_inline = false;
+            return FormattedOutput::Lines(vec![]);
+        }
 
         if self.verbose() {
             self.has_pending_inline = false;
@@ -503,6 +513,12 @@ impl ToolEventFormatter {
         let tag = self.pending_tags
             .pop_front()
             .unwrap_or_default();
+
+        // Hide internal-only tools from terminal output
+        if Self::HIDDEN_TOOLS.contains(&tool_name) {
+            self.has_pending_inline = false;
+            return FormattedOutput::Lines(vec![]);
+        }
         let tag_prefix = if tag.is_empty() {
             String::new()
         } else {

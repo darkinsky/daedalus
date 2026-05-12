@@ -24,6 +24,7 @@ use crate::agent_tracing::TracingConfig;
 use crate::middleware::config::MiddlewareConfig;
 use crate::acp::tool::AcpConfig;
 use crate::tools::ToolsConfig;
+use crate::middleware::builtin::permission_rules::PermissionsConfig;
 
 /// Top-level YAML configuration file structure.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -47,6 +48,8 @@ struct DaedalusConfigFile {
     acp: AcpConfig,
     /// Unified tool configuration section.
     tools: ToolsConfig,
+    /// Permission system configuration.
+    permissions: PermissionsConfig,
     /// Legacy: top-level web_search key (deprecated, use `tools.web_search` instead).
     /// Kept for backward compatibility — merged into `tools.web_search` if present.
     web_search: Option<crate::tools::web_search::WebSearchConfig>,
@@ -70,6 +73,8 @@ pub struct RawConfig {
     pub acp: AcpConfig,
     /// Unified tool configuration.
     pub tools: ToolsConfig,
+    /// Permission system configuration.
+    pub permissions: PermissionsConfig,
 }
 
 impl RawConfig {
@@ -131,6 +136,7 @@ pub fn load_from_workspace(workspace: &Workspace) -> Result<(RawConfig, LogConfi
             }
             tools
         },
+        permissions: file_config.permissions,
     };
 
     let mut log_config = file_config.logging;

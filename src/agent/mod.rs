@@ -10,13 +10,17 @@ pub(crate) use session::Session;
 pub(crate) use session::SharedMemory;
 pub use tool_router::ToolFilter;
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::llm::ChatResponse;
 use crate::tools::{ToolInfo, ToolEventCallback};
 use crate::mcp::McpManager;
+use crate::middleware::builtin::confirmation::ConfirmationSender;
 use crate::middleware::builtin::cost::SharedSessionCost;
+use crate::middleware::builtin::permission_rules::PermissionRuleSet;
 use crate::skill::SkillInfo;
 use crate::subagent::SubagentInfo;
 
@@ -92,6 +96,27 @@ pub trait AgentMetadata {
     fn context_window(&self) -> usize {
         crate::llm::model_registry::DEFAULT_CONTEXT_WINDOW
     }
+
+    /// Return the workspace root path, if available.
+    ///
+    /// Used by the CLI layer for `/permissions` display (loading rules from disk).
+    fn workspace_root(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+
+    /// Return the permission mode name for display.
+    fn permission_mode_name(&self) -> &str {
+        "default"
+    }
+
+    /// Return the shared permission rules engine, if available.
+    ///
+    /// Used by the CLI layer for `/permissions` display. Returns the live
+    /// in-memory rules (including session rules and dynamically-added rules),
+    /// not a fresh load from disk.
+    fn permission_rules(&self) -> Option<&Arc<tokio::sync::Mutex<PermissionRuleSet>>> {
+        None
+    }
 }
 
 // ── Agent mode trait (core behavior) ──
@@ -131,6 +156,12 @@ pub trait AgentMode: AgentMetadata + Send + Sync {
     /// Called by the REPL before each chat call to bind the callback
     /// to the current spinner. Pass `None` to clear the callback.
     fn set_subagent_event_callback(&self, _callback: Option<ToolEventCallback>) {}
+
+    /// Set the confirmation channel for interactive tool approval.
+    ///
+    /// Called by the REPL to enable user confirmation prompts for
+    /// sensitive/dangerous tool calls.
+    fn set_confirmation_sender(&mut self, _tx: ConfirmationSender) {}
 
     /// Persist all memory state to the workspace and perform cleanup.
     ///
