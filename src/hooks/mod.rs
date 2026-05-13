@@ -36,3 +36,65 @@
 pub mod config;
 pub mod executor;
 pub mod middleware;
+
+use config::{HookEvent, HooksConfig};
+
+/// Execute all SessionStart lifecycle hooks.
+///
+/// Called when a new session begins (REPL startup or `/new`).
+/// SessionStart hooks are non-blocking — failures are logged but do not
+/// prevent the session from starting.
+pub async fn run_session_start_hooks(config: &HooksConfig, session_id: &str) {
+    let hooks = config.matching_hooks(HookEvent::SessionStart, None);
+    if hooks.is_empty() {
+        return;
+    }
+
+    let env = executor::session_env(session_id);
+    for hook in &hooks {
+        let result = executor::execute_hook(hook, &env).await;
+        if !result.success {
+            tracing::warn!(
+                hook_command = %hook.command,
+                exit_code = ?result.exit_code,
+                output = %result.output,
+                "SessionStart hook failed (non-blocking)"
+            );
+        } else {
+            tracing::debug!(
+                hook_command = %hook.command,
+                "SessionStart hook completed"
+            );
+        }
+    }
+}
+
+/// Execute all Stop lifecycle hooks.
+///
+/// Called when the agent finishes responding (after each turn completes).
+/// Stop hooks are non-blocking — failures are logged but do not affect
+/// the response.
+pub async fn run_stop_hooks(config: &HooksConfig, session_id: &str) {
+    let hooks = config.matching_hooks(HookEvent::Stop, None);
+    if hooks.is_empty() {
+        return;
+    }
+
+    let env = executor::session_env(session_id);
+    for hook in &hooks {
+        let result = executor::execute_hook(hook, &env).await;
+        if !result.success {
+            tracing::warn!(
+                hook_command = %hook.command,
+                exit_code = ?result.exit_code,
+                output = %result.output,
+                "Stop hook failed (non-blocking)"
+            );
+        } else {
+            tracing::debug!(
+                hook_command = %hook.command,
+                "Stop hook completed"
+            );
+        }
+    }
+}

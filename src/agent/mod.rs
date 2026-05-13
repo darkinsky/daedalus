@@ -190,6 +190,20 @@ pub trait AgentMode: AgentMetadata + Send + Sync {
     /// implementation does nothing (for modes without persistence).
     async fn persist_memory(&self) {}
 
+    /// Return the hooks configuration, if available.
+    ///
+    /// Used by the REPL to trigger SessionStart and Stop lifecycle hooks.
+    fn hooks_config(&self) -> Option<&crate::hooks::config::HooksConfig> {
+        None
+    }
+
+    /// Return the current session ID.
+    ///
+    /// Used by the REPL to pass to lifecycle hooks as an environment variable.
+    fn session_id(&self) -> &str {
+        ""
+    }
+
     /// Return the path to the tool loop checkpoint file, if a workspace is configured.
     ///
     /// Used by `/resume` to find and load saved checkpoints.

@@ -95,6 +95,15 @@ CONTEXT ROT PREVENTION — Aggressively discard stale information:
 12. When in doubt, prefer DISCARDING over KEEPING. The goal is maximum \
     information density, not completeness.
 
+PRIORITY FRAMEWORK for what to keep vs discard:
+  ALWAYS KEEP: Current task goal, unresolved problems, recent code changes + rationale, \
+    user preferences, active file paths, pending decisions.
+  COMPRESS: Successful tool calls (keep tool name + key result, drop raw output), \
+    completed sub-tasks (one-line summary each).
+  ALWAYS DISCARD: Failed tool calls with no useful info, superseded file contents, \
+    resolved error messages, exploratory reads that found nothing relevant, \
+    any content that duplicates information already captured elsewhere in the summary.
+
 Output format:
 
 <compact_summary>

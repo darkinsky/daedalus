@@ -68,6 +68,8 @@ pub(crate) struct CoreTurnHandler {
     hooks_config: HooksConfig,
     /// Session ID for hooks environment variables.
     session_id: String,
+    /// Optional checkpoint path for crash recovery (passed to tool loop).
+    checkpoint_path: Option<std::path::PathBuf>,
 }
 
 impl CoreTurnHandler {
@@ -89,6 +91,7 @@ impl CoreTurnHandler {
         permission_mode: PermissionMode,
         hooks_config: HooksConfig,
         session_id: String,
+        checkpoint_path: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
             llm,
@@ -104,6 +107,7 @@ impl CoreTurnHandler {
             permission_mode,
             hooks_config,
             session_id,
+            checkpoint_path,
         }
     }
 }
@@ -145,9 +149,15 @@ impl CoreTurnHandler {
             context_window_tokens: Some(self.context_window),
             context_soft_limit_ratio: 0.7,
             context_hard_limit_ratio: 0.9,
-            // Checkpoint path is set by the agent layer (not available here).
-            checkpoint_path: None,
-            user_input: None,
+            // Checkpoint path for crash recovery (passed from agent layer).
+            checkpoint_path: self.checkpoint_path.clone(),
+            user_input: request.extensions.get::<String>().cloned(),
+            // Resume state (not used here — /resume goes through the REPL layer).
+            initial_tool_history: Vec::new(),
+            initial_usage: None,
+            initial_round_offset: 0,
+            initial_total_tool_calls: 0,
+            initial_files_read: HashSet::new(),
         };
 
         let tracing_hook = trace_ctx.map(agent_tracing::TracingHook::new);
@@ -308,7 +318,10 @@ impl CoreTurnHandler {
     /// Tracing middleware respects the global `tracing.enabled` flag via
     /// the `TraceContext` presence in extensions (no-op if absent).
     pub(crate) fn build_tool_pipeline(&self, executor: Arc<dyn ToolExecutor>) -> ToolPipeline {
-        let core = Box::new(ToolExecutorCore { executor });
+        let core = Box::new(ToolExecutorCore {
+            executor,
+            on_tool_event: self.on_tool_event.clone(),
+        });
         let mut pipeline = ToolPipeline::new(core);
 
         if self.tool_middleware_config.is_empty() {
@@ -440,6 +453,14 @@ pub(crate) struct ToolRouterExecutor {
 impl ToolExecutor for ToolRouterExecutor {
     async fn execute(&self, call: &crate::llm::ToolCall) -> ToolResponse {
         self.router.execute(call).await
+    }
+
+    async fn execute_streaming(
+        &self,
+        call: &crate::llm::ToolCall,
+        on_output: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    ) -> ToolResponse {
+        self.router.execute_streaming(call, on_output).await
     }
 
     fn source_of(&self, tool_name: &str) -> String {

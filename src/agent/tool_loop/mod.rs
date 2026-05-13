@@ -53,6 +53,21 @@ pub trait ToolExecutor: Send + Sync {
     /// Execute one tool call and return its response.
     async fn execute(&self, call: &ToolCall) -> ToolResponse;
 
+    /// Execute a tool call with optional streaming output callback.
+    ///
+    /// For tools that support streaming (e.g., bash), the `on_output` callback
+    /// is invoked with each line of output as it arrives. The full result is
+    /// still collected and returned as a `ToolResponse`.
+    ///
+    /// Default implementation ignores the callback and delegates to `execute()`.
+    async fn execute_streaming(
+        &self,
+        call: &ToolCall,
+        _on_output: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    ) -> ToolResponse {
+        self.execute(call).await
+    }
+
     /// Return the string that appears in `ToolEvent::ToolCallStart.source`.
     fn source_of(&self, tool_name: &str) -> String;
 }
@@ -86,6 +101,20 @@ pub struct LoopConfig {
     pub checkpoint_path: Option<std::path::PathBuf>,
     /// The user's original input (needed for checkpoint metadata).
     pub user_input: Option<String>,
+
+    // ── Resume from checkpoint ──
+
+    /// Initial tool history to restore from a checkpoint (for `/resume`).
+    /// When non-empty, the loop starts with this history pre-populated.
+    pub initial_tool_history: Vec<ToolRound>,
+    /// Initial token usage to restore from a checkpoint.
+    pub initial_usage: Option<TokenUsage>,
+    /// Initial round offset (so round numbering continues from checkpoint).
+    pub initial_round_offset: usize,
+    /// Initial total tool calls count from checkpoint.
+    pub initial_total_tool_calls: usize,
+    /// Initial files_read set from checkpoint.
+    pub initial_files_read: HashSet<String>,
 }
 
 // ── Outputs ──
@@ -150,18 +179,19 @@ pub async fn run_tool_loop(
     cfg: &LoopConfig,
     ctx: &LoopContext<'_>,
 ) -> Result<LoopResult> {
-    let mut tool_history: Vec<ToolRound> = Vec::new();
-    let mut total_usage = TokenUsage::default();
+    // Initialize from checkpoint state if resuming, otherwise start fresh.
+    let mut tool_history: Vec<ToolRound> = cfg.initial_tool_history.clone();
+    let mut total_usage = cfg.initial_usage.clone().unwrap_or_default();
     let mut last_reasoning: Option<String> = None;
     let mut duplicate_detector = DuplicateDetector::new();
     let mut read_only_cache = ReadOnlyCache::new();
 
     // ── Session-level tracking (never truncated) ──
-    let mut files_read: HashSet<String> = HashSet::new();
-    let mut total_tool_calls: usize = 0;
+    let mut files_read: HashSet<String> = cfg.initial_files_read.clone();
+    let mut total_tool_calls: usize = cfg.initial_total_tool_calls;
 
     for round_idx in 0..cfg.max_tool_rounds {
-        let round_number = round_idx + 1;
+        let round_number = round_idx + 1 + cfg.initial_round_offset;
 
         // ── Context pressure check ──
         let context_usage_pct = estimate_context_usage_pct(
@@ -518,21 +548,18 @@ fn inject_session_metadata(
         meta.push_str(&hint);
     }
 
-    // ── Context Rot detection ──
-    // Monitor context health: if tool history is occupying too much of the
-    // context and many rounds have passed, suggest /compact to the LLM.
-    if round_number >= 8 && context_usage_pct >= 40 {
-        // Estimate how much of the context is tool history
-        let history_chars = estimate_history_chars(truncated_history);
-
-        if history_chars > 30_000 || (round_number >= 15 && context_usage_pct >= 50) {
-            meta.push_str(
-                "\n[CONTEXT HEALTH] Tool history is occupying a large portion of your context. \
-                 Consider being more concise in your responses and tool usage. \
-                 If you notice diminishing quality in your responses, the user can run /compact \
-                 to refresh the context window."
-            );
-        }
+    // ── Context Rot detection (advanced) ──
+    // Multi-signal context health assessment: combines tool_history_pct,
+    // staleness_ratio, round_number, and context_usage_pct into a severity
+    // level with specific, actionable hints for the LLM.
+    let health = context_pressure::assess_context_health(
+        truncated_history,
+        round_number,
+        context_usage_pct,
+        cfg.context_window_tokens,
+    );
+    if let Some(hint) = context_pressure::context_health_hint(&health) {
+        meta.push_str(&hint);
     }
 
     // Accumulated notes + saturation detection
@@ -752,11 +779,23 @@ async fn execute_round_direct(
 /// Adapter that wraps a `ToolExecutor` as the core of a `ToolPipeline`.
 pub(crate) struct ToolExecutorCore {
     pub executor: Arc<dyn ToolExecutor>,
+    /// Optional event callback for streaming bash output.
+    pub on_tool_event: Option<ToolEventCallback>,
 }
 
 #[async_trait]
 impl ToolNext for ToolExecutorCore {
     async fn run(&self, request: ToolRequest) -> ToolResponse {
+        // For bash tool, use streaming execution if we have an event callback.
+        if request.call.function_name == "bash" {
+            if let Some(ref callback) = self.on_tool_event {
+                let cb = Arc::clone(callback);
+                let on_output: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |line: String| {
+                    (cb)(ToolEvent::BashStreamLine { line });
+                });
+                return self.executor.execute_streaming(&request.call, Some(on_output)).await;
+            }
+        }
         self.executor.execute(&request.call).await
     }
 }

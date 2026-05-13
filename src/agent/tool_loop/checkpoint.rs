@@ -188,7 +188,13 @@ impl ToolLoopCheckpoint {
     /// Return a human-readable summary of this checkpoint.
     pub fn summary(&self) -> String {
         let input_preview = if self.user_input.len() > 80 {
-            format!("{}...", &self.user_input[..80])
+            // Find a char boundary at or before byte 80 to avoid panic
+            // on multi-byte UTF-8 characters (e.g., CJK input).
+            let mut end = 80;
+            while end > 0 && !self.user_input.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}...", &self.user_input[..end])
         } else {
             self.user_input.clone()
         };

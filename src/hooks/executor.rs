@@ -52,43 +52,54 @@ pub async fn execute_hook(
         }
     };
 
-    // Take stdout/stderr handles before waiting, so we retain ownership of `child`
-    // for potential kill on timeout.
+    // Read stdout/stderr concurrently with waiting for the process to exit.
+    // This prevents deadlocks when the child's output fills the pipe buffer
+    // (~64KB) — the child would block on write while we block on wait.
+    //
+    // We take the handles first, then read them in parallel with wait().
     let stdout_handle = child.stdout.take();
     let stderr_handle = child.stderr.take();
 
-    let wait_result = tokio::time::timeout(timeout, child.wait()).await;
+    let stdout_fut = async {
+        if let Some(mut h) = stdout_handle {
+            let mut buf = Vec::new();
+            let _ = tokio::io::AsyncReadExt::read_to_end(&mut h, &mut buf).await;
+            String::from_utf8_lossy(&buf).to_string()
+        } else {
+            String::new()
+        }
+    };
+
+    let stderr_fut = async {
+        if let Some(mut h) = stderr_handle {
+            let mut buf = Vec::new();
+            let _ = tokio::io::AsyncReadExt::read_to_end(&mut h, &mut buf).await;
+            String::from_utf8_lossy(&buf).to_string()
+        } else {
+            String::new()
+        }
+    };
+
+    // Run all three concurrently: read stdout, read stderr, wait for exit.
+    // The timeout wraps the entire operation.
+    let wait_result = tokio::time::timeout(
+        timeout,
+        async {
+            let (stdout, stderr, status) = tokio::join!(stdout_fut, stderr_fut, child.wait());
+            (stdout, stderr, status)
+        },
+    ).await;
 
     match wait_result {
-        Ok(Ok(status)) => {
-            // Process exited within timeout — read captured output
-            let stdout = if let Some(mut h) = stdout_handle {
-                let mut buf = Vec::new();
-                let _ = tokio::io::AsyncReadExt::read_to_end(&mut h, &mut buf).await;
-                String::from_utf8_lossy(&buf).to_string()
-            } else {
-                String::new()
-            };
-            let stderr = if let Some(mut h) = stderr_handle {
-                let mut buf = Vec::new();
-                let _ = tokio::io::AsyncReadExt::read_to_end(&mut h, &mut buf).await;
-                String::from_utf8_lossy(&buf).to_string()
-            } else {
-                String::new()
-            };
-
+        Ok((stdout, stderr, Ok(status))) => {
             let combined = if stderr.is_empty() {
                 stdout
             } else {
                 format!("{}\n{}", stdout, stderr)
             };
 
-            // Truncate output to 1KB
-            let truncated = if combined.len() > 1024 {
-                format!("{}...[truncated]", &combined[..1024])
-            } else {
-                combined
-            };
+            // Truncate output to 1KB (UTF-8 safe)
+            let truncated = truncate_utf8(&combined, 1024);
 
             HookResult {
                 success: status.success(),
@@ -96,7 +107,7 @@ pub async fn execute_hook(
                 output: truncated,
             }
         }
-        Ok(Err(e)) => {
+        Ok((_, _, Err(e))) => {
             HookResult {
                 success: false,
                 exit_code: None,
@@ -106,6 +117,9 @@ pub async fn execute_hook(
         Err(_) => {
             // Timeout — kill the child process to prevent zombie/leaked processes
             let _ = child.kill().await;
+            // Reap the child process to avoid zombie processes on Linux.
+            // After kill(), we must wait() to collect the exit status.
+            let _ = child.wait().await;
             HookResult {
                 success: false,
                 exit_code: None,
@@ -144,9 +158,10 @@ pub fn post_tool_env(
     session_id: &str,
 ) -> HashMap<String, String> {
     let mut env = pre_tool_env(tool_name, tool_input, session_id);
-    // Truncate tool output to prevent oversized environment variables
+    // Truncate tool output to prevent oversized environment variables (UTF-8 safe)
     let output_value = if tool_output.len() > MAX_TOOL_OUTPUT_ENV_BYTES {
-        format!("{}...[truncated, {} bytes total]", &tool_output[..MAX_TOOL_OUTPUT_ENV_BYTES], tool_output.len())
+        let safe = truncate_utf8_raw(tool_output, MAX_TOOL_OUTPUT_ENV_BYTES);
+        format!("{}...[truncated, {} bytes total]", safe, tool_output.len())
     } else {
         tool_output.to_string()
     };
@@ -155,8 +170,31 @@ pub fn post_tool_env(
     env
 }
 
+/// Truncate a string to at most `max_bytes` bytes at a valid UTF-8 boundary,
+/// appending "...[truncated]" if truncation occurred.
+fn truncate_utf8(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let truncated = truncate_utf8_raw(s, max_bytes);
+    format!("{}...[truncated]", truncated)
+}
+
+/// Truncate a string to at most `max_bytes` bytes at a valid UTF-8 boundary.
+/// Returns the truncated slice (no suffix appended).
+fn truncate_utf8_raw(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    // Walk backwards from max_bytes to find a valid char boundary
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Build environment variables for a SessionStart hook.
-#[allow(dead_code)]
 pub fn session_env(session_id: &str) -> HashMap<String, String> {
     let mut env = HashMap::new();
     env.insert("DAEDALUS_SESSION_ID".to_string(), session_id.to_string());

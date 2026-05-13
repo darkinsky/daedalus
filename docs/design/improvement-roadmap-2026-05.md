@@ -1,8 +1,10 @@
 # Daedalus 提升路线图
 
-> **日期**：2026-05-12
-> **版本**：v1.0
+> **日期**：2026-05-12（更新：2026-05-13）
+> **版本**：v1.1
 > **范围**：基于 ~50K 行代码的全面审查，结合 Claude Code 最新特性、2025-2026 业界前沿研究
+>
+> **v1.1 更新说明**：经代码交叉验证，P0 #1-#3 和 P1 #4-#5、#7 的现状描述与实际代码不符（功能已实现），已更新现状分析并标注剩余工作。同时修复了 `SerializableMessage` 丢失 `preserved`/`content_parts` 字段的真实 Bug。
 
 ---
 
@@ -79,13 +81,25 @@ Daedalus 已具备的核心能力：
 
 ## P0：核心能力缺失
 
-### 1. Hooks 生命周期系统
+### 1. Hooks 生命周期系统 ✅ 已部分实现（4/8 事件）
 
 #### 现状分析
 
-Daedalus 有 `ToolMiddleware` 管道（`src/middleware/`），支持 Turn 级和 Tool 级中间件。权限确认通过硬编码的 `ConfirmationToolMiddleware`（`src/middleware/builtin/confirmation.rs`）实现。
+> ⚠️ **v1.1 更正**：原文称“用户无法自定义工具调用前后的行为”，实际 Hooks 系统已实现。
 
-**问题**：用户无法自定义工具调用前后的行为（如自动格式化、自定义审批逻辑、日志记录）。
+Daedalus 已实现完整的 `src/hooks/` 模块，支持 **4 个事件**：
+- ✅ `PreToolUse`：工具执行前（可阻断）
+- ✅ `PostToolUse`：工具执行后
+- ✅ `SessionStart`：会话新建/恢复
+- ✅ `Stop`：回答结束
+
+已实现的基础设施：
+- `src/hooks/config.rs`：YAML 配置驱动（`daedalus.yaml` 中的 `hooks` 字段）
+- `src/hooks/executor.rs`：Shell 命令执行器（带超时和环境变量注入）
+- `src/hooks/middleware.rs`：`HooksToolMiddleware` 已集成到 Tool Pipeline
+- 支持 `matcher` 正则匹配工具名、环境变量注入、阻断能力、超时保护
+
+**缺失的 4 个事件**：`UserPromptSubmit`、`Notification`、`SubagentStop`、`PreCompact`
 
 #### Claude Code 参考
 
@@ -133,46 +147,36 @@ Claude Code 已实现 **8 大事件**的 Hooks 系统，通过 JSON 配置声明
 }
 ```
 
-#### 实现方案
+#### 剩余实现方案
 
-```
-src/hooks/
-├── mod.rs          # HookEvent 枚举、HookConfig 结构体
-├── config.rs       # 从 settings.json 加载 hooks 配置
-├── executor.rs     # Shell 命令执行器（带超时和环境变量注入）
-└── middleware.rs    # HooksToolMiddleware（集成到 Tool Pipeline）
-```
+已有基础设施（`src/hooks/` 完整模块），只需扩展 `HookEvent` 枚举和对应的触发点：
 
-**关键设计**：
-
-1. **配置层**：在 `settings.json`（全局 `~/.daedalus/settings.json` + 项目级 `.daedalus/settings.local.json`）中支持 `hooks` 字段
-2. **事件匹配**：`matcher` 字段支持正则匹配工具名
-3. **环境变量注入**：将 `tool_name`、`tool_input`、`tool_output` 通过环境变量传递给 shell 命令
-4. **阻断能力**：`PreToolUse` 和 `UserPromptSubmit` 的 hook 如果返回非零退出码，则阻断执行
-5. **超时保护**：每个 hook 命令有 30 秒超时，防止阻塞 agent 流程
-
-**与现有中间件的关系**：
-
-```
-Tool Pipeline:
-  [EventMiddleware] → [HooksMiddleware(Pre)] → [ConfirmationMiddleware] → [TracingMiddleware] → Core → [HooksMiddleware(Post)] → ...
-```
-
-`HooksToolMiddleware` 作为新的中间件层插入管道，`PreToolUse` 在 `ConfirmationMiddleware` 之前执行（先过 hooks 审计，再过权限确认）。
+| 缺失事件 | 触发位置 | 实现难度 |
+|---------|---------|--------|
+| `UserPromptSubmit` | `src/cli/repl.rs` 用户输入处理 | 低 |
+| `Notification` | `src/agent/tool_loop/mod.rs` 需要用户输入时 | 低 |
+| `SubagentStop` | `src/agent/subagent/runner.rs` 子代理完成时 | 低 |
+| `PreCompact` | `src/memory/sliding_window/memory.rs` compact 前 | 低 |
 
 #### 预估工作量
 
-3-5 天
+1-2 天（基础设施已就绪，只需添加事件和触发点）
 
 ---
 
-### 2. Undo/Checkpoint 机制
+### 2. Undo/Checkpoint 机制 ✅ 已实现
 
 #### 现状分析
 
-Daedalus 的 `edit_file`（`src/tools/edit_file.rs`）和 `multi_edit`（`src/tools/multi_edit.rs`）修改文件后无法撤回。虽然有 `MODIFIED_FILES` 全局集合追踪修改过的文件，但没有保存修改前的内容。
+> ⚠️ **v1.1 更正**：原文称“没有保存修改前的内容”，实际已实现内存快照方案。
 
-**问题**：LLM 的编辑可能引入 bug，用户需要手动 `git checkout` 恢复，体验差且容易遗漏。
+Daedalus 已实现 `src/tools/checkpoint.rs`（方案 B：内存快照）：
+- ✅ `snapshot_before_write()` / `snapshot_with_content()`：写操作前保存文件内容
+- ✅ `undo_last()`：回滚最近一次修改
+- ✅ `REDO_STACK`：支持 redo
+- ✅ 内存限制：最多 50 个 checkpoint，总计 100MB
+- ✅ `edit_file.rs` 和 `multi_edit.rs` 已集成
+- ✅ REPL 层已注册 `/undo` 斜杠命令
 
 #### Claude Code 参考
 
@@ -245,40 +249,44 @@ struct Checkpoint {
 
 在 `edit_file` 执行前读取文件内容到内存，`/undo` 时直接写回。
 
-**推荐方案 A**，因为：
+**可选增强**（方案 A 升级）：
+- 将内存快照改为 git-based，使 checkpoint 在进程退出后仍可恢复
 - 大多数代码项目都在 git 仓库中
 - git stash 是原子操作，不会出现部分回滚
 - 不占用额外内存
 
-#### 集成点
-
-- `ConfirmationToolMiddleware` 或新的 `CheckpointMiddleware` 在写操作前自动创建 checkpoint
-- REPL 层注册 `/undo` 斜杠命令
-- `MODIFIED_FILES` 集合已经追踪了修改过的文件，可以复用
-
 #### 预估工作量
 
-2-3 天
+✅ 核心功能已完成。Git-based 增强：1-2 天
 
 ---
 
-### 3. 精确 Token 计数
+### 3. 精确 Token 计数 ⚠️ 启发式已改进，精确方案待实现
 
 #### 现状分析
 
-当前使用 `chars / 4` 的启发式估算（`src/agent/tool_loop/context_pressure.rs`）：
+> ⚠️ **v1.1 更正**：原文称使用简单的 `chars / 4`，实际已实现 CJK-aware 的改进版启发式。
+
+当前使用 CJK-aware 的启发式估算（`src/memory/mod.rs`）：
 
 ```rust
-// Approximate token count: ~4 chars per token for English text
-fn estimate_tokens(text: &str) -> usize {
-    text.len() / 4
+// 已实现的改进版（非文档中描述的简单版）
+fn estimate_tokens_with_mode(text: &str, mode: TokenEstimationMode) -> usize {
+    // CJK: ~1.5 chars/token → multiply by 2/3
+    // ASCII prose: ~4 chars/token
+    // ASCII code/JSON: ~3 chars/token (auto-detected when >15% code indicators)
 }
 ```
 
-**问题**：
-- CJK 文本（中文、日文、韩文）每个字符通常是 1-2 个 token，误差可达 **50-100%**
-- 代码中的特殊符号（`{}`、`()`、`//`）tokenization 不规则
-- compact 触发时机不准确：可能过早触发（浪费上下文）或过晚触发（超出限制）
+已实现的改进：
+- ✅ CJK 字符检测（~1.5 chars/token）
+- ✅ 代码/JSON 内容自动检测（~3 chars/token）
+- ✅ `TokenEstimationMode::Auto | Code | Prose` 三种模式
+- ✅ 完整的单元测试覆盖
+
+**剩余问题**：
+- 启发式精度约 ~90%，对于 compact 触发时机仍有偏差
+- 缺少精确 tokenizer（tiktoken/Anthropic API）集成
 
 #### 业界参考
 
@@ -297,23 +305,12 @@ fn estimate_tokens(text: &str) -> usize {
 | Tool History | 启发式（改进版） | ~90% | 实时 |
 | 总量估算 | 精确 + 启发式混合 | ~95% | 低开销 |
 
-**改进的启发式**：
+**改进的启发式**（✅ 已实现，见 `src/memory/mod.rs::estimate_tokens_with_mode`）
 
-```rust
-fn estimate_tokens_improved(text: &str) -> usize {
-    let mut count = 0;
-    for ch in text.chars() {
-        if ch.is_ascii() {
-            count += 1; // ASCII characters: ~4 chars per token
-        } else {
-            count += 3; // CJK/Unicode: ~1-2 chars per token, use 3 to be safe
-        }
-    }
-    count / 4 + 1
-}
-```
+> 注：原文档中的 `estimate_tokens_improved` 示例有小 bug：空字符串返回 1 而非 0。
+> 实际实现已正确处理（`if text.is_empty() { return 0; }`）。
 
-**精确方案（推荐）**：
+**精确方案（推荐，待实现）**：
 
 ```toml
 # Cargo.toml
@@ -340,19 +337,24 @@ POST /v1/messages/count_tokens
 
 #### 预估工作量
 
-1-2 天
+✅ 启发式改进已完成。精确 tokenizer 集成：1-2 天
 
 ---
 
 ## P1：体验与可靠性提升
 
-### 4. 流式 Bash 输出
+### 4. 流式 Bash 输出 ✅ 已实现
 
 #### 现状分析
 
-当前 `bash` 工具（`src/tools/bash.rs`）使用 `tokio::process::Command` 执行命令，等待命令完成后一次性返回 stdout + stderr。
+> ⚠️ **v1.1 更正**：原文称“等待命令完成后一次性返回”，实际已实现流式输出。
 
-**问题**：长时间运行的命令（如 `cargo build`、`npm install`）在执行期间用户看不到任何输出，只有 spinner 在转。
+Daedalus 已实现完整的流式 Bash 输出（`src/tools/bash.rs`）：
+- ✅ `execute_streaming()` 方法：使用 `BufReader::lines()` 逐行读取
+- ✅ `on_output` 回调：实时推送输出行
+- ✅ `ToolExecutor` trait 已有 `execute_streaming()` 方法
+- ✅ `ToolRouter::execute_streaming()` 对 bash 工具使用流式执行
+- ✅ stdout 和 stderr 分离处理，并发读取
 
 #### Claude Code 参考
 
@@ -413,19 +415,23 @@ async fn execute_streaming(
 }
 ```
 
-**集成方式**：通过 `ToolEvent::StreamText` 事件将 bash 输出实时推送到终端。需要在 `BuiltinTool` trait 中增加可选的 streaming 支持，或通过 `Extensions` 传递回调。
-
 #### 预估工作量
 
-1-2 天
+✅ 已完成。无剩余工作。
 
 ---
 
-### 5. 断点续传 / 任务恢复
+### 5. 断点续传 / 任务恢复 ✅ 已实现
 
 #### 现状分析
 
-进程崩溃后，虽然 `session_messages.json` 被持久化了，但 `tool_loop` 的中间状态（当前轮次、工具调用历史 `tool_history`）丢失。用户需要重新描述任务。
+> ⚠️ **v1.1 更正**：原文称“tool_loop 的中间状态丢失”，实际已实现断点续传。
+
+Daedalus 已实现完整的断点续传（`src/agent/tool_loop/checkpoint.rs`）：
+- ✅ `ToolLoopCheckpoint` 结构体：保存 tool_history、round number、token usage、files_read
+- ✅ 每 5 轮自动保存（`CHECKPOINT_INTERVAL = 5`）
+- ✅ REPL 中已有 `/resume` 命令
+- ✅ 恢复时注入 resume prompt，包含原始任务、进度、工具调用历史
 
 #### 学术参考
 
@@ -459,27 +465,38 @@ async fn execute_streaming(
 }
 ```
 
-**恢复流程**：
-
-```
-/resume 命令:
-  1. 读取 latest.json
-  2. 将 tool_history 注入 tool_loop 的初始状态
-  3. 向 LLM 发送恢复提示："You were working on: {task_summary}. You completed {round} rounds. Continue from where you left off."
-  4. 继续 tool_loop
-```
-
 #### 预估工作量
 
-3-5 天
+✅ 已完成。无剩余工作。
 
 ---
 
-### 6. Context Rot（上下文腐烂）防护
+### 6. Context Rot（上下文腐烂）防护 ✅ 精细版已实现
 
 #### 现状分析
 
-Daedalus 有 6 层压缩体系，但缺少对"上下文质量"的主动监控。随着对话轮次增加，上下文中充满了过时的工具摘要、已解决的问题描述、不再相关的代码片段。
+> ✅ **v1.1 已完成**：基础版（简单阈值检测）已升级为精细版（多信号加权评估）。
+
+Daedalus 已实现完整的 Context Rot 防护体系：
+
+**1. `ContextHealth` 多信号评估**（`src/agent/tool_loop/context_pressure.rs`）：
+- ✅ `tool_history_pct`：工具历史占上下文的百分比
+- ✅ `staleness_ratio`：超过 8 轮的旧内容占比
+- ✅ `round_number`：当前轮次（越高越可能腐烂）
+- ✅ `context_usage_pct`：总体上下文使用率
+- ✅ 加权评分算法：4 个信号按权重组合，得出 4 级严重度
+
+**2. 分级提示注入**：
+- `Healthy`：无提示
+- `Mild`：温和提醒，附带具体指标
+- `Moderate`：强警告，列出 tool_history_pct、staleness_ratio、建议 /compact
+- `Severe`：严重警告，禁止探索性工具调用，强烈建议 /compact
+
+**3. 增强 Compact Prompt**（`src/memory/sliding_window/prompts.rs`）：
+- ✅ `CONTEXT ROT PREVENTION` 指令（12 条规则）
+- ✅ `PRIORITY FRAMEWORK`：ALWAYS KEEP / COMPRESS / ALWAYS DISCARD 三级分类
+
+**4. 完整测试覆盖**：7 个新增单元测试
 
 #### 学术参考
 
@@ -538,71 +555,35 @@ When summarizing, prioritize:
 
 ---
 
-### 7. 多模态支持（图片输入）
+### 7. 多模态支持（图片输入）✅ 已实现
 
 #### 现状分析
 
-`ChatMessage`（`src/llm/types.rs`）只支持文本 content：
+> ⚠️ **v1.1 更正**：原文称 `ChatMessage` 只支持文本 content（且 `role` 类型标注为 `String`），实际多模态支持已完整实现。
 
-```rust
-pub struct ChatMessage {
-    pub role: String,
-    pub content: String,
-    // ...
-}
-```
+Daedalus 已实现完整的多模态支持：
 
-**问题**：无法处理截图、UI 设计稿、错误截图等视觉信息。
+**1. ChatMessage 扩展**（`src/llm/types.rs`）：
+- ✅ `content_parts: Vec<ContentPart>` 字段（Text + Image）
+- ✅ `ContentPart::Text` 和 `ContentPart::Image` 变体
+- ✅ `ImageSource::Base64` 和 `ImageSource::Url` 变体
+- ✅ `ChatMessage::user_with_image()` 构造函数
+- ✅ `role` 类型为 `ChatRole` 枚举（非 `String`）
 
-#### Claude Code 参考
+**2. Adapter 层**：
+- ✅ OpenAI adapter：支持 `content_parts` → `image_url` block 序列化
+- ✅ Anthropic adapter：支持 `content_parts` → `image` block 序列化
 
-Claude Code 支持图片输入，用户可以粘贴截图或指定图片路径。
+**3. CLI 层**：
+- ✅ `/image <path>` 斜杠命令
+- ✅ `load_image_as_base64()` 图片加载函数
 
-#### 实现方案
-
-**1. 扩展 ChatMessage**
-
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ContentPart {
-    Text { text: String },
-    Image {
-        source: ImageSource,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        detail: Option<String>,  // "auto" | "low" | "high"
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ImageSource {
-    Base64 { media_type: String, data: String },
-    Url { url: String },
-}
-
-pub struct ChatMessage {
-    pub role: String,
-    /// Simple text content (backward compatible).
-    pub content: String,
-    /// Rich content parts (text + images). If non-empty, takes precedence over `content`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub content_parts: Vec<ContentPart>,
-}
-```
-
-**2. Adapter 层支持**
-
-- **Anthropic**：原生支持 `content` 数组中的 `image` block
-- **OpenAI**：支持 `content` 数组中的 `image_url` block
-- **Gemini**：支持 `inlineData` 格式
-
-**3. CLI 层**
-
-- 添加 `/image <path>` 斜杠命令
-- 支持从剪贴板粘贴图片（需要平台特定实现）
+**4. Token 估算**：
+- ✅ `context_pressure.rs` 已处理多模态消息（图片按 765 tokens 估算）
 
 #### 预估工作量
 
-3-5 天
+✅ 已完成。无剩余工作。
 
 ---
 
@@ -946,15 +927,15 @@ SlidingWindowMemory
 
 ## 总结矩阵
 
-| 优先级 | # | 方向 | 预估工作量 | 参考来源 | 影响面 |
-|--------|---|------|-----------|---------|--------|
-| 🔴 P0 | 1 | Hooks 生命周期 | 3-5 天 | Claude Code Hooks | 可扩展性 |
-| 🔴 P0 | 2 | Undo/Checkpoint | 2-3 天 | Claude Code `/undo` | 用户安全感 |
-| 🔴 P0 | 3 | 精确 Token 计数 | 1-2 天 | 业界共识 | compact 准确性 |
-| 🟡 P1 | 4 | 流式 Bash 输出 | 1-2 天 | Claude Code | 交互体验 |
-| 🟡 P1 | 5 | 断点续传 | 3-5 天 | Harness Engineering | 长任务可靠性 |
-| 🟡 P1 | 6 | Context Rot 防护 | 1-2 天 | Context Engineering | 输出质量 |
-| 🟡 P1 | 7 | 多模态输入 | 3-5 天 | Claude Code | 能力扩展 |
+| 优先级 | # | 方向 | 状态 | 剩余工作量 | 参考来源 | 影响面 |
+|--------|---|------|------|-----------|---------|--------|
+| 🔴 P0 | 1 | Hooks 生命周期 | ✅ 4/8 事件 | 1-2 天 | Claude Code Hooks | 可扩展性 |
+| 🔴 P0 | 2 | Undo/Checkpoint | ✅ 已完成 | 0（增强 1-2 天） | Claude Code `/undo` | 用户安全感 |
+| 🔴 P0 | 3 | 精确 Token 计数 | ⚠️ 启发式已改进 | 1-2 天 | 业界共识 | compact 准确性 |
+| 🟡 P1 | 4 | 流式 Bash 输出 | ✅ 已完成 | 0 | Claude Code | 交互体验 |
+| 🟡 P1 | 5 | 断点续传 | ✅ 已完成 | 0 | Harness Engineering | 长任务可靠性 |
+| 🟡 P1 | 6 | Context Rot 防护 | ✅ 已完成 | 0 | Context Engineering | 输出质量 |
+| 🟡 P1 | 7 | 多模态输入 | ✅ 已完成 | 0 | Claude Code | 能力扩展 |
 | 🟢 P2 | 8 | 记忆架构升级 | 5-10 天 | Letta/MemGPT | 长期记忆 |
 | 🟢 P2 | 9 | 任务规划 | 3-5 天 | Harness Engineering | 复杂任务 |
 | 🟢 P2 | 10 | 非交互模式增强 | 2-3 天 | Claude Code CI | 自动化 |
@@ -962,7 +943,7 @@ SlidingWindowMemory
 | 🔵 P3 | 12 | Agent 自我反思 | 3-5 天 | Reflexion/LATS | 错误恢复 |
 | 🔵 P3 | 13 | 知识图谱增强 | 5-10 天 | A-MEM | 深度记忆 |
 
-**总计**：~40-70 人天
+**总计**：~40-70 人天（其中 P0-P1 剩余 ~3-6 天，大幅低于原估计的 ~15-23 天）
 
 ---
 
@@ -991,13 +972,21 @@ gantt
     知识图谱增强          :p3_13, after p3_12, 10d
 ```
 
-**推荐的前 5 步**：
+**推荐的前 5 步**（v1.1 更新）：
 
-1. **精确 Token 计数**（1-2 天）— 基础设施，影响所有上下文管理决策
-2. **Undo/Checkpoint**（2-3 天）— 用户安全感，降低使用门槛
-3. **Hooks 生命周期**（3-5 天）— 可扩展性，解锁用户自定义能力
-4. **流式 Bash 输出**（1-2 天）— 交互体验，低成本高收益
-5. **Context Rot 防护**（1-2 天）— 输出质量，低成本高收益
+1. ~~**精确 Token 计数**（1-2 天）~~ → ✅ 启发式已改进，剩余：集成 tiktoken-rs（1-2 天）
+2. ~~**Undo/Checkpoint**（2-3 天）~~ → ✅ 已完成
+3. ~~**Hooks 生命周期**（3-5 天）~~ → ✅ 4/8 事件已实现，剩余：补充 4 个事件（1-2 天）
+4. ~~**流式 Bash 输出**（1-2 天）~~ → ✅ 已完成
+5. ~~**Context Rot 防护**（1-2 天）~~ → ✅ 精细版已实现（ContextHealth 多信号评估 + 分级提示 + 增强 Compact Prompt）
+
+**更新后的优先事项**：
+
+1. **Hooks 补充 4 个事件**（1-2 天）— `UserPromptSubmit`、`Notification`、`SubagentStop`、`PreCompact`
+2. **精确 Token 计数**（1-2 天）— 集成 tiktoken-rs 或 Anthropic token counting API
+3. **任务规划与分解**（3-5 天）— P2 中最高优先级
+4. **非交互模式增强**（2-3 天）— CI/CD 集成
+5. **记忆架构升级**（5-10 天）— 分层记忆 + 策略组合
 
 ---
 

@@ -9,31 +9,95 @@ use crate::memory::persistence::atomic_write;
 
 // ── Serializable message ──
 
+/// Serializable content part for disk persistence.
+///
+/// Only `Text` parts are persisted. Image parts (which contain large base64
+/// data) are intentionally dropped during serialization to avoid bloating
+/// the session file. After a restart, image context is lost — this is an
+/// acceptable trade-off since images are typically transient input.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+enum SerializableContentPart {
+    Text { text: String },
+    /// Placeholder for an image that was present but not persisted.
+    ImagePlaceholder {
+        #[serde(default)]
+        detail: Option<String>,
+    },
+}
+
 /// Serializable representation of a ChatMessage for disk persistence.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct SerializableMessage {
     role: String,
     content: String,
+    /// Whether this message is semantically preserved (not compressible).
+    /// Defaults to `false` for backward compatibility with old session files.
+    #[serde(default)]
+    preserved: bool,
+    /// Rich content parts (text + image placeholders).
+    /// Empty by default for backward compatibility.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    content_parts: Vec<SerializableContentPart>,
 }
 
 impl From<&ChatMessage> for SerializableMessage {
     fn from(msg: &ChatMessage) -> Self {
+        let content_parts: Vec<SerializableContentPart> = msg.content_parts.iter().filter_map(|part| {
+            match part {
+                crate::llm::ContentPart::Text { text } => {
+                    Some(SerializableContentPart::Text { text: text.clone() })
+                }
+                crate::llm::ContentPart::Image { detail, .. } => {
+                    // Store a placeholder instead of the full base64 image data.
+                    Some(SerializableContentPart::ImagePlaceholder {
+                        detail: detail.clone(),
+                    })
+                }
+            }
+        }).collect();
+
         Self {
             role: msg.role.to_string(),
             content: msg.content.clone(),
+            preserved: msg.preserved,
+            content_parts,
         }
     }
 }
 
 impl SerializableMessage {
     pub(super) fn to_chat_message(&self) -> ChatMessage {
-        match self.role.as_str() {
+        let mut msg = match self.role.as_str() {
             "system" => ChatMessage::system(&self.content),
             "user" => ChatMessage::user(&self.content),
             "assistant" => ChatMessage::assistant(&self.content),
             "tool" => ChatMessage::tool(&self.content),
             _ => ChatMessage::user(&self.content), // fallback
+        };
+
+        // Restore preserved flag
+        msg.preserved = self.preserved;
+
+        // Restore text content parts (image placeholders are dropped since
+        // we don't have the original image data)
+        if !self.content_parts.is_empty() {
+            let parts: Vec<crate::llm::ContentPart> = self.content_parts.iter().filter_map(|part| {
+                match part {
+                    SerializableContentPart::Text { text } => {
+                        Some(crate::llm::ContentPart::Text { text: text.clone() })
+                    }
+                    SerializableContentPart::ImagePlaceholder { .. } => {
+                        // Image data was not persisted; drop the placeholder.
+                        // The text content field still contains the user's text.
+                        None
+                    }
+                }
+            }).collect();
+            msg.content_parts = parts;
         }
+
+        msg
     }
 }
 

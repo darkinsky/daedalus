@@ -464,6 +464,7 @@ impl ChatAgent {
             self.permission_mode.clone(),
             self.hooks_config.clone(),
             self.session.id.clone(),
+            self.checkpoint_path(),
         ));
 
         let mut pipeline = TurnPipeline::new(core);
@@ -651,10 +652,43 @@ impl AgentMode for ChatAgent {
     ) -> Result<ChatResponse> {
         let pipeline = self.build_turn_pipeline(on_tool_event.cloned());
 
+        let mut extensions = Extensions::new();
+        // Pass user_input through extensions so CoreTurnHandler can set it
+        // on LoopConfig for checkpoint metadata.
+        extensions.insert(user_input.to_string());
+
         let request = TurnRequest {
             user_input,
             messages: vec![], // MemoryMiddleware fills this
-            extensions: Extensions::new(),
+            extensions,
+        };
+
+        let response = pipeline.execute(request).await?;
+        Ok(response.chat_response)
+    }
+
+    /// Send a pre-built ChatMessage (supports multimodal content).
+    ///
+    /// Unlike the default implementation which drops `content_parts`,
+    /// this stores the full multimodal message in memory so the LLM
+    /// receives both text and image content.
+    async fn chat_with_message(
+        &mut self,
+        message: crate::llm::ChatMessage,
+        on_tool_event: Option<&ToolEventCallback>,
+    ) -> Result<ChatResponse> {
+        let pipeline = self.build_turn_pipeline(on_tool_event.cloned());
+
+        let mut extensions = Extensions::new();
+        extensions.insert(message.content.clone());
+        // Store the full multimodal message so MemoryMiddleware can use it
+        // instead of building a plain-text user message.
+        extensions.insert(message.clone());
+
+        let request = TurnRequest {
+            user_input: &message.content,
+            messages: vec![], // MemoryMiddleware fills this
+            extensions,
         };
 
         let response = pipeline.execute(request).await?;
@@ -730,6 +764,18 @@ impl AgentMode for ChatAgent {
                 tracing::warn!(error = %e, "Failed to persist memory after turn");
             }
         }
+    }
+
+    fn hooks_config(&self) -> Option<&crate::hooks::config::HooksConfig> {
+        if self.hooks_config.is_empty() {
+            None
+        } else {
+            Some(&self.hooks_config)
+        }
+    }
+
+    fn session_id(&self) -> &str {
+        &self.session.id
     }
 
     fn checkpoint_path(&self) -> Option<std::path::PathBuf> {

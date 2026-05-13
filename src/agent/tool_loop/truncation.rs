@@ -401,7 +401,7 @@ pub(crate) fn estimate_history_chars(history: &[ToolRound]) -> usize {
 ///
 /// This avoids `value.to_string()` which allocates a new String on every call.
 /// The estimate is approximate but sufficient for budget comparison.
-fn estimate_json_len(value: &serde_json::Value) -> usize {
+pub(super) fn estimate_json_len(value: &serde_json::Value) -> usize {
     match value {
         serde_json::Value::Null => 4,
         serde_json::Value::Bool(b) => if *b { 4 } else { 5 },

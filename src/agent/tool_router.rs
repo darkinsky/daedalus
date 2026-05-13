@@ -376,6 +376,46 @@ impl ToolRouter {
         )
     }
 
+    /// Execute a tool call with optional streaming output callback.
+    ///
+    /// For the `bash` tool, if `on_output` is provided, uses streaming execution
+    /// that sends output lines in real-time. For all other tools, falls back to
+    /// the standard `execute()` method.
+    pub async fn execute_streaming(
+        &self,
+        tool_call: &ToolCall,
+        on_output: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    ) -> ToolResponse {
+        // Only bash tool supports streaming; for everything else, fall back.
+        if tool_call.function_name != "bash" || on_output.is_none() {
+            return self.execute(tool_call).await;
+        }
+
+        // Check tool filter before execution
+        if !self.is_tool_allowed(&tool_call.function_name) {
+            tracing::warn!(
+                tool = %tool_call.function_name,
+                "Tool call blocked by filter"
+            );
+            return ToolResponse::error(
+                &tool_call.call_id,
+                format!("Error: Tool '{}' is not allowed by the current tool filter", tool_call.function_name),
+            );
+        }
+
+        // Use streaming execution for bash
+        self.execute_and_log(
+            &tool_call.call_id,
+            &tool_call.function_name,
+            "built-in",
+            self.builtin.call_tool_streaming(
+                &tool_call.function_name,
+                tool_call.arguments.clone(),
+                on_output,
+            ),
+        ).await
+    }
+
     /// Execute a tool call future and log the result.
     ///
     /// This helper eliminates the duplicated Ok/Err logging pattern

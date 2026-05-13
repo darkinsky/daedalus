@@ -102,9 +102,48 @@ impl ApiAdapter for VenusAdapter {
         // against memory strategies that may produce empty assistant messages.
         let mut msg_array: Vec<Value> = messages
             .iter()
-            .filter(|msg| !msg.content.is_empty())
+            .filter(|msg| !msg.content.is_empty() || msg.has_content_parts())
             .map(|msg| {
-                if msg.cache_control.is_some() {
+                if msg.has_content_parts() {
+                    // Multimodal message: serialize content_parts as content block array
+                    let parts: Vec<Value> = msg.content_parts.iter().map(|part| {
+                        match part {
+                            crate::llm::ContentPart::Text { text } => {
+                                json!({"type": "text", "text": text})
+                            }
+                            crate::llm::ContentPart::Image { source, detail } => {
+                                match source {
+                                    crate::llm::ImageSource::Base64 { media_type, data } => {
+                                        let mut img = json!({
+                                            "type": "image_url",
+                                            "image_url": {
+                                                "url": format!("data:{};base64,{}", media_type, data)
+                                            }
+                                        });
+                                        if let Some(d) = detail {
+                                            img["image_url"]["detail"] = json!(d);
+                                        }
+                                        img
+                                    }
+                                    crate::llm::ImageSource::Url { url } => {
+                                        let mut img = json!({
+                                            "type": "image_url",
+                                            "image_url": {"url": url}
+                                        });
+                                        if let Some(d) = detail {
+                                            img["image_url"]["detail"] = json!(d);
+                                        }
+                                        img
+                                    }
+                                }
+                            }
+                        }
+                    }).collect();
+                    json!({
+                        "role": msg.role.to_string(),
+                        "content": parts,
+                    })
+                } else if msg.cache_control.is_some() {
                     json!({
                         "role": msg.role.to_string(),
                         "content": [{

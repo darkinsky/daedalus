@@ -405,6 +405,12 @@ async fn handle_chat(
             // to ensure conversation history survives process crashes.
             agent.persist_memory().await;
 
+            // ── Trigger Stop lifecycle hooks ──
+            if let Some(hooks_config) = agent.hooks_config() {
+                let session_id = agent.session_id().to_string();
+                crate::hooks::run_stop_hooks(hooks_config, &session_id).await;
+            }
+
             // Token usage is now automatically tracked by CostTurnMiddleware.
             // We only need to handle subagent stats for the turn summary.
 
@@ -672,10 +678,43 @@ async fn handle_resume(
             );
             println!();
 
-            // Resume by re-sending the original user input
-            // The tool loop will pick up from where it left off via the checkpoint
-            let user_input = cp.user_input.clone();
-            handle_chat(&user_input, agent, cost, confirm_rx).await;
+            // Build a resume prompt that gives the LLM context about what
+            // was accomplished before the crash. This is more reliable than
+            // injecting raw tool_history (which may contain stale file contents).
+            let tool_summary: Vec<String> = cp.restore_tool_history().iter().enumerate().map(|(i, round)| {
+                let calls: Vec<String> = round.calls.iter().map(|c| {
+                    format!("{}({})", c.function_name, crate::tools::truncate_chars(&c.arguments.to_string(), 100))
+                }).collect();
+                format!("  Round {}: {}", i + 1, calls.join(", "))
+            }).collect();
+
+            let files_read = cp.restore_files_read();
+            let files_summary = if files_read.is_empty() {
+                String::new()
+            } else {
+                let mut sorted: Vec<&String> = files_read.iter().collect();
+                sorted.sort();
+                format!("\nFiles read: {}", sorted.iter().map(|p| p.rsplit('/').next().unwrap_or(p)).collect::<Vec<_>>().join(", "))
+            };
+
+            let resume_prompt = format!(
+                "[RESUMING INTERRUPTED TASK]\n\
+                 Original task: {}\n\
+                 Progress: completed {} rounds with {} tool calls.{}\n\
+                 Tool call history:\n{}\n\n\
+                 Continue from where you left off. Do NOT repeat work that was already done. \
+                 Review the files that were already read and pick up the task from the point of interruption.",
+                cp.user_input,
+                cp.last_round,
+                cp.total_tool_calls,
+                files_summary,
+                tool_summary.join("\n"),
+            );
+
+            // Clear the checkpoint now that we're resuming
+            ToolLoopCheckpoint::clear(&checkpoint_path);
+
+            handle_chat(&resume_prompt, agent, cost, confirm_rx).await;
         }
         Ok(None) => {
             println!(
@@ -790,6 +829,12 @@ async fn handle_chat_with_message(
             // Persist memory
             agent.persist_memory().await;
 
+            // ── Trigger Stop lifecycle hooks ──
+            if let Some(hooks_config) = agent.hooks_config() {
+                let session_id = agent.session_id().to_string();
+                crate::hooks::run_stop_hooks(hooks_config, &session_id).await;
+            }
+
             // Render footer
             render::response_footer(result.usage.as_ref(), elapsed, agent.context_window());
             println!();
@@ -821,6 +866,12 @@ pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
     let confirm_rx = Arc::new(tokio::sync::Mutex::new(confirm_rx));
 
     render::banner(agent);
+
+    // ── Trigger SessionStart lifecycle hooks ──
+    if let Some(hooks_config) = agent.hooks_config() {
+        let session_id = agent.session_id().to_string();
+        crate::hooks::run_session_start_hooks(hooks_config, &session_id).await;
+    }
 
     // Configure rustyline with tab-completion support
     let config = Config::builder()

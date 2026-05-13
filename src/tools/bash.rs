@@ -140,13 +140,20 @@ impl BashTool {
         let mut output = String::new();
         let mut stderr_output = String::new();
         let max_bytes = self.config.max_output_bytes;
+        let mut stdout_closed = false;
+        let mut stderr_closed = false;
 
         let timeout = std::time::Duration::from_secs(timeout_secs);
         let deadline = tokio::time::Instant::now() + timeout;
 
         loop {
+            // If both streams are closed, exit the loop
+            if stdout_closed && stderr_closed {
+                break;
+            }
+
             tokio::select! {
-                line = stdout_reader.next_line() => {
+                line = stdout_reader.next_line(), if !stdout_closed => {
                     match line {
                         Ok(Some(line)) => {
                             if output.len() + line.len() < max_bytes {
@@ -155,14 +162,16 @@ impl BashTool {
                                 output.push('\n');
                             }
                         }
-                        Ok(None) => break, // stdout closed
+                        Ok(None) => {
+                            stdout_closed = true; // Stop polling stdout, continue draining stderr
+                        }
                         Err(e) => {
                             tracing::debug!(error = %e, "Error reading stdout");
-                            break;
+                            stdout_closed = true;
                         }
                     }
                 }
-                line = stderr_reader.next_line() => {
+                line = stderr_reader.next_line(), if !stderr_closed => {
                     match line {
                         Ok(Some(line)) => {
                             if stderr_output.len() + line.len() < max_bytes {
@@ -171,14 +180,18 @@ impl BashTool {
                                 stderr_output.push('\n');
                             }
                         }
-                        Ok(None) => {} // stderr closed, continue reading stdout
+                        Ok(None) => {
+                            stderr_closed = true; // Stop polling stderr
+                        }
                         Err(e) => {
                             tracing::debug!(error = %e, "Error reading stderr");
+                            stderr_closed = true;
                         }
                     }
                 }
                 _ = tokio::time::sleep_until(deadline) => {
                     let _ = child.kill().await;
+                    let _ = child.wait().await;
                     anyhow::bail!(
                         "Command timed out after {} seconds: {}",
                         timeout_secs,

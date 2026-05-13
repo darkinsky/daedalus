@@ -66,9 +66,10 @@ impl HooksConfig {
 /// A single hook entry.
 #[derive(Debug, Clone, Deserialize)]
 pub struct HookEntry {
-    /// Optional regex/glob pattern to match tool names.
+    /// Optional glob pattern to match tool names.
     /// If not set, the hook matches all tools.
-    /// Supports `|` for alternation (e.g., "edit_file|write_file").
+    /// Supports `|` for alternation (e.g., "edit_file|write_file"),
+    /// `*` for wildcard (e.g., "git*", "*_file", "*edit*").
     #[serde(default)]
     pub matcher: Option<String>,
 
@@ -100,16 +101,48 @@ fn default_timeout() -> u64 {
 
 /// Check if a tool name matches a pattern.
 ///
-/// Supports `|` for alternation (e.g., "edit_file|write_file|multi_edit").
+/// Supports:
+/// - `|` for alternation (e.g., "edit_file|write_file|multi_edit")
+/// - `*` as a standalone wildcard matching everything
+/// - Suffix glob: `git*` matches "git_status", "git_diff"
+/// - Prefix glob: `*_file` matches "edit_file", "read_file"
+/// - Contains glob: `*edit*` matches "edit_file", "multi_edit"
 fn matches_tool(pattern: &str, tool_name: &str) -> bool {
     pattern.split('|').any(|p| {
         let p = p.trim();
         if p == "*" {
             true
         } else if p.contains('*') {
-            // Simple glob: "git*" matches "git_status", "git_diff", etc.
-            let prefix = p.trim_end_matches('*');
-            tool_name.starts_with(prefix)
+            // Split on '*' and check if all parts appear in order
+            let parts: Vec<&str> = p.split('*').collect();
+            let mut remaining = tool_name;
+
+            for (i, part) in parts.iter().enumerate() {
+                if part.is_empty() {
+                    continue;
+                }
+                if i == 0 {
+                    // First segment must be a prefix (pattern doesn't start with *)
+                    if !remaining.starts_with(part) {
+                        return false;
+                    }
+                    remaining = &remaining[part.len()..];
+                } else if i == parts.len() - 1 {
+                    // Last segment must be a suffix (pattern doesn't end with *)
+                    if !remaining.ends_with(part) {
+                        return false;
+                    }
+                } else {
+                    // Middle segments must appear somewhere in the remaining string
+                    match remaining.find(part) {
+                        Some(pos) => {
+                            remaining = &remaining[pos + part.len()..];
+                        }
+                        None => return false,
+                    }
+                }
+            }
+            true
         } else {
             p == tool_name
         }
@@ -140,6 +173,23 @@ mod tests {
         assert!(matches_tool("git*", "git_status"));
         assert!(matches_tool("git*", "git_diff"));
         assert!(!matches_tool("git*", "bash"));
+    }
+
+    #[test]
+    fn test_matches_tool_prefix_wildcard() {
+        assert!(matches_tool("*_file", "edit_file"));
+        assert!(matches_tool("*_file", "read_file"));
+        assert!(matches_tool("*_file", "write_file"));
+        assert!(!matches_tool("*_file", "bash"));
+        assert!(!matches_tool("*_file", "file_reader"));
+    }
+
+    #[test]
+    fn test_matches_tool_contains_wildcard() {
+        assert!(matches_tool("*edit*", "edit_file"));
+        assert!(matches_tool("*edit*", "multi_edit"));
+        assert!(matches_tool("*edit*", "multi_edit_tool"));
+        assert!(!matches_tool("*edit*", "bash"));
     }
 
     #[test]

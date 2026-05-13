@@ -473,6 +473,12 @@ impl SubagentRunner {
             // Subagents don't use checkpoints (they're short-lived).
             checkpoint_path: None,
             user_input: None,
+            // Subagents never resume from checkpoints.
+            initial_tool_history: Vec::new(),
+            initial_usage: None,
+            initial_round_offset: 0,
+            initial_total_tool_calls: 0,
+            initial_files_read: std::collections::HashSet::new(),
         };
 
         let loop_ctx = LoopContext {

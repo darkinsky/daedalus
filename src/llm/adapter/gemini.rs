@@ -62,10 +62,44 @@ impl ApiAdapter for GeminiAdapter {
                     ChatRole::Assistant => "model",
                     _ => "user",
                 };
-                json!({
-                    "role": role,
-                    "parts": [{"text": msg.content}]
-                })
+                // Handle multimodal content_parts
+                if msg.has_content_parts() {
+                    let parts: Vec<Value> = msg.content_parts.iter().map(|part| {
+                        match part {
+                            crate::llm::ContentPart::Text { text } => {
+                                json!({"text": text})
+                            }
+                            crate::llm::ContentPart::Image { source, .. } => {
+                                match source {
+                                    crate::llm::ImageSource::Base64 { media_type, data } => {
+                                        json!({
+                                            "inline_data": {
+                                                "mime_type": media_type,
+                                                "data": data,
+                                            }
+                                        })
+                                    }
+                                    crate::llm::ImageSource::Url { url } => {
+                                        json!({
+                                            "file_data": {
+                                                "file_uri": url,
+                                            }
+                                        })
+                                    }
+                                }
+                            }
+                        }
+                    }).collect();
+                    json!({
+                        "role": role,
+                        "parts": parts,
+                    })
+                } else {
+                    json!({
+                        "role": role,
+                        "parts": [{"text": msg.content}]
+                    })
+                }
             })
             .collect();
 

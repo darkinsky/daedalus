@@ -248,6 +248,10 @@ pub trait BuiltinTool: Send + Sync {
 /// the same interface pattern as `McpManager` but for local tools.
 pub struct BuiltinToolRegistry {
     tools: Vec<Box<dyn BuiltinTool>>,
+    /// Bash tool configuration, kept separately so `call_tool_streaming`
+    /// can create a streaming `BashTool` with the correct user config
+    /// (trait objects cannot be downcast).
+    bash_config: BashConfig,
 }
 
 impl BuiltinToolRegistry {
@@ -270,7 +274,7 @@ impl BuiltinToolRegistry {
             Box::new(search_files::SearchFilesTool),
             Box::new(grep_search::GrepSearchTool),
             Box::new(get_file_info::GetFileInfoTool),
-            Box::new(bash::BashTool::new(bash_config)),
+            Box::new(bash::BashTool::new(bash_config.clone())),
             Box::new(take_note::TakeNoteTool::new(take_note::new_shared_notes())),
         ];
 
@@ -279,7 +283,7 @@ impl BuiltinToolRegistry {
             "Built-in tool registry initialized"
         );
 
-        Self { tools }
+        Self { tools, bash_config }
     }
 
     /// Create an empty registry (no default tools).
@@ -287,7 +291,7 @@ impl BuiltinToolRegistry {
     /// Used by `SubagentRunner` to build a filtered tool set by
     /// selectively registering tools from the full registry.
     pub fn new_empty() -> Self {
-        Self { tools: Vec::new() }
+        Self { tools: Vec::new(), bash_config: BashConfig::default() }
     }
 
     /// Consume the registry and return the owned tool list.
@@ -381,19 +385,9 @@ impl BuiltinToolRegistry {
         // Special case: bash tool with streaming callback
         if name == "bash" {
             if let Some(callback) = on_output {
-                // Find the bash tool and downcast to use streaming execution
-                let _tool = self
-                    .tools
-                    .iter()
-                    .find(|t| t.name() == "bash")
-                    .ok_or_else(|| anyhow::anyhow!("Built-in tool 'bash' not found"))?;
-
                 // We can't downcast trait objects, so we create a new BashTool
-                // with default config for streaming. The actual config is in the
-                // registered tool, but we need the streaming method.
-                // Instead, use a wrapper approach: execute via the streaming method
-                // on a temporary BashTool with the same config.
-                let bash_tool = bash::BashTool::new(bash::BashConfig::default());
+                // with the same config stored in the registry.
+                let bash_tool = bash::BashTool::new(self.bash_config.clone());
                 return bash_tool.execute_streaming(arguments, move |line| {
                     callback(line);
                 }).await;

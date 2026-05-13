@@ -54,6 +54,19 @@ impl TurnMiddleware for MemoryTurnMiddleware {
             request.messages = mem.build_messages();
         }
 
+        // If a multimodal ChatMessage was passed via extensions (from chat_with_message),
+        // replace the last user message's content_parts so the LLM receives image data.
+        if let Some(multimodal_msg) = request.extensions.get::<crate::llm::ChatMessage>() {
+            if multimodal_msg.has_content_parts() {
+                // Find the last user message and inject content_parts
+                if let Some(last_user) = request.messages.iter_mut().rev()
+                    .find(|m| m.role == crate::llm::ChatRole::User)
+                {
+                    last_user.content_parts = multimodal_msg.content_parts.clone();
+                }
+            }
+        }
+
         // ── Delegate to core ──
         let response = next.run(request).await?;
 
