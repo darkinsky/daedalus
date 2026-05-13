@@ -83,6 +83,18 @@ CRITICAL REQUIREMENTS:
 6. Use a structured format with clear sections.
 7. Be as concise as possible while retaining all actionable information.
 
+CONTEXT ROT PREVENTION — Aggressively discard stale information:
+8. DISCARD information about issues that have been fully resolved. Only mention \
+   them if the resolution is relevant to current work.
+9. DISCARD old tool call details (file reads, searches) that produced no useful \
+   results or whose results have been superseded by newer information.
+10. COMPRESS repeated exploration patterns into one-line summaries \
+    (e.g., 'Searched 15 files for X, found relevant code in A.rs and B.rs').
+11. DISCARD intermediate debugging steps that led to dead ends. Only keep the \
+    final working solution.
+12. When in doubt, prefer DISCARDING over KEEPING. The goal is maximum \
+    information density, not completeness.
+
 Output format:
 
 <compact_summary>

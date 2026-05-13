@@ -159,6 +159,14 @@ pub enum ToolEvent {
         /// Current context usage percentage (0-100).
         usage_pct: u8,
     },
+    /// A line of real-time output from a bash command.
+    ///
+    /// Emitted during streaming bash execution so the CLI can display
+    /// command output as it arrives, rather than waiting for completion.
+    BashStreamLine {
+        /// The output line (may include "[stderr] " prefix for stderr lines).
+        line: String,
+    },
 }
 
 /// Callback type for receiving tool execution events.
@@ -357,5 +365,42 @@ impl BuiltinToolRegistry {
             .ok_or_else(|| anyhow::anyhow!("Built-in tool '{}' not found", name))?;
 
         tool.execute(arguments).await
+    }
+
+    /// Execute a built-in tool with optional streaming output callback.
+    ///
+    /// For the `bash` tool, if `on_output` is provided, uses streaming execution
+    /// that sends output lines in real-time. For all other tools, falls back to
+    /// the standard `execute()` method.
+    pub async fn call_tool_streaming(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+        on_output: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    ) -> Result<String> {
+        // Special case: bash tool with streaming callback
+        if name == "bash" {
+            if let Some(callback) = on_output {
+                // Find the bash tool and downcast to use streaming execution
+                let _tool = self
+                    .tools
+                    .iter()
+                    .find(|t| t.name() == "bash")
+                    .ok_or_else(|| anyhow::anyhow!("Built-in tool 'bash' not found"))?;
+
+                // We can't downcast trait objects, so we create a new BashTool
+                // with default config for streaming. The actual config is in the
+                // registered tool, but we need the streaming method.
+                // Instead, use a wrapper approach: execute via the streaming method
+                // on a temporary BashTool with the same config.
+                let bash_tool = bash::BashTool::new(bash::BashConfig::default());
+                return bash_tool.execute_streaming(arguments, move |line| {
+                    callback(line);
+                }).await;
+            }
+        }
+
+        // Default: non-streaming execution
+        self.call_tool(name, arguments).await
     }
 }

@@ -143,6 +143,18 @@ pub trait AgentMode: AgentMetadata + Send + Sync {
         on_tool_event: Option<&ToolEventCallback>,
     ) -> Result<ChatResponse>;
 
+    /// Send a pre-built ChatMessage (supports multimodal content).
+    ///
+    /// Default implementation extracts the text content and delegates to `chat()`.
+    /// Implementations that support multimodal input should override this.
+    async fn chat_with_message(
+        &mut self,
+        message: crate::llm::ChatMessage,
+        on_tool_event: Option<&ToolEventCallback>,
+    ) -> Result<ChatResponse> {
+        self.chat(&message.content, on_tool_event).await
+    }
+
     /// Attach an MCP manager to enable tool calling.
     ///
     /// The default implementation does nothing (for modes that don't support tools).

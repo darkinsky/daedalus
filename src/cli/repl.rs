@@ -55,6 +55,16 @@ async fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &Shar
         Command::Agents => render::agents_list(agent),
         Command::Permissions => handle_permissions(agent),
         Command::Undo => handle_undo().await,
+        Command::Image { path } => {
+            // Image handling is done in the REPL loop, not here.
+            // This branch should not be reached — the REPL loop intercepts it.
+            println!(
+                "  {} Image queued: {}",
+                "📎".with(Color::Cyan),
+                path.with(Color::Grey),
+            );
+            println!();
+        }
         Command::Unknown(raw) => render::unknown_command(raw),
     }
     Ok(false)
@@ -620,6 +630,115 @@ async fn handle_undo() {
     }
 }
 
+/// Load an image file and return its base64-encoded content with MIME type.
+fn load_image_as_base64(path: &str) -> Result<(String, String)> {
+    use std::path::Path;
+    use anyhow::Context as _;
+
+    let path = Path::new(path);
+    if !path.exists() {
+        anyhow::bail!("File not found: {}", path.display());
+    }
+
+    let extension = path.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let media_type = match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        _ => anyhow::bail!("Unsupported image format: .{}. Supported: png, jpg, gif, webp, svg", extension),
+    };
+
+    let data = std::fs::read(path)
+        .with_context(|| format!("Failed to read image file: {}", path.display()))?;
+
+    // Check file size (max 20MB for most APIs)
+    if data.len() > 20 * 1024 * 1024 {
+        anyhow::bail!("Image file too large ({} bytes). Maximum: 20MB", data.len());
+    }
+
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
+
+    Ok((media_type.to_string(), encoded))
+}
+
+/// Handle a chat with a pre-built multimodal message.
+async fn handle_chat_with_message(
+    message: crate::llm::ChatMessage,
+    agent: &mut dyn AgentMode,
+    _cost: &SharedSessionCost,
+    confirm_rx: &Arc<tokio::sync::Mutex<ConfirmationReceiver>>,
+) {
+    let text_preview = if message.content.len() > 50 {
+        format!("{}...", &message.content[..50])
+    } else {
+        message.content.clone()
+    };
+    tracing::debug!("User input (multimodal): {}", text_preview);
+
+    // Show spinner while waiting for LLM response
+    let spinner = Arc::new(render::spinner());
+    let start = Instant::now();
+
+    let stats_collector = Arc::new(Mutex::new(TurnStatsCollector::default()));
+    let streaming_state = Arc::new(Mutex::new(StreamingState::default()));
+    let tool_callback = build_tool_event_callback(&spinner, &stats_collector, &streaming_state);
+
+    agent.set_subagent_event_callback(Some(Arc::clone(&tool_callback)));
+
+    let confirm_rx_clone = Arc::clone(confirm_rx);
+    let confirm_spinner = Arc::clone(&spinner);
+    let confirm_handle = tokio::spawn(async move {
+        let mut rx = confirm_rx_clone.lock().await;
+        while let Some(request) = rx.recv().await {
+            confirm_spinner.finish_and_clear();
+            tokio::task::spawn_blocking(move || {
+                let decision = prompt_user_confirmation(&request);
+                let _ = request.response_tx.send(decision);
+            }).await.ok();
+            confirm_spinner.reset_elapsed();
+            confirm_spinner.set_message("Thinking\u{2026}");
+            confirm_spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+        }
+    });
+
+    match agent.chat_with_message(message, Some(&tool_callback)).await {
+        Ok(result) => {
+            let elapsed = start.elapsed().as_secs_f64();
+            spinner.finish_and_clear();
+            confirm_handle.abort();
+
+            let was_streamed = streaming_state.lock()
+                .map(|s| s.content_was_streamed)
+                .unwrap_or(false);
+
+            if !was_streamed {
+                render::response(&result.content);
+            }
+
+            // Persist memory
+            agent.persist_memory().await;
+
+            // Render footer
+            render::response_footer(result.usage.as_ref(), elapsed, agent.context_window());
+            println!();
+        }
+        Err(e) => {
+            spinner.finish_and_clear();
+            confirm_handle.abort();
+            render::error(&e);
+        }
+    }
+
+    agent.set_subagent_event_callback(None);
+}
+
 /// Run an interactive REPL loop in Claude Code style.
 pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
     // Use the agent's shared session cost (populated by CostTurnMiddleware)
@@ -651,6 +770,9 @@ pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
 
     let prompt = format!("{} ", ">".with(Color::Blue).attribute(Attribute::Bold));
 
+    // Pending image attachment for the next message
+    let mut pending_image: Option<String> = None;
+
     loop {
         let readline = rl.readline(&prompt);
 
@@ -664,6 +786,31 @@ pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
 
                 // ── Handle slash commands ──
                 if let Some(cmd) = commands::parse(input) {
+                    // Special handling for /image — store the path for the next message
+                    if let commands::Command::Image { ref path } = cmd {
+                        match load_image_as_base64(path) {
+                            Ok((media_type, _data)) => {
+                                pending_image = Some(path.clone());
+                                println!(
+                                    "  {} Image attached: {} ({}). Type your message to send it.",
+                                    "📎".with(Color::Cyan).attribute(Attribute::Bold),
+                                    path.as_str().with(Color::Grey),
+                                    media_type.as_str().with(Color::DarkGrey),
+                                );
+                                println!();
+                            }
+                            Err(e) => {
+                                println!(
+                                    "  {} Failed to load image: {}",
+                                    "✗".with(Color::Red).attribute(Attribute::Bold),
+                                    e.to_string().with(Color::Grey),
+                                );
+                                println!();
+                            }
+                        }
+                        continue;
+                    }
+
                     if handle_command(cmd, agent, &cost).await? {
                         break;
                     }
@@ -676,8 +823,30 @@ pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
                     break;
                 }
 
-                // ── Chat with the agent ──
-                handle_chat(input, agent, &cost, &confirm_rx).await;
+                // ── Chat with the agent (with optional image attachment) ──
+                if let Some(ref image_path) = pending_image.take() {
+                    match load_image_as_base64(image_path) {
+                        Ok((media_type, data)) => {
+                            let image_source = crate::llm::ImageSource::Base64 {
+                                media_type,
+                                data,
+                            };
+                            // Create a multimodal message and pass it to the agent
+                            let msg = crate::llm::ChatMessage::user_with_image(input, image_source);
+                            handle_chat_with_message(msg, agent, &cost, &confirm_rx).await;
+                        }
+                        Err(e) => {
+                            println!(
+                                "  {} Failed to load image: {}. Sending text only.",
+                                "⚠".with(Color::Yellow),
+                                e.to_string().with(Color::Grey),
+                            );
+                            handle_chat(input, agent, &cost, &confirm_rx).await;
+                        }
+                    }
+                } else {
+                    handle_chat(input, agent, &cost, &confirm_rx).await;
+                }
             }
             Err(ReadlineError::Interrupted) => {
                 // Ctrl-C: just print a new line and continue

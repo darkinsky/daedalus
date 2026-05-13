@@ -11,6 +11,7 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/agents", "List available subagents"),
     ("/permissions", "Show permission rules (aliases: /perms)"),
     ("/undo", "Undo the last file modification"),
+    ("/image", "Attach an image to your next message (usage: /image <path>)"),
     ("/exit", "Exit the application (alias: /quit)"),
 ];
 
@@ -34,6 +35,8 @@ pub enum Command<'a> {
     Permissions,
     /// Undo the last file modification.
     Undo,
+    /// Attach an image to the next message.
+    Image { path: String },
     Unknown(&'a str),
 }
 
@@ -92,6 +95,14 @@ pub fn parse(input: &str) -> Option<Command<'_>> {
         "/agents" => Command::Agents,
         "/permissions" | "/perms" => Command::Permissions,
         "/undo" => Command::Undo,
+        _ if lower.starts_with("/image") => {
+            let rest = input["/image".len()..].trim();
+            if rest.is_empty() {
+                Command::Unknown("/image (missing path — usage: /image <path>)")
+            } else {
+                Command::Image { path: rest.to_string() }
+            }
+        }
         _ => Command::Unknown(input),
     })
 }

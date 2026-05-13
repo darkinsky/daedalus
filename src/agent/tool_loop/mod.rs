@@ -487,6 +487,23 @@ fn inject_session_metadata(
         meta.push_str(&hint);
     }
 
+    // ── Context Rot detection ──
+    // Monitor context health: if tool history is occupying too much of the
+    // context and many rounds have passed, suggest /compact to the LLM.
+    if round_number >= 8 && context_usage_pct >= 40 {
+        // Estimate how much of the context is tool history
+        let history_chars = estimate_history_chars(truncated_history);
+
+        if history_chars > 30_000 || (round_number >= 15 && context_usage_pct >= 50) {
+            meta.push_str(
+                "\n[CONTEXT HEALTH] Tool history is occupying a large portion of your context. \
+                 Consider being more concise in your responses and tool usage. \
+                 If you notice diminishing quality in your responses, the user can run /compact \
+                 to refresh the context window."
+            );
+        }
+    }
+
     // Accumulated notes + saturation detection
     if let Some(notes_ref) = shared_notes {
         if let Ok(notes) = notes_ref.lock() {

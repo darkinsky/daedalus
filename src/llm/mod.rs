@@ -8,6 +8,7 @@ pub mod model_registry;
 // prevents accidental namespace pollution as the type set grows.
 pub use types::{
     CacheControl, ChatMessage, ChatOptions, ChatRole, ChatResponse,
+    ContentPart, ImageSource,
     LlmConfig, VenusExtensions,
     TokenUsage, ToolCall, ToolResponse, ToolRound,
     StreamChunk, StreamAccumulator,

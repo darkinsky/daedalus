@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 
 use super::BuiltinTool;
@@ -78,6 +79,145 @@ impl BashTool {
     /// Create a new BashTool with the given configuration.
     pub fn new(config: BashConfig) -> Self {
         Self { config }
+    }
+
+    /// Execute a bash command with streaming output.
+    ///
+    /// Lines from stdout/stderr are sent to `on_output` in real time as they
+    /// arrive. The full output is also collected and returned as a string.
+    ///
+    /// This is used by the tool pipeline to provide real-time bash output
+    /// in the terminal while still collecting the full result for the LLM.
+    pub async fn execute_streaming(
+        &self,
+        arguments: serde_json::Value,
+        on_output: impl Fn(String) + Send + 'static,
+    ) -> Result<String> {
+        let command_str = arguments
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow::anyhow!("Missing required parameter: 'command'"))?;
+
+        let working_dir = arguments
+            .get("working_directory")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let timeout_secs = arguments
+            .get("timeout_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(self.config.default_timeout)
+            .min(self.config.max_timeout);
+
+        tracing::info!(
+            command = %command_str,
+            working_dir = ?working_dir,
+            timeout_secs = timeout_secs,
+            "Executing bash command (streaming)"
+        );
+
+        let mut cmd = Command::new("/bin/bash");
+        cmd.arg("-c").arg(&command_str);
+
+        if let Some(ref dir) = working_dir {
+            cmd.current_dir(dir);
+        }
+
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        let mut child = cmd.spawn()
+            .with_context(|| format!("Failed to execute command: {}", command_str))?;
+
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+
+        let mut stdout_reader = tokio::io::BufReader::new(stdout).lines();
+        let mut stderr_reader = tokio::io::BufReader::new(stderr).lines();
+
+        let mut output = String::new();
+        let mut stderr_output = String::new();
+        let max_bytes = self.config.max_output_bytes;
+
+        let timeout = std::time::Duration::from_secs(timeout_secs);
+        let deadline = tokio::time::Instant::now() + timeout;
+
+        loop {
+            tokio::select! {
+                line = stdout_reader.next_line() => {
+                    match line {
+                        Ok(Some(line)) => {
+                            if output.len() + line.len() < max_bytes {
+                                on_output(line.clone());
+                                output.push_str(&line);
+                                output.push('\n');
+                            }
+                        }
+                        Ok(None) => break, // stdout closed
+                        Err(e) => {
+                            tracing::debug!(error = %e, "Error reading stdout");
+                            break;
+                        }
+                    }
+                }
+                line = stderr_reader.next_line() => {
+                    match line {
+                        Ok(Some(line)) => {
+                            if stderr_output.len() + line.len() < max_bytes {
+                                on_output(format!("[stderr] {}", line));
+                                stderr_output.push_str(&line);
+                                stderr_output.push('\n');
+                            }
+                        }
+                        Ok(None) => {} // stderr closed, continue reading stdout
+                        Err(e) => {
+                            tracing::debug!(error = %e, "Error reading stderr");
+                        }
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    let _ = child.kill().await;
+                    anyhow::bail!(
+                        "Command timed out after {} seconds: {}",
+                        timeout_secs,
+                        command_str
+                    );
+                }
+            }
+        }
+
+        // Wait for the process to finish
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            child.wait(),
+        ).await
+        .map_err(|_| anyhow::anyhow!("Timed out waiting for process exit"))?
+        .with_context(|| "Failed to wait for child process")?;
+
+        let exit_code = status.code().unwrap_or(-1);
+
+        // Build result (same format as non-streaming execute)
+        let mut result = output.trim_end().to_string();
+
+        if !stderr_output.is_empty() {
+            if !result.is_empty() {
+                result.push('\n');
+            }
+            result.push_str("[stderr]\n");
+            result.push_str(stderr_output.trim_end());
+        }
+
+        if result.is_empty() {
+            result.push_str("(no output)");
+        }
+
+        if exit_code != 0 {
+            result.push_str(&format!("\n\n[exit code: {}]", exit_code));
+        }
+
+        Ok(result)
     }
 
     /// Check if a command is allowed in read-only mode.

@@ -244,6 +244,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_undo_new_file() {
+        // Clear the stack to avoid interference from parallel tests
+        clear();
+
         let dir = std::env::temp_dir().join("daedalus_checkpoint_new_test");
         let _ = tokio::fs::remove_dir_all(&dir).await;
         tokio::fs::create_dir_all(&dir).await.unwrap();

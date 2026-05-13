@@ -180,11 +180,51 @@ impl LlmConfig {
     }
 }
 
+/// A part of a multimodal message content.
+///
+/// Messages can contain a mix of text and images. When `content_parts` is
+/// non-empty on a `ChatMessage`, it takes precedence over the `content` field.
+#[derive(Debug, Clone)]
+pub enum ContentPart {
+    /// A text content block.
+    Text { text: String },
+    /// An image content block.
+    Image {
+        /// The image source (base64 or URL).
+        source: ImageSource,
+        /// Detail level hint: "auto", "low", or "high".
+        /// Controls how the model processes the image.
+        #[allow(dead_code)]
+        detail: Option<String>,
+    },
+}
+
+/// Source of an image in a multimodal message.
+#[derive(Debug, Clone)]
+pub enum ImageSource {
+    /// Base64-encoded image data.
+    Base64 {
+        /// MIME type (e.g., "image/png", "image/jpeg").
+        media_type: String,
+        /// Base64-encoded image data.
+        data: String,
+    },
+    /// Image from a URL.
+    #[allow(dead_code)]
+    Url {
+        /// The image URL.
+        url: String,
+    },
+}
+
 /// A single message in a conversation.
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
     pub role: ChatRole,
     pub content: String,
+    /// Rich content parts (text + images). If non-empty, takes precedence
+    /// over `content` when building API requests.
+    pub content_parts: Vec<ContentPart>,
     /// Optional cache control hint for prompt caching optimization.
     ///
     /// When set, the provider should mark this message as a cache
@@ -257,15 +297,15 @@ pub fn format_messages_for_log(messages: &[ChatMessage]) -> String {
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::System, content: content.into(), cache_control: None, preserved: false }
+        Self { role: ChatRole::System, content: content.into(), content_parts: Vec::new(), cache_control: None, preserved: false }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::User, content: content.into(), cache_control: None, preserved: false }
+        Self { role: ChatRole::User, content: content.into(), content_parts: Vec::new(), cache_control: None, preserved: false }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::Assistant, content: content.into(), cache_control: None, preserved: false }
+        Self { role: ChatRole::Assistant, content: content.into(), content_parts: Vec::new(), cache_control: None, preserved: false }
     }
 
     /// Create a tool message.
@@ -274,7 +314,26 @@ impl ChatMessage {
     /// distinct message types in conversation memory.
     #[allow(dead_code)]
     pub fn tool(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::Tool, content: content.into(), cache_control: None, preserved: false }
+        Self { role: ChatRole::Tool, content: content.into(), content_parts: Vec::new(), cache_control: None, preserved: false }
+    }
+
+    /// Create a user message with text and image content parts.
+    pub fn user_with_image(text: &str, image_source: ImageSource) -> Self {
+        Self {
+            role: ChatRole::User,
+            content: text.to_string(),
+            content_parts: vec![
+                ContentPart::Text { text: text.to_string() },
+                ContentPart::Image { source: image_source, detail: Some("auto".to_string()) },
+            ],
+            cache_control: None,
+            preserved: false,
+        }
+    }
+
+    /// Check if this message has multimodal content parts.
+    pub fn has_content_parts(&self) -> bool {
+        !self.content_parts.is_empty()
     }
 
     /// Set cache control on this message (builder pattern).

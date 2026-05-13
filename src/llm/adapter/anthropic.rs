@@ -66,7 +66,43 @@ impl ApiAdapter for AnthropicAdapter {
                     _ => "user", // Tool messages mapped to user with tool_result blocks
                 };
 
-                if msg.cache_control.is_some() {
+                // Multimodal message with content_parts
+                if msg.has_content_parts() {
+                    let parts: Vec<Value> = msg.content_parts.iter().map(|part| {
+                        match part {
+                            crate::llm::ContentPart::Text { text } => {
+                                json!({"type": "text", "text": text})
+                            }
+                            crate::llm::ContentPart::Image { source, .. } => {
+                                match source {
+                                    crate::llm::ImageSource::Base64 { media_type, data } => {
+                                        json!({
+                                            "type": "image",
+                                            "source": {
+                                                "type": "base64",
+                                                "media_type": media_type,
+                                                "data": data,
+                                            }
+                                        })
+                                    }
+                                    crate::llm::ImageSource::Url { url } => {
+                                        json!({
+                                            "type": "image",
+                                            "source": {
+                                                "type": "url",
+                                                "url": url,
+                                            }
+                                        })
+                                    }
+                                }
+                            }
+                        }
+                    }).collect();
+                    json!({
+                        "role": role,
+                        "content": parts,
+                    })
+                } else if msg.cache_control.is_some() {
                     json!({
                         "role": role,
                         "content": [{

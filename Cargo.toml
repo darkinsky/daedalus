@@ -13,6 +13,7 @@ team = []
 anyhow = "1.0.102"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["json"] }
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"

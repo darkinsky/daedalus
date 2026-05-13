@@ -222,6 +222,13 @@ impl ToolEventFormatter {
             ToolEvent::StreamText { .. }
             | ToolEvent::StreamReasoning { .. }
             | ToolEvent::StreamDone => FormattedOutput::Lines(vec![]),
+            ToolEvent::BashStreamLine { line } => {
+                FormattedOutput::Lines(vec![format!(
+                    "    {} {}",
+                    "│".with(Color::DarkGrey),
+                    line.as_str().with(Color::Grey),
+                )])
+            }
             ToolEvent::ContextBudgetExceeded { usage_pct } => {
                 FormattedOutput::Lines(vec![format!(
                     "    {} {}",

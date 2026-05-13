@@ -252,8 +252,9 @@ fn build_stream_json_callback() -> ToolEventCallback {
             ToolEvent::StreamText { .. }
             | ToolEvent::StreamReasoning { .. }
             | ToolEvent::StreamDone => return,
-            // Context budget events are informational — skip in stream-json mode
-            ToolEvent::ContextBudgetExceeded { .. } => return,
+            // Bash streaming and context budget events are informational
+            ToolEvent::BashStreamLine { .. }
+            | ToolEvent::ContextBudgetExceeded { .. } => return,
         };
         emit_stream_event(&stream_event);
     })
@@ -276,7 +277,7 @@ fn build_text_stderr_callback() -> ToolEventCallback {
     Arc::new(move |event: ToolEvent| {
         // Skip streaming events in print mode — they are handled by the
         // non-streaming path since print mode doesn't need real-time output.
-        if matches!(event, ToolEvent::StreamText { .. } | ToolEvent::StreamReasoning { .. } | ToolEvent::StreamDone) {
+        if matches!(event, ToolEvent::StreamText { .. } | ToolEvent::StreamReasoning { .. } | ToolEvent::StreamDone | ToolEvent::BashStreamLine { .. }) {
             return;
         }
         let output = {

@@ -44,7 +44,46 @@ impl ApiAdapter for OpenAiAdapter {
         let mut msg_array: Vec<Value> = messages
             .iter()
             .map(|msg| {
-                if msg.cache_control.is_some() {
+                // Multimodal message with content_parts
+                if msg.has_content_parts() {
+                    let parts: Vec<Value> = msg.content_parts.iter().map(|part| {
+                        match part {
+                            crate::llm::ContentPart::Text { text } => {
+                                json!({"type": "text", "text": text})
+                            }
+                            crate::llm::ContentPart::Image { source, detail } => {
+                                match source {
+                                    crate::llm::ImageSource::Base64 { media_type, data } => {
+                                        let mut img = json!({
+                                            "type": "image_url",
+                                            "image_url": {
+                                                "url": format!("data:{};base64,{}", media_type, data)
+                                            }
+                                        });
+                                        if let Some(d) = detail {
+                                            img["image_url"]["detail"] = json!(d);
+                                        }
+                                        img
+                                    }
+                                    crate::llm::ImageSource::Url { url } => {
+                                        let mut img = json!({
+                                            "type": "image_url",
+                                            "image_url": {"url": url}
+                                        });
+                                        if let Some(d) = detail {
+                                            img["image_url"]["detail"] = json!(d);
+                                        }
+                                        img
+                                    }
+                                }
+                            }
+                        }
+                    }).collect();
+                    json!({
+                        "role": msg.role.to_string(),
+                        "content": parts,
+                    })
+                } else if msg.cache_control.is_some() {
                     json!({
                         "role": msg.role.to_string(),
                         "content": [{

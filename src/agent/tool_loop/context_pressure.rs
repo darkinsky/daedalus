@@ -183,6 +183,7 @@ mod tests {
         let messages = vec![ChatMessage {
             role: ChatRole::User,
             content: "Hello".to_string(),
+            content_parts: vec![],
             cache_control: None,
             preserved: false,
         }];
@@ -202,6 +203,7 @@ mod tests {
         let messages = vec![ChatMessage {
             role: ChatRole::System,
             content,
+            content_parts: vec![],
             cache_control: None,
             preserved: false,
         }];
@@ -214,6 +216,7 @@ mod tests {
         let messages = vec![ChatMessage {
             role: ChatRole::User,
             content: "short".to_string(),
+            content_parts: vec![],
             cache_control: None,
             preserved: false,
         }];
@@ -240,6 +243,7 @@ mod tests {
         let messages = vec![ChatMessage {
             role: ChatRole::System,
             content,
+            content_parts: vec![],
             cache_control: None,
             preserved: false,
         }];
