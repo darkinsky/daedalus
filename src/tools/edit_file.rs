@@ -25,6 +25,7 @@ use once_cell::sync::Lazy;
 use tokio::fs;
 
 use super::BuiltinTool;
+use super::checkpoint;
 use super::fs_utils::{get_optional_bool, get_required_string, resolve_path, EDITING_FILES};
 
 /// Maximum file size allowed for editing (10 MB).
@@ -227,6 +228,10 @@ impl BuiltinTool for EditFileTool {
             )
         };
 
+        // Snapshot before write (for /undo support) — use already-loaded content
+        // to avoid a redundant disk read.
+        checkpoint::snapshot_with_content(&path, Some(content.clone()), &format!("edit_file {}", path.display()));
+
         // Write back
         fs::write(&path, &new_content)
             .await
@@ -377,6 +382,10 @@ async fn create_new_file(path: &std::path::Path, content: &str) -> Result<String
     }
 
     let normalized = normalize_line_endings(content);
+
+    // Snapshot before write (for /undo support)
+    checkpoint::snapshot_before_write(&path.to_path_buf(), &format!("create_file {}", path.display())).await;
+
     fs::write(path, &normalized)
         .await
         .with_context(|| format!("Failed to create file: {}", path.display()))?;

@@ -22,6 +22,7 @@ use once_cell::sync::Lazy;
 use tokio::fs;
 
 use super::BuiltinTool;
+use super::checkpoint;
 use super::fs_utils::{get_required_string, resolve_path, EDITING_FILES};
 
 /// Maximum file size allowed for editing (10 MB).
@@ -162,6 +163,10 @@ impl BuiltinTool for MultiEditTool {
 
         // Normalize line endings
         let mut content = normalize_line_endings(&raw_content);
+
+        // Snapshot before write (for /undo support) — use already-loaded content
+        // to avoid a redundant disk read.
+        checkpoint::snapshot_with_content(&path, Some(content.clone()), &format!("multi_edit {}", path.display()));
 
         // Apply edits sequentially
         let mut total_replacements = 0;

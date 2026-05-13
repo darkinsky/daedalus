@@ -28,6 +28,8 @@ use crate::middleware::pipeline::ToolPipeline;
 use crate::middleware::{Extensions, TurnNext, TurnRequest, TurnResponse};
 use crate::tools::ToolEventCallback;
 use crate::agent_tracing;
+use crate::hooks::config::HooksConfig;
+use crate::hooks::middleware::HooksToolMiddleware;
 
 use crate::middleware::config::MiddlewareEntry;
 
@@ -62,6 +64,10 @@ pub(crate) struct CoreTurnHandler {
     permission_rules: Arc<tokio::sync::Mutex<PermissionRuleSet>>,
     /// Resolved permission mode.
     permission_mode: PermissionMode,
+    /// Hooks configuration.
+    hooks_config: HooksConfig,
+    /// Session ID for hooks environment variables.
+    session_id: String,
 }
 
 impl CoreTurnHandler {
@@ -81,6 +87,8 @@ impl CoreTurnHandler {
         session_approved: Arc<tokio::sync::Mutex<HashSet<String>>>,
         permission_rules: Arc<tokio::sync::Mutex<PermissionRuleSet>>,
         permission_mode: PermissionMode,
+        hooks_config: HooksConfig,
+        session_id: String,
     ) -> Self {
         Self {
             llm,
@@ -94,6 +102,8 @@ impl CoreTurnHandler {
             session_approved,
             permission_rules,
             permission_mode,
+            hooks_config,
+            session_id,
         }
     }
 }
@@ -300,7 +310,7 @@ impl CoreTurnHandler {
 
         if self.tool_middleware_config.is_empty() {
             // ── Default stack (innermost first) ──
-            // event → confirmation → tool_logging → permission → tracing
+            // event → confirmation → tool_logging → permission → tracing → hooks
             pipeline = self.add_tool_layer(pipeline, "event", &serde_json::Value::Null);
             pipeline = self.add_tool_layer(pipeline, "confirmation", &serde_json::Value::Null);
             pipeline = self.add_tool_layer(pipeline, "tool_logging", &serde_json::Value::Null);
@@ -314,6 +324,14 @@ impl CoreTurnHandler {
                 }
                 pipeline = self.add_tool_layer(pipeline, &entry.name, &entry.config);
             }
+        }
+
+        // ── Hooks middleware (always outermost — runs first on request, last on response) ──
+        if !self.hooks_config.is_empty() {
+            pipeline = pipeline.with(Box::new(HooksToolMiddleware::new(
+                Arc::new(self.hooks_config.clone()),
+                self.session_id.clone(),
+            )));
         }
 
         pipeline

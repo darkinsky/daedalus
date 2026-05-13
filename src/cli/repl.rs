@@ -54,6 +54,7 @@ async fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &Shar
         Command::Skills => render::skills_list(agent),
         Command::Agents => render::agents_list(agent),
         Command::Permissions => handle_permissions(agent),
+        Command::Undo => handle_undo().await,
         Command::Unknown(raw) => render::unknown_command(raw),
     }
     Ok(false)
@@ -589,6 +590,30 @@ async fn handle_compact(agent: &mut dyn AgentMode, instruction: Option<&str>, ra
                 "  {} Compact failed: {}",
                 "✗".with(Color::Red).attribute(Attribute::Bold),
                 e,
+            );
+            println!();
+        }
+    }
+}
+
+/// Handle the `/undo` command — restore the last file modification.
+async fn handle_undo() {
+    use crate::tools::checkpoint;
+
+    match checkpoint::undo().await {
+        Ok(message) => {
+            println!(
+                "  {} {}",
+                "↩".with(Color::Green).attribute(Attribute::Bold),
+                message.with(Color::Grey),
+            );
+            println!();
+        }
+        Err(e) => {
+            println!(
+                "  {} {}",
+                "✗".with(Color::Red).attribute(Attribute::Bold),
+                e.to_string().with(Color::Grey),
             );
             println!();
         }

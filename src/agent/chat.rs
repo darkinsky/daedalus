@@ -19,6 +19,7 @@ use crate::middleware::builtin::metrics::MetricsTurnMiddleware;
 use crate::middleware::builtin::confirmation::ConfirmationSender;
 use crate::middleware::builtin::permission_rules::{PermissionsConfig, PermissionRuleSet, PermissionMode};
 use crate::middleware::config::MiddlewareConfig;
+use crate::hooks::config::HooksConfig;
 use crate::prompt::PromptStyle;
 use crate::skill::SkillInfo;
 use crate::subagent::SubagentInfo;
@@ -98,6 +99,8 @@ pub struct ChatAgent {
     permission_rules: Arc<tokio::sync::Mutex<PermissionRuleSet>>,
     /// Resolved permission mode (accounts for --dangerously-skip-permissions override).
     permission_mode: PermissionMode,
+    /// Hooks configuration (from YAML).
+    hooks_config: HooksConfig,
 }
 
 impl ChatAgent {
@@ -166,6 +169,7 @@ impl ChatAgent {
             session_approved: Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new())),
             permission_rules: Arc::new(tokio::sync::Mutex::new(PermissionRuleSet::new())),
             permission_mode: PermissionMode::Default,
+            hooks_config: HooksConfig::default(),
         }
     }
 
@@ -336,6 +340,20 @@ impl ChatAgent {
         self.permissions_config = config;
     }
 
+    /// Set the hooks configuration from YAML.
+    pub fn set_hooks_config(&mut self, config: HooksConfig) {
+        if !config.is_empty() {
+            tracing::info!(
+                pre_tool_use = config.pre_tool_use.len(),
+                post_tool_use = config.post_tool_use.len(),
+                session_start = config.session_start.len(),
+                stop = config.stop.len(),
+                "Hooks configuration loaded"
+            );
+        }
+        self.hooks_config = config;
+    }
+
     /// Return a reference to the shared permission rules (for /permissions display).
     #[allow(dead_code)]
     pub fn permission_rules(&self) -> &Arc<tokio::sync::Mutex<PermissionRuleSet>> {
@@ -444,6 +462,8 @@ impl ChatAgent {
             Arc::clone(&self.session_approved),
             Arc::clone(&self.permission_rules),
             self.permission_mode.clone(),
+            self.hooks_config.clone(),
+            self.session.id.clone(),
         ));
 
         let mut pipeline = TurnPipeline::new(core);
@@ -647,6 +667,8 @@ impl AgentMode for ChatAgent {
     }
 
     fn new_session(&mut self) {
+        // Clear undo history — new session starts with a clean slate
+        crate::tools::checkpoint::clear();
         self.reset_with_updated_prompt();
         tracing::info!(
             session_id = %self.session.id,

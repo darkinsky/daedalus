@@ -20,6 +20,9 @@ use super::{LoopConfig, LoopContext, LoopOutcome, LoopResult};
 /// tool history to estimate total token consumption relative to the
 /// context window size.
 ///
+/// Uses CJK-aware token estimation for messages (which may contain natural
+/// language) and code-mode estimation for tool history (which is JSON-heavy).
+///
 /// Returns 0 if `context_window_tokens` is `None` (feature disabled).
 pub(crate) fn estimate_context_usage_pct(
     messages: &[ChatMessage],
@@ -31,15 +34,17 @@ pub(crate) fn estimate_context_usage_pct(
         _ => return 0,
     };
 
-    // Estimate tokens from pre-built messages
-    let msg_chars: usize = messages.iter().map(|m| {
-        m.content.len() + 20 // role overhead + JSON structure
+    // Estimate tokens from pre-built messages using CJK-aware estimation.
+    // Each message has ~20 chars of JSON overhead (role, structure).
+    let msg_tokens: usize = messages.iter().map(|m| {
+        crate::memory::estimate_tokens(&m.content) + 5 // 5 tokens for role/structure overhead
     }).sum();
 
-    // Estimate tokens from tool history
+    // Estimate tokens from tool history (JSON-heavy, use CHARS_PER_TOKEN=3)
     let history_chars = estimate_history_chars(tool_history);
+    let history_tokens = history_chars / CHARS_PER_TOKEN;
 
-    let total_estimated_tokens = (msg_chars + history_chars) / CHARS_PER_TOKEN;
+    let total_estimated_tokens = msg_tokens + history_tokens;
     let pct = (total_estimated_tokens * 100) / cw;
     pct.min(100) as u8
 }
@@ -193,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_estimate_context_usage_pct_basic() {
-        let content = "x".repeat(30_000); // 30K chars ≈ 10K tokens
+        let content = "x".repeat(30_000); // 30K ASCII chars → 7500 tokens (30K/4) + 5 overhead
         let messages = vec![ChatMessage {
             role: ChatRole::System,
             content,
@@ -201,7 +206,7 @@ mod tests {
             preserved: false,
         }];
         let pct = estimate_context_usage_pct(&messages, &[], Some(100_000));
-        assert!(pct >= 8 && pct <= 12, "Expected ~10%, got {}%", pct);
+        assert!(pct >= 6 && pct <= 10, "Expected ~7.5%, got {}%", pct);
     }
 
     #[test]

@@ -10,6 +10,7 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/skills", "List available skills"),
     ("/agents", "List available subagents"),
     ("/permissions", "Show permission rules (aliases: /perms)"),
+    ("/undo", "Undo the last file modification"),
     ("/exit", "Exit the application (alias: /quit)"),
 ];
 
@@ -31,6 +32,8 @@ pub enum Command<'a> {
     Skills,
     Agents,
     Permissions,
+    /// Undo the last file modification.
+    Undo,
     Unknown(&'a str),
 }
 
@@ -88,6 +91,7 @@ pub fn parse(input: &str) -> Option<Command<'_>> {
         "/skills" => Command::Skills,
         "/agents" => Command::Agents,
         "/permissions" | "/perms" => Command::Permissions,
+        "/undo" => Command::Undo,
         _ => Command::Unknown(input),
     })
 }

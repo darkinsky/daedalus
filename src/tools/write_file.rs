@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use tokio::fs;
 
 use super::BuiltinTool;
+use super::checkpoint;
 use super::fs_utils::{get_required_string, resolve_path};
 
 /// Write content to a file, creating it if it doesn't exist.
@@ -52,6 +53,9 @@ impl BuiltinTool for WriteFileTool {
                 .await
                 .with_context(|| format!("Failed to create directories: {}", parent.display()))?;
         }
+
+        // Snapshot before write (for /undo support)
+        checkpoint::snapshot_before_write(&path, &format!("write_file {}", path.display())).await;
 
         fs::write(&path, &content)
             .await

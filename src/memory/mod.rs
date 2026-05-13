@@ -34,40 +34,88 @@ use crate::llm::{ChatMessage, LlmApi};
 #[allow(dead_code)]
 pub(crate) const CHARS_PER_TOKEN: usize = 4;
 
-/// Estimate the number of tokens in a text string, accounting for CJK characters.
+/// Estimate the number of tokens in a text string, accounting for CJK characters
+/// and code/JSON structure.
 ///
 /// CJK characters (Chinese, Japanese, Korean) average ~1.5 chars/token with
 /// most modern tokenizers (cl100k_base, o200k_base), while ASCII text averages
-/// ~4 chars/token. This function counts CJK vs non-CJK characters separately
-/// and applies the appropriate ratio to each.
+/// ~4 chars/token. Code and JSON content averages ~3 chars/token due to
+/// short identifiers, punctuation, and structural characters.
 ///
 /// This is intentionally approximate — the goal is to detect when we're
 /// approaching the context budget, not to be exact.
 pub(crate) fn estimate_tokens(text: &str) -> usize {
+    estimate_tokens_with_mode(text, TokenEstimationMode::Auto)
+}
+
+/// Estimation mode for token counting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TokenEstimationMode {
+    /// Auto-detect content type (prose vs code/JSON) and use appropriate ratio.
+    Auto,
+    /// Force code/JSON ratio (~3 chars/token for ASCII).
+    Code,
+    /// Force prose ratio (~4 chars/token for ASCII).
+    #[allow(dead_code)]
+    Prose,
+}
+
+/// Estimate tokens with a specific estimation mode.
+pub(crate) fn estimate_tokens_with_mode(text: &str, mode: TokenEstimationMode) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+
     let mut cjk_chars: usize = 0;
     let mut other_chars: usize = 0;
+    let mut code_indicator_chars: usize = 0;
 
     for c in text.chars() {
         if is_cjk(c) {
             cjk_chars += 1;
         } else {
             other_chars += 1;
+            // Count characters that indicate code/JSON content
+            if is_code_indicator(c) {
+                code_indicator_chars += 1;
+            }
         }
     }
 
     // CJK: ~1.5 chars/token → multiply by 2/3 to get tokens
-    // ASCII: ~4 chars/token → divide by 4
-    // We use integer arithmetic: cjk_chars * 2 / 3 ≈ cjk_chars / 1.5
     let cjk_tokens = (cjk_chars * 2 + 2) / 3; // round up
-    let other_tokens = other_chars / 4;
+
+    // Determine ASCII chars-per-token ratio based on content type
+    let ascii_cpt = match mode {
+        TokenEstimationMode::Code => 3,
+        TokenEstimationMode::Prose => 4,
+        TokenEstimationMode::Auto => {
+            // If >15% of ASCII chars are code indicators, use code ratio
+            if other_chars > 0 && code_indicator_chars * 100 / other_chars > 15 {
+                3
+            } else {
+                4
+            }
+        }
+    };
+
+    let other_tokens = if ascii_cpt > 0 { other_chars / ascii_cpt } else { other_chars };
 
     cjk_tokens + other_tokens
+}
+
+/// Check whether a character is a common code/JSON structural indicator.
+///
+/// These characters appear frequently in code and JSON, where the average
+/// chars-per-token ratio is lower (~3) than natural language (~4).
+fn is_code_indicator(c: char) -> bool {
+    matches!(c, '{' | '}' | '[' | ']' | '(' | ')' | ':' | ';' | ',' | '"' | '\'' | '=' | '<' | '>' | '/' | '\\' | '|' | '&' | '!' | '#' | '.' | '_')
 }
 
 /// Check whether a character is in a CJK Unicode block.
 ///
 /// Covers the most common blocks used in Chinese, Japanese, and Korean text.
-fn is_cjk(c: char) -> bool {
+pub(crate) fn is_cjk(c: char) -> bool {
     matches!(c,
         '\u{4E00}'..='\u{9FFF}'   | // CJK Unified Ideographs
         '\u{3400}'..='\u{4DBF}'   | // CJK Extension A

@@ -1,4 +1,5 @@
 pub mod bash;
+pub(crate) mod checkpoint;
 pub(crate) mod edit_file;
 mod fs_utils;
 mod get_file_info;
