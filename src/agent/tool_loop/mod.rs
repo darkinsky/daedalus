@@ -14,6 +14,7 @@
 
 pub(crate) mod truncation;
 pub(crate) mod context_pressure;
+pub(crate) mod checkpoint;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -77,6 +78,14 @@ pub struct LoopConfig {
     pub context_soft_limit_ratio: f64,
     /// Ratio of context window usage at which to force-stop the loop.
     pub context_hard_limit_ratio: f64,
+
+    // ── Checkpoint / resume ──
+
+    /// Optional path to save tool loop checkpoints for crash recovery.
+    /// When set, the loop saves state every N rounds (see `CHECKPOINT_INTERVAL`).
+    pub checkpoint_path: Option<std::path::PathBuf>,
+    /// The user's original input (needed for checkpoint metadata).
+    pub user_input: Option<String>,
 }
 
 // ── Outputs ──
@@ -281,6 +290,10 @@ pub async fn run_tool_loop(
 
         // Happy path: no more tool calls, LLM produced a final answer.
         if response.tool_calls.is_empty() {
+            // Clear checkpoint on successful completion
+            if let Some(ref cp_path) = cfg.checkpoint_path {
+                checkpoint::ToolLoopCheckpoint::clear(cp_path);
+            }
             let reasoning = if cfg.track_reasoning {
                 response.reasoning_content.or(last_reasoning)
             } else {
@@ -407,6 +420,24 @@ pub async fn run_tool_loop(
             tool_count: tool_history.last().map(|r| r.calls.len()).unwrap_or(0),
             elapsed_ms: tool_start.elapsed().as_millis() as u64,
         });
+
+        // ── Auto-checkpoint for crash recovery ──
+        if let Some(ref cp_path) = cfg.checkpoint_path {
+            if round_number % checkpoint::CHECKPOINT_INTERVAL == 0 {
+                let user_input = cfg.user_input.as_deref().unwrap_or("");
+                let cp = checkpoint::ToolLoopCheckpoint::new(
+                    user_input,
+                    &tool_history,
+                    &total_usage,
+                    round_number,
+                    total_tool_calls,
+                    &files_read,
+                );
+                if let Err(e) = cp.save(cp_path) {
+                    tracing::warn!(error = %e, "Failed to save tool loop checkpoint");
+                }
+            }
+        }
     }
 
     tracing::warn!(

@@ -190,6 +190,13 @@ pub trait AgentMode: AgentMetadata + Send + Sync {
     /// implementation does nothing (for modes without persistence).
     async fn persist_memory(&self) {}
 
+    /// Return the path to the tool loop checkpoint file, if a workspace is configured.
+    ///
+    /// Used by `/resume` to find and load saved checkpoints.
+    fn checkpoint_path(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+
     /// Run context compression (compact) on the conversation history.
     ///
     /// Compresses older messages into a summary while preserving recent

@@ -470,6 +470,9 @@ impl SubagentRunner {
             context_window_tokens: Some(effective_context_window),
             context_soft_limit_ratio: 0.7,
             context_hard_limit_ratio: 0.9,
+            // Subagents don't use checkpoints (they're short-lived).
+            checkpoint_path: None,
+            user_input: None,
         };
 
         let loop_ctx = LoopContext {

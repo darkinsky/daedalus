@@ -145,6 +145,9 @@ impl CoreTurnHandler {
             context_window_tokens: Some(self.context_window),
             context_soft_limit_ratio: 0.7,
             context_hard_limit_ratio: 0.9,
+            // Checkpoint path is set by the agent layer (not available here).
+            checkpoint_path: None,
+            user_input: None,
         };
 
         let tracing_hook = trace_ctx.map(agent_tracing::TracingHook::new);

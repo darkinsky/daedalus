@@ -732,6 +732,12 @@ impl AgentMode for ChatAgent {
         }
     }
 
+    fn checkpoint_path(&self) -> Option<std::path::PathBuf> {
+        self.workspace.as_ref().map(|ws| {
+            crate::agent::tool_loop::checkpoint::checkpoint_path(&ws.root())
+        })
+    }
+
     async fn compact(&mut self, instruction: Option<&str>) -> anyhow::Result<String> {
         let shared = self.session.shared_memory();
         let mut mem = shared.lock().await;

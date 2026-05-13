@@ -22,7 +22,12 @@ use super::render::ToolEventFormatter;
 use super::render::tool_event::FormattedOutput;
 
 /// Handle a parsed slash command. Returns `true` if the REPL should exit.
-async fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &SharedSessionCost) -> Result<bool> {
+async fn handle_command(
+    cmd: Command<'_>,
+    agent: &mut dyn AgentMode,
+    cost: &SharedSessionCost,
+    confirm_rx: &Arc<tokio::sync::Mutex<ConfirmationReceiver>>,
+) -> Result<bool> {
     match cmd {
         Command::Exit => {
             render::goodbye();
@@ -61,12 +66,14 @@ async fn handle_command(cmd: Command<'_>, agent: &mut dyn AgentMode, cost: &Shar
             println!(
                 "  {} Image queued: {}",
                 "📎".with(Color::Cyan),
-                path.with(Color::Grey),
+                path.as_str().with(Color::Grey),
             );
             println!();
         }
-        Command::Unknown(raw) => render::unknown_command(raw),
-    }
+        Command::Resume => {
+            handle_resume(agent, cost, confirm_rx).await;
+        }
+        Command::Unknown(raw) => render::unknown_command(raw),    }
     Ok(false)
 }
 
@@ -630,6 +637,64 @@ async fn handle_undo() {
     }
 }
 
+/// Handle the /resume command — check for a saved checkpoint and resume execution.
+async fn handle_resume(
+    agent: &mut dyn AgentMode,
+    cost: &SharedSessionCost,
+    confirm_rx: &Arc<tokio::sync::Mutex<ConfirmationReceiver>>,
+) {
+    use crate::agent::tool_loop::checkpoint::ToolLoopCheckpoint;
+
+    // Try to find a checkpoint in the workspace
+    let checkpoint_path = agent.checkpoint_path();
+    let checkpoint_path = match checkpoint_path {
+        Some(p) => p,
+        None => {
+            println!(
+                "  {} No workspace configured — cannot resume.",
+                "✗".with(Color::Red).attribute(Attribute::Bold),
+            );
+            println!();
+            return;
+        }
+    };
+
+    match ToolLoopCheckpoint::load(&checkpoint_path) {
+        Ok(Some(cp)) => {
+            println!(
+                "  {} Found checkpoint: {}",
+                "▶".with(Color::Green).attribute(Attribute::Bold),
+                cp.summary().with(Color::Grey),
+            );
+            println!(
+                "  {} Resuming with the original task...",
+                "↻".with(Color::Cyan).attribute(Attribute::Bold),
+            );
+            println!();
+
+            // Resume by re-sending the original user input
+            // The tool loop will pick up from where it left off via the checkpoint
+            let user_input = cp.user_input.clone();
+            handle_chat(&user_input, agent, cost, confirm_rx).await;
+        }
+        Ok(None) => {
+            println!(
+                "  {} No checkpoint found — nothing to resume.",
+                "ℹ".with(Color::Blue).attribute(Attribute::Bold),
+            );
+            println!();
+        }
+        Err(e) => {
+            println!(
+                "  {} Failed to load checkpoint: {}",
+                "✗".with(Color::Red).attribute(Attribute::Bold),
+                e.to_string().with(Color::Grey),
+            );
+            println!();
+        }
+    }
+}
+
 /// Load an image file and return its base64-encoded content with MIME type.
 fn load_image_as_base64(path: &str) -> Result<(String, String)> {
     use std::path::Path;
@@ -811,7 +876,7 @@ pub async fn run(agent: &mut dyn AgentMode) -> Result<()> {
                         continue;
                     }
 
-                    if handle_command(cmd, agent, &cost).await? {
+                    if handle_command(cmd, agent, &cost, &confirm_rx).await? {
                         break;
                     }
                     continue;
