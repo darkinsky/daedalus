@@ -15,6 +15,7 @@
 pub(crate) mod truncation;
 pub(crate) mod context_pressure;
 pub(crate) mod checkpoint;
+pub(crate) mod plan_tracker;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -169,6 +170,8 @@ pub struct LoopContext<'a> {
     pub tool_pipeline: Option<&'a ToolPipeline>,
     /// Optional shared notes from `take_note` tool.
     pub shared_notes: Option<&'a crate::tools::take_note::SharedNotes>,
+    /// Optional shared plan from `create_plan`/`update_plan` tools.
+    pub shared_plan: Option<&'a plan_tracker::SharedPlan>,
 }
 
 // ── The loop itself ──
@@ -274,6 +277,7 @@ pub async fn run_tool_loop(
             total_tool_calls,
             context_usage_pct,
             ctx.shared_notes,
+            ctx.shared_plan,
         );
 
         let response = if use_streaming {
@@ -499,6 +503,7 @@ fn inject_session_metadata(
     total_tool_calls: usize,
     context_usage_pct: u8,
     shared_notes: Option<&crate::tools::take_note::SharedNotes>,
+    shared_plan: Option<&plan_tracker::SharedPlan>,
 ) {
     if files_read.is_empty() && round_number <= 1 {
         return;
@@ -597,6 +602,36 @@ fn inject_session_metadata(
         }
     } else {
         // No shared_notes available — skip saturation detection
+    }
+
+    // ── Active plan injection ──
+    // If there's an active plan, inject it into the context so the LLM
+    // always knows what step it's on and what's left to do.
+    // First check the explicitly-passed shared_plan, then fall back to
+    // the global singleton (used by the lead agent's plan tools).
+    let plan_injected = if let Some(plan_ref) = shared_plan {
+        if let Ok(mgr) = plan_ref.lock() {
+            if let Some(plan) = mgr.active_plan() {
+                meta.push_str("\n");
+                meta.push_str(&plan.format_for_context());
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if !plan_injected {
+        // Fall back to the global plan (used by CreatePlanTool / UpdatePlanTool)
+        if let Ok(mgr) = plan_tracker::GLOBAL_PLAN.lock() {
+            if let Some(plan) = mgr.active_plan() {
+                meta.push_str("\n");
+                meta.push_str(&plan.format_for_context());
+            }
+        }
     }
 
     // Append to the last response

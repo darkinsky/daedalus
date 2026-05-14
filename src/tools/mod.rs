@@ -6,6 +6,7 @@ mod get_file_info;
 mod grep_search;
 mod list_directory;
 mod multi_edit;
+pub(crate) mod plan;
 pub(crate) mod recall_history;
 mod read_file;
 mod search_files;
@@ -276,6 +277,8 @@ impl BuiltinToolRegistry {
             Box::new(get_file_info::GetFileInfoTool),
             Box::new(bash::BashTool::new(bash_config.clone())),
             Box::new(take_note::TakeNoteTool::new(take_note::new_shared_notes())),
+            Box::new(plan::CreatePlanTool::new()),
+            Box::new(plan::UpdatePlanTool::new()),
         ];
 
         tracing::info!(

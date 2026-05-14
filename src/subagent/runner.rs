@@ -490,6 +490,7 @@ impl SubagentRunner {
             tracing_hook, // Pass tracing hook to subagent's tool loop
             tool_pipeline: None, // No tool pipeline for subagents (uses direct execution)
             shared_notes: Some(shared_notes),
+            shared_plan: None, // Subagents don't use plan tools
         };
 
         let loop_result = run_tool_loop(

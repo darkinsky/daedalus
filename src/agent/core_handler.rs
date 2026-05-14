@@ -179,6 +179,7 @@ impl CoreTurnHandler {
             tracing_hook: tracing_hook.as_ref(),
             tool_pipeline: Some(&tool_pipeline),
             shared_notes: None, // Lead agent doesn't use take_note (subagents do)
+            shared_plan: None,  // Plan tools manage their own SharedPlan internally
         };
 
         let LoopResult {

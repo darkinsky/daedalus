@@ -688,7 +688,7 @@ impl SlidingWindowMemory {
 
 ---
 
-### 9. 任务规划与分解（Planning）
+### 9. 任务规划与分解（Planning）✅ 已实现
 
 #### 现状分析
 
@@ -984,7 +984,7 @@ gantt
 
 1. **Hooks 补充 4 个事件**（1-2 天）— `UserPromptSubmit`、`Notification`、`SubagentStop`、`PreCompact`
 2. **精确 Token 计数**（1-2 天）— 集成 tiktoken-rs 或 Anthropic token counting API
-3. **任务规划与分解**（3-5 天）— P2 中最高优先级
+3. ~~**任务规划与分解**（3-5 天）~~ → ✅ 已完成（CreatePlanTool/UpdatePlanTool + GLOBAL_PLAN + /plan & /skip 命令）
 4. **非交互模式增强**（2-3 天）— CI/CD 集成
 5. **记忆架构升级**（5-10 天）— 分层记忆 + 策略组合
 

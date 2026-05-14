@@ -39,6 +39,8 @@ async fn handle_command(
             if let Ok(mut c) = cost.lock() {
                 c.reset();
             }
+            // Reset global plan state so stale plans don't leak into the new session
+            crate::agent::tool_loop::plan_tracker::reset_global_plan();
             render::new_session(agent);
         }
         Command::Compact { instruction, range } => {
@@ -60,6 +62,8 @@ async fn handle_command(
         Command::Agents => render::agents_list(agent),
         Command::Permissions => handle_permissions(agent),
         Command::Undo => handle_undo().await,
+        Command::Plan => handle_plan(),
+        Command::Skip => handle_skip(),
         Command::Image { path } => {
             // Image handling is done in the REPL loop, not here.
             // This branch should not be reached — the REPL loop intercepts it.
@@ -637,6 +641,80 @@ async fn handle_undo() {
                 "  {} {}",
                 "✗".with(Color::Red).attribute(Attribute::Bold),
                 e.to_string().with(Color::Grey),
+            );
+            println!();
+        }
+    }
+}
+
+/// Handle the `/plan` command — display the current task plan status.
+///
+/// Reads the global shared plan state from the plan tools. Since the plan
+/// tools each hold their own `SharedPlan`, we use a global accessor.
+fn handle_plan() {
+    use crate::agent::tool_loop::plan_tracker::GLOBAL_PLAN;
+
+    let plan_ref = GLOBAL_PLAN.lock();
+    match plan_ref {
+        Ok(mgr) => {
+            if let Some(plan) = mgr.active_plan() {
+                println!();
+                for line in plan.format_for_display() {
+                    if line.is_empty() {
+                        println!();
+                    } else {
+                        println!("{}", line);
+                    }
+                }
+                println!();
+            } else {
+                println!(
+                    "  {} No active plan. The agent will create one when needed.",
+                    "ℹ".with(Color::Blue).attribute(Attribute::Bold),
+                );
+                println!();
+            }
+        }
+        Err(_) => {
+            println!(
+                "  {} Failed to read plan state.",
+                "✗".with(Color::Red).attribute(Attribute::Bold),
+            );
+            println!();
+        }
+    }
+}
+
+/// Handle the `/skip` command — skip the current plan step.
+fn handle_skip() {
+    use crate::agent::tool_loop::plan_tracker::GLOBAL_PLAN;
+
+    let mut mgr = match GLOBAL_PLAN.lock() {
+        Ok(m) => m,
+        Err(_) => {
+            println!(
+                "  {} Failed to access plan state.",
+                "✗".with(Color::Red).attribute(Attribute::Bold),
+            );
+            println!();
+            return;
+        }
+    };
+
+    match mgr.skip_current() {
+        Ok(msg) => {
+            println!(
+                "  {} {}",
+                "⏭️".with(Color::Cyan).attribute(Attribute::Bold),
+                msg.with(Color::Grey),
+            );
+            println!();
+        }
+        Err(e) => {
+            println!(
+                "  {} {}",
+                "✗".with(Color::Red).attribute(Attribute::Bold),
+                e.with(Color::Grey),
             );
             println!();
         }

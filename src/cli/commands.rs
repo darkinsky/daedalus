@@ -12,6 +12,8 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/permissions", "Show permission rules (aliases: /perms)"),
     ("/undo", "Undo the last file modification"),
     ("/image", "Attach an image to your next message (usage: /image <path>)"),
+    ("/plan", "Show the current task plan status"),
+    ("/skip", "Skip the current plan step"),
     ("/resume", "Resume the last interrupted tool-calling loop"),
     ("/exit", "Exit the application (alias: /quit)"),
 ];
@@ -38,6 +40,10 @@ pub enum Command<'a> {
     Undo,
     /// Attach an image to the next message.
     Image { path: String },
+    /// Show the current task plan status.
+    Plan,
+    /// Skip the current plan step.
+    Skip,
     /// Resume the last interrupted tool-calling loop.
     Resume,
     Unknown(&'a str),
@@ -106,6 +112,8 @@ pub fn parse(input: &str) -> Option<Command<'_>> {
                 Command::Image { path: rest.to_string() }
             }
         }
+        "/plan" => Command::Plan,
+        "/skip" => Command::Skip,
         "/resume" => Command::Resume,
         _ => Command::Unknown(input),    })
 }
