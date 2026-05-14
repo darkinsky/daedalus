@@ -101,6 +101,14 @@ pub struct ResultPayload {
     pub duration_ms: u64,
     /// Number of tool-calling rounds executed.
     pub tool_rounds: u64,
+    /// List of files modified during execution.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub files_modified: Vec<String>,
+    /// Process exit code (0 = success, 1 = failure, 2 = timeout).
+    pub exit_code: i32,
+    /// The model used for this execution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// Token usage summary for JSON output.

@@ -8,13 +8,15 @@
 use std::io::Read;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::style::{Color, Stylize};
+use tokio::time::timeout;
 
 use crate::agent::AgentMode;
 use crate::tools::{ToolEvent, ToolEventCallback};
+use crate::tools::checkpoint;
 
 use super::cli_args::OutputFormat;
 use super::output_format::{
@@ -40,10 +42,14 @@ pub fn read_stdin_prompt() -> Result<String> {
 /// 2. Sends it to the agent with an appropriate tool event callback.
 /// 3. Outputs the result in the requested format.
 /// 4. Returns an exit code (0 = success, 1 = error).
+///
+/// If `timeout_secs` is provided, the entire execution is bounded by that
+/// duration. On timeout, a timeout error is emitted and FAILURE is returned.
 pub async fn run(
     agent: &mut dyn AgentMode,
     prompt: &str,
     format: &OutputFormat,
+    timeout_secs: Option<u64>,
 ) -> Result<ExitCode> {
     let start = Instant::now();
 
@@ -69,8 +75,21 @@ pub async fn run(
         });
     }
 
-    // Execute the prompt
-    let result = agent.chat(prompt, tool_callback.as_ref()).await;
+    // Execute the prompt (with optional timeout)
+    let result = if let Some(secs) = timeout_secs {
+        let duration = Duration::from_secs(secs);
+        match timeout(duration, agent.chat(prompt, tool_callback.as_ref())).await {
+            Ok(inner_result) => inner_result,
+            Err(_elapsed) => {
+                Err(anyhow::anyhow!(
+                    "Execution timed out after {} seconds.                      Use --timeout to increase the limit or simplify the task.",
+                    secs
+                ))
+            }
+        }
+    } else {
+        agent.chat(prompt, tool_callback.as_ref()).await
+    };
     let elapsed = start.elapsed();
     let duration_ms = elapsed.as_millis() as u64;
 
@@ -144,6 +163,9 @@ fn emit_success(
                 usage: usage_summary,
                 duration_ms,
                 tool_rounds: agent.session().request_count.saturating_sub(1),
+                files_modified: checkpoint::modified_files(),
+                exit_code: 0,
+                model: Some(agent.model_name().to_string()),
             };
             emit_json_result(&payload);
         }
@@ -159,6 +181,9 @@ fn emit_success(
                 usage: usage_summary,
                 duration_ms,
                 tool_rounds: agent.session().request_count.saturating_sub(1),
+                files_modified: checkpoint::modified_files(),
+                exit_code: 0,
+                model: Some(agent.model_name().to_string()),
             }));
         }
     }
@@ -189,6 +214,9 @@ fn emit_error(
                 usage: None,
                 duration_ms,
                 tool_rounds: 0,
+                files_modified: checkpoint::modified_files(),
+                exit_code: 1,
+                model: Some(agent.model_name().to_string()),
             };
             emit_json_result(&payload);
         }
@@ -200,6 +228,9 @@ fn emit_error(
                 usage: None,
                 duration_ms,
                 tool_rounds: 0,
+                files_modified: checkpoint::modified_files(),
+                exit_code: 1,
+                model: Some(agent.model_name().to_string()),
             }));
         }
     }

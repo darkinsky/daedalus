@@ -55,12 +55,16 @@ pub async fn run_interactive(agent: &mut dyn AgentMode) -> Result<()> {
 ///
 /// This is the main entry point for `--print` / `-p` mode.
 /// Returns an exit code: SUCCESS (0) or FAILURE (1).
+///
+/// If `timeout_secs` is provided, the agent execution is bounded by that
+/// duration. On timeout, an error result is emitted and FAILURE is returned.
 pub async fn run_print(
     agent: &mut dyn AgentMode,
     prompt: &str,
     format: &OutputFormat,
+    timeout_secs: Option<u64>,
 ) -> Result<ExitCode> {
-    print_runner::run(agent, prompt, format).await
+    print_runner::run(agent, prompt, format, timeout_secs).await
 }
 
 /// Read a prompt from stdin (for `-p -`).

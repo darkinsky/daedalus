@@ -29,7 +29,7 @@ pub struct CliArgs {
 
     /// Maximum number of tool-calling rounds per prompt.
     ///
-    /// Limits the agentic loop depth. 0 means use the internal default (10).
+    /// Limits the agentic loop depth. 0 means use the internal default (200).
     #[arg(long = "max-turns", value_name = "N")]
     pub max_turns: Option<usize>,
 
@@ -73,6 +73,19 @@ pub struct CliArgs {
     #[arg(long = "dangerously-skip-permissions")]
     pub skip_permissions: bool,
 
+    /// Auto-approve all tool calls (alias for --dangerously-skip-permissions).
+    ///
+    /// Friendlier name for CI/CD pipelines. Equivalent to --dangerously-skip-permissions.
+    #[arg(long = "auto-approve")]
+    pub auto_approve: bool,
+
+    /// Total timeout in seconds for non-interactive (print) mode.
+    ///
+    /// If the agent does not complete within this time, it is terminated
+    /// and a timeout error is returned. Only effective in --print mode.
+    #[arg(long = "timeout", value_name = "SECONDS")]
+    pub timeout: Option<u64>,
+
     /// Bare mode: skip auto-discovery of skills, subagents, and MCP servers.
     ///
     /// Significantly reduces startup time for simple queries.
@@ -112,6 +125,13 @@ impl CliArgs {
     /// Return true if the user requested non-interactive (print) mode.
     pub fn is_print_mode(&self) -> bool {
         self.print.is_some()
+    }
+
+    /// Return true if permissions should be skipped.
+    ///
+    /// Combines `--dangerously-skip-permissions` and `--auto-approve` flags.
+    pub fn should_skip_permissions(&self) -> bool {
+        self.skip_permissions || self.auto_approve
     }
 
     /// Parse the allowed tools list into a Vec of tool names.
@@ -154,6 +174,8 @@ mod tests {
             resume_session: None,
             verbose: false,
             skip_permissions: false,
+            auto_approve: false,
+            timeout: None,
             bare: false,
             prompt_style: None,
         };
@@ -176,6 +198,8 @@ mod tests {
             resume_session: None,
             verbose: false,
             skip_permissions: false,
+            auto_approve: false,
+            timeout: None,
             bare: false,
             prompt_style: None,
         };
@@ -198,6 +222,8 @@ mod tests {
             resume_session: None,
             verbose: false,
             skip_permissions: false,
+            auto_approve: false,
+            timeout: None,
             bare: false,
             prompt_style: None,
         };
@@ -220,6 +246,8 @@ mod tests {
             resume_session: None,
             verbose: false,
             skip_permissions: false,
+            auto_approve: false,
+            timeout: None,
             bare: false,
             prompt_style: None,
         };
@@ -244,10 +272,42 @@ mod tests {
             resume_session: None,
             verbose: false,
             skip_permissions: false,
+            auto_approve: false,
+            timeout: None,
             bare: false,
             prompt_style: None,
         };
         let tools = args.allowed_tools_list().unwrap();
         assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_should_skip_permissions() {
+        let mut args = CliArgs {
+            print: None,
+            output_format: OutputFormat::Text,
+            max_turns: None,
+            system_prompt: None,
+            append_system_prompt: None,
+            model: None,
+            allowed_tools: None,
+            disallowed_tools: None,
+            continue_session: false,
+            resume_session: None,
+            verbose: false,
+            skip_permissions: false,
+            auto_approve: false,
+            timeout: None,
+            bare: false,
+            prompt_style: None,
+        };
+        assert!(!args.should_skip_permissions());
+
+        args.auto_approve = true;
+        assert!(args.should_skip_permissions());
+
+        args.auto_approve = false;
+        args.skip_permissions = true;
+        assert!(args.should_skip_permissions());
     }
 }

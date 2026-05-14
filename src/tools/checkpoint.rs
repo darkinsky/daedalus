@@ -358,6 +358,22 @@ pub fn stack_summary() -> Vec<String> {
 }
 
 /// Clear all checkpoints (called on /new session).
+/// Return a deduplicated list of all files that have been modified
+/// (i.e., files that have checkpoints recorded for them).
+pub fn modified_files() -> Vec<String> {
+    CHECKPOINT_STACK.lock()
+        .map(|stack| {
+            let mut files: Vec<String> = stack.iter()
+                .flat_map(|cp| cp.snapshots.keys())
+                .map(|p| p.display().to_string())
+                .collect();
+            files.sort();
+            files.dedup();
+            files
+        })
+        .unwrap_or_default()
+}
+
 pub fn clear() {
     if let Ok(mut stack) = CHECKPOINT_STACK.lock() {
         stack.clear();

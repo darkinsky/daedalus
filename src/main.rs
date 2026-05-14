@@ -32,17 +32,28 @@ async fn main() -> Result<()> {
         // ── Non-interactive (print) mode ──
         let prompt = if prompt_arg == "-" {
             cli::read_stdin_prompt()?
+        } else if prompt_arg.starts_with('@') {
+            // Read prompt from file: --print @path/to/file
+            let file_path = &prompt_arg[1..];
+            std::fs::read_to_string(file_path)
+                .map(|s| s.trim().to_string())
+                .map_err(|e| anyhow::anyhow!("Failed to read prompt file '{}': {}", file_path, e))?
         } else {
             prompt_arg.clone()
         };
 
+        if prompt.is_empty() {
+            anyhow::bail!("Empty prompt provided");
+        }
+
         tracing::info!(
             prompt_len = prompt.len(),
             output_format = ?args.output_format,
+            timeout = ?args.timeout,
             "Running in print mode"
         );
 
-        let exit_code = cli::run_print(&mut agent, &prompt, &args.output_format).await?;
+        let exit_code = cli::run_print(&mut agent, &prompt, &args.output_format, args.timeout).await?;
 
         // Persist memory and perform cleanup before exiting
         if let Err(e) = agent.shutdown().await {
@@ -55,6 +66,17 @@ async fn main() -> Result<()> {
         });
     } else {
         // ── Interactive (REPL) mode ──
+        // Unless --continue is passed, start a fresh session (discard previous
+        // conversation messages while keeping long-term memory and history).
+        if args.resume_session.is_some() {
+            tracing::warn!("--resume is not yet implemented; starting a fresh session");
+            eprintln!("Warning: --resume is not yet implemented; starting a fresh session");
+        }
+        if !args.continue_session {
+            agent.new_session();
+        } else {
+            tracing::info!("Continuing previous session (--continue)");
+        }
         cli::run_interactive(&mut agent).await?;
     }
 
@@ -211,7 +233,7 @@ async fn build_agent(
     apply_tool_filtering(args, &mut agent);
 
     // Apply permission settings from CLI args
-    if args.skip_permissions {
+    if args.should_skip_permissions() {
         agent.set_skip_permissions(true);
     }
     agent.set_permissions_config(permissions_config);
