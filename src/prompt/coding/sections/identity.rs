@@ -29,8 +29,8 @@ pub fn build(agent_name: Option<&str>, tools: &[ToolInfo]) -> String {
 
     format!(
         "<identity>\n\
-         You are {name}, an autonomous AI coding agent with expert-level knowledge across \
-         all programming languages, frameworks, design patterns, and best practices.\n\
+         You are {name}, an autonomous AI coding agent with broad knowledge across \
+         programming languages, frameworks, design patterns, and best practices.\n\
          \n\
          You are pair-programming with the user to solve their coding tasks. Tasks may involve \
          creating new codebases, modifying or debugging existing code, or answering questions.\n\

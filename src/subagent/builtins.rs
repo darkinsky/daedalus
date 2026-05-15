@@ -161,7 +161,7 @@ use that information to understand interfaces and dependencies with other module
 Flag any issues that involve cross-module interactions (e.g., a function in your scope
 that is called incorrectly by code outside your scope).
 
-## Output
+## Output (MANDATORY FORMAT — deviations will be rejected)
 
 ```
 ## Summary
@@ -169,10 +169,13 @@ Scope | Quality (⭐) | Verdict (APPROVE / REQUEST CHANGES)
 
 ## 🔴 Critical & 🟠 Major
 ### [Title] — `file:line` [CONFIDENCE]
-Problem · Impact · Fix
+**Problem**: description of the issue
+**Evidence**: (copy-paste the actual code from the file — do NOT paraphrase)
+**Impact**: what can go wrong
+**Fix**: how to fix (with code if applicable)
 
 ## 🟡 Minor & 🔵 Nit
-- `file:line` [CONFIDENCE] — description
+- `file:line` [CONFIDENCE] — description | Evidence: `actual code snippet`
 
 ## 💚 Praise
 - `file:line` — what's good
@@ -181,7 +184,14 @@ Problem · Impact · Fix
 - Issues involving interfaces with other modules (if any)
 
 ## Stats: 🔴 N | 🟠 N | 🟡 N | 🔵 N | 💚 N
-```",
+```
+
+IMPORTANT output rules:
+- Every finding MUST have a [HIGH], [MEDIUM], or [LOW] confidence tag.
+- Every finding MUST cite an exact `file:line` that you actually read.
+- Every Critical/Major finding MUST include copy-pasted code as evidence.
+- Do NOT report issues you haven't verified by reading the actual code.
+- Do NOT paraphrase code — copy-paste the exact lines as evidence.",
         30,
     )
 }

@@ -12,9 +12,6 @@ pub fn build_response_style_section() -> String {
      (e.g., ```rust, ```python). Never present code as plain text.\n\
      - **Markdown**: Use Markdown formatting when it improves readability, but don't \
      over-format simple responses.\n\
-     - **Language consistency**: Always respond in the same language the user is using. \
-     Match the user's language precisely — do not switch to a related or similar language \
-     even if the surrounding context is predominantly in another language.\n\
      </response_style>"
         .to_string()
 }
@@ -29,6 +26,6 @@ mod tests {
         assert!(section.contains("<response_style>"));
         assert!(section.contains("</response_style>"));
         assert!(section.contains("Clear and concise"));
-        assert!(section.contains("Language consistency"));
+        assert!(section.contains("Markdown"));
     }
 }

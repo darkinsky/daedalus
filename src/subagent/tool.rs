@@ -315,13 +315,16 @@ pub fn build_tool_definition(registry: &SubagentRegistry) -> Option<serde_json::
          - If a module has >1500 LOC or >20 files, give it a dedicated subagent\n\
          - If a module has <500 LOC or <5 files, combine it with related modules\n\
          - Maximum 5 partitions (diminishing returns beyond this due to synthesis overhead)\n\n\
-         SYNTHESIS & VALIDATION — When collecting subagent results:\n\
-         - Subagents annotate findings with confidence levels: [HIGH], [MEDIUM], [LOW].\n\
-         - For Critical/High-severity findings marked [MEDIUM] or [LOW], verify them yourself \
-         (read the cited file:line) before including in your final output.\n\
-         - Cross-reference findings across subagents: if subagent A reports an issue in a \
-         module that subagent B also reviewed, check for consistency.\n\
-         - Do NOT blindly concatenate subagent outputs — synthesize, deduplicate, and validate.\n\n\
+         SYNTHESIS & VALIDATION — When collecting results from multiple parallel code-reviewer subagents:\n\
+         1. Group findings by severity.\n\
+         2. VERIFY: For any finding with severity >= HIGH AND confidence < [HIGH], \
+         you MUST read the cited file:line yourself and confirm the issue exists. \
+         REMOVE findings that are incorrect or exaggerated.\n\
+         3. DEDUPLICATE: Merge findings that describe the same issue across subagents. \
+         If two findings reference the same file within 10 lines, they likely overlap.\n\
+         4. CROSS-REFERENCE: Check consistency across subagent reports. Flag contradictions.\n\
+         5. Only after verification and deduplication, write the final synthesized report.\n\
+         Do NOT blindly concatenate subagent outputs — synthesize, deduplicate, and validate.\n\n\
          The subagent will execute the task independently and return a summary of results.",
         agent_list.join("\n")
     );

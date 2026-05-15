@@ -149,6 +149,23 @@ impl<'a> CodingPromptBuilder<'a> {
         self
     }
 
+    /// Set language preference (e.g., "Chinese", "English").
+    #[allow(dead_code)]
+    pub fn language_preference(mut self, lang: &'a str) -> Self {
+        self.inputs.language_preference = Some(lang);
+        self
+    }
+
+    /// Add an extra dynamic section to be appended after all standard sections.
+    ///
+    /// This enables runtime extension of the prompt without modifying the builder.
+    /// Each section should be a pre-formatted string (with XML tags if desired).
+    #[allow(dead_code)]
+    pub fn extra_section(mut self, section: String) -> Self {
+        self.inputs.extra_sections.push(section);
+        self
+    }
+
     /// Assemble the final system prompt.
     ///
     /// The prompt is split into static prefix and dynamic suffix,
@@ -174,10 +191,31 @@ impl<'a> CodingPromptBuilder<'a> {
             parts.push(tool_section);
         }
 
-        // 4. Core behavioral rules (agentic coding focus)
-        parts.push(sections::rules::build(self.inputs.tools));
+        // 4. Core operating principles (always present)
+        parts.push(sections::core_principles::build());
 
-        // 8. Critical reminders (last = highest salience via recency bias)
+        // 5. Task strategy — differentiated guidance by task type
+        parts.push(sections::task_strategy::build());
+
+        // 6. Code changes guidance (only when editing tools available)
+        if let Some(code_changes) = sections::code_changes::build(self.inputs.tools) {
+            parts.push(code_changes);
+        }
+
+        // 7. Search strategy (only when tools available)
+        if let Some(search) = sections::search_strategy::build(self.inputs.tools) {
+            parts.push(search);
+        }
+
+        // 8. Communication style
+        parts.push(sections::communication::build(self.inputs.tools));
+
+        // 9. Subagent delegation (only when spawn_subagent tool available)
+        if let Some(delegation) = sections::delegation::build(self.inputs.tools) {
+            parts.push(delegation);
+        }
+
+        // 10. Critical reminders (last = highest salience via recency bias)
         parts.push(sections::reminders::build());
 
         // ═══ CACHE BOUNDARY ═══
@@ -188,14 +226,29 @@ impl<'a> CodingPromptBuilder<'a> {
         // 9. Environment context
         parts.push(sections::environment::build(self.environment.as_ref()));
 
-        // 10. Project rules (shared helper from PromptInputs)
+        // 10. Context management awareness (sliding window, tool result truncation)
+        parts.push(sections::context_management::build());
+
+        // 11. Project rules (shared helper from PromptInputs)
         if let Some(rules_section) = self.inputs.project_rules_section() {
             parts.push(rules_section);
         }
 
-        // 11. Memory context (shared helper from PromptInputs)
+        // 12. Language preference (optional, overrides generic language rule)
+        if let Some(lang_section) = self.inputs.language_section() {
+            parts.push(lang_section);
+        }
+
+        // 13. Memory context (shared helper from PromptInputs)
         if let Some(memory_section) = self.inputs.memory_section() {
             parts.push(memory_section);
+        }
+
+        // 14. Extra dynamic sections (runtime-registered via extra_section())
+        for section in &self.inputs.extra_sections {
+            if !section.trim().is_empty() {
+                parts.push(section.clone());
+            }
         }
 
         parts.join("\n\n")

@@ -1,6 +1,7 @@
 pub mod coding;
 pub mod inputs;
 pub mod sections;
+pub mod shared_reminders;
 
 use crate::tools::ToolInfo;
 
@@ -178,6 +179,20 @@ impl<'a> PromptBuilder<'a> {
         self
     }
 
+    /// Set language preference (e.g., "Chinese", "English").
+    #[allow(dead_code)]
+    pub fn language_preference(mut self, lang: &'a str) -> Self {
+        self.inputs.language_preference = Some(lang);
+        self
+    }
+
+    /// Add an extra dynamic section to be appended after all standard sections.
+    #[allow(dead_code)]
+    pub fn extra_section(mut self, section: String) -> Self {
+        self.inputs.extra_sections.push(section);
+        self
+    }
+
     /// Assemble the final system prompt from all configured sections.
     ///
     /// The prompt is assembled in a deliberate order optimized for KV cache:
@@ -239,8 +254,20 @@ impl<'a> PromptBuilder<'a> {
             sections.push(rules_section);
         }
 
-        // 8. Dynamic context (date, memory) — last for maximum cache prefix
+        // 8. Language preference (optional)
+        if let Some(lang_section) = self.inputs.language_section() {
+            sections.push(lang_section);
+        }
+
+        // 9. Dynamic context (date, memory) — last for maximum cache prefix
         sections.push(build_context_section(self.inputs.memory_context));
+
+        // 10. Extra dynamic sections (runtime-registered)
+        for section in &self.inputs.extra_sections {
+            if !section.trim().is_empty() {
+                sections.push(section.clone());
+            }
+        }
 
         sections.join("\n\n")
     }

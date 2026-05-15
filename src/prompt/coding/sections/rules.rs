@@ -7,8 +7,14 @@ use crate::tools::ToolInfo;
 
 /// Build the core rules section.
 ///
-/// These rules define the agent's behavior for coding tasks:
-/// search strategy, edit strategy, verification, and communication style.
+/// **DEPRECATED**: This function is retained for reference only.
+/// The rules have been split into separate sections:
+/// - `core_principles.rs` — Core Operating Principles
+/// - `code_changes.rs` — Making Code Changes + File Operation Safety
+/// - `search_strategy.rs` — Search Strategy
+/// - `communication.rs` — Communication Style
+/// - `delegation.rs` — Subagent Delegation
+#[allow(dead_code)]
 pub fn build(tools: &[ToolInfo]) -> String {
     let has_tools = !tools.is_empty();
 
@@ -47,9 +53,6 @@ pub fn build(tools: &[ToolInfo]) -> String {
          - **Ask only when necessary**: If you can find the answer through tools, do so. \
          Only ask the user when genuinely ambiguous or when multiple valid approaches exist \
          and the choice matters.\n\
-         - **Concise responses**: Get to the point. Avoid filler, preamble, or restating \
-         what the user already said.\n\
-         - **Language matching**: Respond in the same language the user is using.\n\
          \n\
          ## Subagent Delegation\n\
          \n\
@@ -95,7 +98,6 @@ pub fn build(tools: &[ToolInfo]) -> String {
          \n\
          - **Concise and direct**: Get to the point without filler or preamble.\n\
          - **Action-oriented**: Focus on delivering results, not explaining process.\n\
-         - **Language matching**: Respond in the same language the user is using.\n\
          - **Code formatting**: Always use fenced code blocks with language identifiers."
     };
 

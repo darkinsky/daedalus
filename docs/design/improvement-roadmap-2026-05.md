@@ -1,13 +1,25 @@
 # Daedalus 提升路线图
 
 > **日期**：2026-05-12（更新：2026-05-15）
-> **版本**：v1.3
+> **版本**：v1.5
 > **范围**：基于 ~50K 行代码的全面审查，结合 Claude Code 最新特性、2025-2026 业界前沿研究
+>
+> **v1.5 更新说明**：完成 Prompt 设计优化 P0（对比 Claude Code 源码的 6 维分析）。
+> 详见 `docs/design/prompt-optimization-analysis.md`。
+> 改进内容：消除重复规则（语言一致性/简洁回复从 response_style 和 rules 中移除，仅保留在 critical_reminders）、
+> 添加上下文压缩感知 section（`<context_management>`，告知模型 sliding window 和 tool result truncation 的存在）、
+> 修正工具引用错误（tools.rs 中 "Right tool for the job" 使用通用类别描述而非具体工具名）。
 >
 > **v1.3 更新说明**：完成 P4 #14（子代理上下文预算）、#15（增量式探索策略）、#17（均衡分区引导）、#20（Prompt 经济学优化）的实现，
 > 修复所有 subagent prompt 中的语言特化问题（Rust 特定命令/术语泛化为语言无关），增强 explore agent 效率指导。
 > #20 Prompt 经济学优化已全部完成：工具描述裁剪（只列出白名单内工具）+ 共享前缀缓存优化（cache-friendly prompt 组装顺序）。
 > P4 Phase 1（单代理效率）4 项全部完成，剩余 Phase 2（#16 结构化输出、#18 中间总结）和 Phase 3（#19 Trace 可观测性）。
+>
+> **v1.4 更新说明**：完成 P4 #16（结构化输出与分层验证）。
+> spawn_subagent 工具描述中新增 STRUCTURED OUTPUT 指令（强制子代理输出包含 severity/confidence/location/evidence 字段）
+> 和 SYNTHESIS & VALIDATION 强制验证流程（5 步：分组→验证→去重→交叉引用→合成）。
+> code-reviewer 输出格式增强：Critical/Major 必须包含 copy-paste 代码证据，所有发现必须标注 confidence。
+> P4 Phase 2 剩余 #18（中间总结机制）。
 >
 > **v1.1 更新说明**：经代码交叉验证，P0 #1-#3 和 P1 #4-#5、#7 的现状描述与实际代码不符（功能已实现），已更新现状分析并标注剩余工作。同时修复了 `SerializableMessage` 丢失 `preserved`/`content_parts` 字段的真实 Bug。
 
@@ -957,15 +969,15 @@ SlidingWindowMemory
 | 🔵 P3 | 13 | 知识图谱增强 | 📋 待开始 | 5-10 天 | A-MEM | 深度记忆 |
 | 🟣 P4 | 14 | 子代理上下文预算 | ✅ 已完成 | 0 | Trace 分析 | 延迟/质量 |
 | 🟣 P4 | 15 | 增量式探索策略 | ✅ 已完成 | 0 | Trace 分析 | Token 消耗 |
-| 🟣 P4 | 16 | 结构化输出与分层验证 | 📋 待开始 | 2 天 | Trace 分析 | 准确率 |
+| 🟣 P4 | 16 | 结构化输出与分层验证 | ✅ 已完成 | 0 | Trace 分析 | 准确率 |
 | 🟣 P4 | 17 | 均衡分区引导 | ✅ 已完成 | 0 | Trace 分析 | 延迟 |
 | 🟣 P4 | 18 | 中间总结机制 | 📋 待开始 | 0.5 天 | Trace 分析 | 质量/可靠性 |
 | 🟣 P4 | 19 | Trace 可观测性增强 | 📋 待开始 | 4-5 天 | Trace 分析 | 可度量性 |
 | 🟣 P4 | 20 | Prompt 经济学优化 | ✅ 已完成 | 0 | Trace 分析 | 成本 |
 
-**完成统计**：20 项中已完成 **11 项**（#2, #4, #5, #6, #7, #9, #14, #15, #17, #20 完全完成；#1, #3 部分完成），剩余 **9 项**
+**完成统计**：20 项中已完成 **12 项**（#2, #4, #5, #6, #7, #9, #14, #15, #16, #17, #20 完全完成；#1, #3 部分完成），剩余 **8 项**
 
-**剩余工作量**：~22-42 人天（P0 剩余 ~3 天，P2-P4 为主要工作）
+**剩余工作量**：~20-40 人天（P0 剩余 ~3 天，P2-P4 为主要工作）
 
 ---
 
@@ -983,12 +995,13 @@ SlidingWindowMemory
 | 9 | 任务规划 | CreatePlanTool/UpdatePlanTool + GLOBAL_PLAN + /plan & /skip |
 | 14 | 子代理上下文预算 | soft limit 0.6 + hard limit 0.85 + context_budget_tokens 字段 + 公共预算意识 prompt |
 | 15 | 增量式探索策略 | code-reviewer 三阶段探索 + explore agent 效率指导 + 所有 prompt 语言泛化 |
+| 16 | 结构化输出与分层验证 | SYNTHESIS & VALIDATION 条件化（仅 code-reviewer 并行场景）+ code-reviewer MANDATORY FORMAT + evidence 要求 |
 | 17 | 均衡分区引导 | spawn_subagent PARTITION BALANCE 指导 + plan agent Task Decomposition 泛化 |
 | 20 | Prompt 经济学优化 | 工具描述裁剪（条件化 tool hints）+ cache-friendly prompt 组装顺序 + agent_identity 标签 |
 
 ### 当前优先事项（按 ROI 排序）
 
-1. **#16 结构化输出与分层验证**（2 天）— 直接消除子代理误报，提升报告可信度
+1. ~~**#16 结构化输出与分层验证**（2 天）— 直接消除子代理误报，提升报告可信度~~ ✅ 已完成
 2. **#18 中间总结机制**（0.5 天）— 纯 prompt 改动，零代码成本
 3. **#1 Hooks 补充 4 个事件**（1-2 天）— `UserPromptSubmit`、`Notification`、`SubagentStop`、`PreCompact`
 4. **#3 精确 Token 计数**（1-2 天）— 集成 tiktoken-rs 或 Anthropic token counting API
@@ -1011,8 +1024,8 @@ gantt
     #15 增量式探索策略       :done, p4_15, 2026-05-15, 1d
     #17 均衡分区引导         :done, p4_17, 2026-05-15, 1d
     #20 Prompt 经济学优化    :done, p4_20, 2026-05-15, 1d
+    #16 结构化输出与验证     :done, p4_16, 2026-05-15, 1d
     #18 中间总结机制         :p4_18, 2026-05-19, 1d
-    #16 结构化输出与验证     :p4_16, 2026-05-19, 2d
 
     section P2 架构演进
     #10 非交互模式增强       :p2_10, 2026-06-02, 3d
@@ -1135,7 +1148,7 @@ MAX_ROUNDS GUIDANCE:
 #### 预估工作量
 
 ✅ 已完成（2026-05-15）
-### 16. 结构化输出与分层验证
+### 16. 结构化输出与分层验证 ✅ 已完成
 
 #### 问题
 
@@ -1186,12 +1199,12 @@ After ALL subagents complete:
 
 #### 改动范围
 
-- `src/subagent/tool.rs`：`build_subagent_openai_json()` 的 description 字段
-- 子代理定义文件（如 `code-reviewer.md`）：追加输出格式要求
+- `src/subagent/tool.rs`：`build_tool_definition()` 的 description 字段 — SYNTHESIS & VALIDATION 条件化为仅针对多个并行 code-reviewer 场景（删除了通用 STRUCTURED OUTPUT 指令，避免污染 explore/plan agent）
+- `src/subagent/builtins.rs`：code-reviewer 输出格式增强（MANDATORY FORMAT + evidence 要求 + IMPORTANT output rules）
 
 #### 预估工作量
 
-2 天
+✅ 已完成（2026-05-15）
 
 ---
 
@@ -1382,9 +1395,9 @@ gantt
     17. 均衡分区引导                  :done, p1_17, 2026-05-15, 1d
     20. Prompt 经济学优化             :done, p1_20, 2026-05-15, 1d
 
-    section Phase 2: 编排策略 (Week 1)
+    section Phase 2: 编排策略
+    16. 结构化输出与分层验证          :done, p2_16, 2026-05-15, 1d
     18. 中间总结机制 (prompt)          :p2_18, 2026-05-19, 1d
-    16. 结构化输出与分层验证          :p2_16, 2026-05-19, 2d
 
     section Phase 3: 可观测性 (Week 2)
     19. Trace 可观测性增强            :p3_19, 2026-05-26, 5d
@@ -1395,14 +1408,14 @@ gantt
 | 阶段 | 完成后预期效果 | 状态 |
 |------|---------------|------|
 | Phase 1 完成 | 子代理 token 消耗 -40%，单代理延迟 -30%，总耗时 12min → 7min | ✅ 已完成 |
-| Phase 2 完成 | 报告准确率 80% → 95%，总耗时再降 30%，达到 5min | 📋 进行中 |
+| Phase 2 完成 | 报告准确率 80% → 95%，总耗时再降 30%，达到 5min | 📋 进行中（#16 ✅，#18 待完成） |
 | Phase 3 完成 | 可量化每次优化效果，防止回归，支持持续改善 | 📋 待开始 |
 
 **最高 ROI 的 3 个改动**（如果时间有限）：
 
 1. ✅ ~~**#14 子代理上下文预算**（2-3 天）— 防止上下文膨胀导致的质量下降~~ **已完成**
 2. ✅ ~~**#15 增量式探索策略**（1 天）— 同时降低 token 消耗和延迟~~ **已完成**
-3. **#16 结构化输出与分层验证**（2 天）— 直接消除误报（下一优先）
+3. ✅ ~~**#16 结构化输出与分层验证**（2 天）— 直接消除误报~~ **已完成**
 
 ---
 

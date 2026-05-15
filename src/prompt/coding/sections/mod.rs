@@ -1,5 +1,12 @@
+pub mod code_changes;
+pub mod communication;
+pub mod context_management;
+pub mod core_principles;
+pub mod delegation;
 pub mod environment;
 pub mod identity;
 pub mod reminders;
 pub mod rules;
+pub mod search_strategy;
+pub mod task_strategy;
 pub mod tools;

@@ -22,6 +22,16 @@ pub struct PromptInputs<'a> {
     pub soul: Option<&'a str>,
     /// Optional project rules (loaded from DAEDALUS.md files).
     pub project_rules: Option<&'a str>,
+    /// Optional language preference (e.g., "Chinese", "English", "Japanese").
+    /// When set, overrides the generic "respond in the user's language" rule
+    /// with a specific language directive.
+    pub language_preference: Option<&'a str>,
+    /// Extra dynamic sections injected at runtime.
+    ///
+    /// This enables P2-8 (dynamic section registration) without a full trait system.
+    /// Each entry is a pre-formatted section string (with XML tags if desired).
+    /// Sections are appended to the dynamic suffix in order.
+    pub extra_sections: Vec<String>,
 }
 
 impl<'a> PromptInputs<'a> {
@@ -33,6 +43,8 @@ impl<'a> PromptInputs<'a> {
             memory_context: None,
             soul: None,
             project_rules: None,
+            language_preference: None,
+            extra_sections: Vec::new(),
         }
     }
 
@@ -69,6 +81,24 @@ impl<'a> PromptInputs<'a> {
                  {}\n\
                  </memory>",
                 ctx.trim()
+            ))
+    }
+
+    /// Build the language preference section (shared between both styles).
+    ///
+    /// Returns `None` if no language preference is configured.
+    /// When present, this provides a specific language directive that is more
+    /// precise than the generic "respond in the user's language" rule in reminders.
+    pub fn language_section(&self) -> Option<String> {
+        self.language_preference
+            .filter(|l| !l.trim().is_empty())
+            .map(|lang| format!(
+                "<language>\n\
+                 Always respond in {lang}. All explanations, comments, and communication \
+                 with the user should be in {lang}. Technical terms and code identifiers \
+                 should remain in their original language.\n\
+                 </language>",
+                lang = lang.trim()
             ))
     }
 }

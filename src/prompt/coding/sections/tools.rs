@@ -52,11 +52,12 @@ pub fn build(tools: &[ToolInfo]) -> String {
          context. Read relevant files, search for usages, check imports — all in parallel.\n\
          \n\
          3. **Right tool for the job**:\n\
-            - Exact text/symbol lookup → grep/ripgrep tools\n\
-            - Semantic understanding → codebase search\n\
-            - Known file path → read file directly\n\
-            - Need to understand a function → view code item\n\
-            - Multiple edits to one file → multi-edit tools\n\
+            - Exact text/symbol lookup → grep or regex search tools\n\
+            - Semantic/meaning-based search → semantic search tools (if available)\n\
+            - Known file path → read the file directly\n\
+            - File/directory discovery → search or list tools\n\
+            - Multiple edits to one file → batch/multi-edit tools\n\
+            - System commands → shell/bash execution\n\
          \n\
          4. **Validate after editing**: After making changes, check for errors. If a tool \
          call fails, analyze why and try a different approach — don't retry with identical args.\n\

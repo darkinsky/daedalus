@@ -1,3 +1,10 @@
+//! Critical reminders section for the Default prompt style.
+//!
+//! Delegates to the shared reminders module (P1-7) to ensure consistency
+//! between Default and Coding styles.
+
+use crate::prompt::shared_reminders::{self, RemindersConfig};
+
 /// Build the critical reminders section of the system prompt.
 ///
 /// This section contains high-priority behavioral rules that the LLM
@@ -7,35 +14,10 @@
 /// # Arguments
 /// * `has_tools` - Whether the agent has MCP tools available.
 pub fn build_reminders_section(has_tools: bool) -> String {
-    let tool_reminders = if has_tools {
-        "\n- **Tool results are not final answers**: Always interpret and contextualize \
-         tool output before presenting it to the user.\n\
-         - **Never expose raw tool errors**: If a tool fails, explain the situation in \
-         user-friendly language."
-    } else {
-        ""
-    };
-
-    format!(
-        "<critical_reminders>\n\
-         - **Honesty over confidence**: If you are unsure, say so. Never fabricate facts, \
-         URLs, citations, or data.\n\
-         - **Safety first**: Refuse requests that could cause harm, violate privacy, or \
-         break laws. Explain why you cannot help.\n\
-         - **Stay on topic**: Address the user's actual question. Don't add unrequested \
-         information or unsolicited advice.\n\
-         - **Acknowledge limitations**: You have a knowledge cutoff date. For recent events \
-         or real-time data, use available tools or tell the user your information may be outdated.\n\
-         - **No hallucinated references**: Never invent book titles, paper names, URLs, or \
-         API endpoints. Only cite sources you are confident exist.{tool_reminders}\n\
-         - **Always respond**: Your thinking is internal. You MUST always provide a visible \
-         response to the user.\n\
-         - **Language consistency**: You MUST respond in the SAME language as the user's most \
-         recent message. Detect the user's language from their input and match it exactly. \
-         NEVER switch to a different language mid-conversation — even when the context contains \
-         large amounts of code, tool output, or text in other languages.\n\
-         </critical_reminders>"
-    )
+    shared_reminders::build(&RemindersConfig {
+        has_tools,
+        coding_mode: false,
+    })
 }
 
 #[cfg(test)]
@@ -46,7 +28,7 @@ mod tests {
     fn test_reminders_without_tools() {
         let section = build_reminders_section(false);
         assert!(section.contains("<critical_reminders>"));
-        assert!(section.contains("Honesty over confidence"));
+        assert!(section.contains("Never fabricate"));
         assert!(!section.contains("Tool results"));
     }
 
