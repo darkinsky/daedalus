@@ -1,8 +1,13 @@
 # Daedalus 提升路线图
 
-> **日期**：2026-05-12（更新：2026-05-13）
-> **版本**：v1.1
+> **日期**：2026-05-12（更新：2026-05-15）
+> **版本**：v1.3
 > **范围**：基于 ~50K 行代码的全面审查，结合 Claude Code 最新特性、2025-2026 业界前沿研究
+>
+> **v1.3 更新说明**：完成 P4 #14（子代理上下文预算）、#15（增量式探索策略）、#17（均衡分区引导）、#20（Prompt 经济学优化）的实现，
+> 修复所有 subagent prompt 中的语言特化问题（Rust 特定命令/术语泛化为语言无关），增强 explore agent 效率指导。
+> #20 Prompt 经济学优化已全部完成：工具描述裁剪（只列出白名单内工具）+ 共享前缀缓存优化（cache-friendly prompt 组装顺序）。
+> P4 Phase 1（单代理效率）4 项全部完成，剩余 Phase 2（#16 结构化输出、#18 中间总结）和 Phase 3（#19 Trace 可观测性）。
 >
 > **v1.1 更新说明**：经代码交叉验证，P0 #1-#3 和 P1 #4-#5、#7 的现状描述与实际代码不符（功能已实现），已更新现状分析并标注剩余工作。同时修复了 `SerializableMessage` 丢失 `preserved`/`content_parts` 字段的真实 Bug。
 
@@ -29,6 +34,14 @@
   - [11. 自适应模型选择](#11-自适应模型选择model-router)
   - [12. Agent 自我反思](#12-agent-自我反思self-reflection)
   - [13. 知识图谱增强记忆](#13-知识图谱增强记忆)
+- [P4：Multi-Agent 编排优化](#p4multi-agent-编排优化)
+  - [14. 子代理上下文预算管理](#14-子代理上下文预算管理)
+  - [15. 增量式文件探索策略](#15-增量式文件探索策略)
+  - [16. 结构化输出与分层验证](#16-结构化输出与分层验证)
+  - [17. 工作量感知的均衡分区](#17-工作量感知的均衡分区)
+  - [18. 子代理中间总结机制](#18-子代理中间总结机制)
+  - [19. Trace 可观测性增强](#19-trace-可观测性增强)
+  - [20. Prompt 经济学优化](#20-prompt-经济学优化)
 - [总结矩阵](#总结矩阵)
 - [建议实施顺序](#建议实施顺序)
 - [参考资料](#参考资料)
@@ -929,64 +942,467 @@ SlidingWindowMemory
 
 | 优先级 | # | 方向 | 状态 | 剩余工作量 | 参考来源 | 影响面 |
 |--------|---|------|------|-----------|---------|--------|
-| 🔴 P0 | 1 | Hooks 生命周期 | ✅ 4/8 事件 | 1-2 天 | Claude Code Hooks | 可扩展性 |
-| 🔴 P0 | 2 | Undo/Checkpoint | ✅ 已完成 | 0（增强 1-2 天） | Claude Code `/undo` | 用户安全感 |
-| 🔴 P0 | 3 | 精确 Token 计数 | ⚠️ 启发式已改进 | 1-2 天 | 业界共识 | compact 准确性 |
+| 🔴 P0 | 1 | Hooks 生命周期 | ✅ 4/8 事件已实现 | 1-2 天（补充 4 事件） | Claude Code Hooks | 可扩展性 |
+| 🔴 P0 | 2 | Undo/Checkpoint | ✅ 已完成 | 0 | Claude Code `/undo` | 用户安全感 |
+| 🔴 P0 | 3 | 精确 Token 计数 | ⚠️ 启发式已改进 | 1-2 天（集成 tiktoken） | 业界共识 | compact 准确性 |
 | 🟡 P1 | 4 | 流式 Bash 输出 | ✅ 已完成 | 0 | Claude Code | 交互体验 |
 | 🟡 P1 | 5 | 断点续传 | ✅ 已完成 | 0 | Harness Engineering | 长任务可靠性 |
 | 🟡 P1 | 6 | Context Rot 防护 | ✅ 已完成 | 0 | Context Engineering | 输出质量 |
 | 🟡 P1 | 7 | 多模态输入 | ✅ 已完成 | 0 | Claude Code | 能力扩展 |
-| 🟢 P2 | 8 | 记忆架构升级 | 5-10 天 | Letta/MemGPT | 长期记忆 |
-| 🟢 P2 | 9 | 任务规划 | 3-5 天 | Harness Engineering | 复杂任务 |
-| 🟢 P2 | 10 | 非交互模式增强 | 2-3 天 | Claude Code CI | 自动化 |
-| 🔵 P3 | 11 | 自适应模型选择 | 2-3 天 | 上下文经济学 | 成本优化 |
-| 🔵 P3 | 12 | Agent 自我反思 | 3-5 天 | Reflexion/LATS | 错误恢复 |
-| 🔵 P3 | 13 | 知识图谱增强 | 5-10 天 | A-MEM | 深度记忆 |
+| 🟢 P2 | 8 | 记忆架构升级 | 📋 待开始 | 5-10 天 | Letta/MemGPT | 长期记忆 |
+| 🟢 P2 | 9 | 任务规划 | ✅ 已完成 | 0 | Harness Engineering | 复杂任务 |
+| 🟢 P2 | 10 | 非交互模式增强 | 📋 待开始 | 2-3 天 | Claude Code CI | 自动化 |
+| 🔵 P3 | 11 | 自适应模型选择 | 📋 待开始 | 2-3 天 | 上下文经济学 | 成本优化 |
+| 🔵 P3 | 12 | Agent 自我反思 | 📋 待开始 | 3-5 天 | Reflexion/LATS | 错误恢复 |
+| 🔵 P3 | 13 | 知识图谱增强 | 📋 待开始 | 5-10 天 | A-MEM | 深度记忆 |
+| 🟣 P4 | 14 | 子代理上下文预算 | ✅ 已完成 | 0 | Trace 分析 | 延迟/质量 |
+| 🟣 P4 | 15 | 增量式探索策略 | ✅ 已完成 | 0 | Trace 分析 | Token 消耗 |
+| 🟣 P4 | 16 | 结构化输出与分层验证 | 📋 待开始 | 2 天 | Trace 分析 | 准确率 |
+| 🟣 P4 | 17 | 均衡分区引导 | ✅ 已完成 | 0 | Trace 分析 | 延迟 |
+| 🟣 P4 | 18 | 中间总结机制 | 📋 待开始 | 0.5 天 | Trace 分析 | 质量/可靠性 |
+| 🟣 P4 | 19 | Trace 可观测性增强 | 📋 待开始 | 4-5 天 | Trace 分析 | 可度量性 |
+| 🟣 P4 | 20 | Prompt 经济学优化 | ✅ 已完成 | 0 | Trace 分析 | 成本 |
 
-**总计**：~40-70 人天（其中 P0-P1 剩余 ~3-6 天，大幅低于原估计的 ~15-23 天）
+**完成统计**：20 项中已完成 **11 项**（#2, #4, #5, #6, #7, #9, #14, #15, #17, #20 完全完成；#1, #3 部分完成），剩余 **9 项**
+
+**剩余工作量**：~22-42 人天（P0 剩余 ~3 天，P2-P4 为主要工作）
 
 ---
 
 ## 建议实施顺序
 
+### 已完成项目 ✅
+
+| # | 方向 | 完成状态 |
+|---|------|----------|
+| 2 | Undo/Checkpoint | 内存快照 + undo/redo 栈 + MAX_CHECKPOINTS=50 |
+| 4 | 流式 Bash 输出 | tokio::select! 并发读 stdout/stderr + 超时 |
+| 5 | 断点续传 | session_messages.json 持久化 + 自动恢复 |
+| 6 | Context Rot 防护 | ContextHealth 多信号评估 + 分级提示 + 增强 Compact |
+| 7 | 多模态输入 | 图片 base64 编码 + Vision API 集成 |
+| 9 | 任务规划 | CreatePlanTool/UpdatePlanTool + GLOBAL_PLAN + /plan & /skip |
+| 14 | 子代理上下文预算 | soft limit 0.6 + hard limit 0.85 + context_budget_tokens 字段 + 公共预算意识 prompt |
+| 15 | 增量式探索策略 | code-reviewer 三阶段探索 + explore agent 效率指导 + 所有 prompt 语言泛化 |
+| 17 | 均衡分区引导 | spawn_subagent PARTITION BALANCE 指导 + plan agent Task Decomposition 泛化 |
+| 20 | Prompt 经济学优化 | 工具描述裁剪（条件化 tool hints）+ cache-friendly prompt 组装顺序 + agent_identity 标签 |
+
+### 当前优先事项（按 ROI 排序）
+
+1. **#16 结构化输出与分层验证**（2 天）— 直接消除子代理误报，提升报告可信度
+2. **#18 中间总结机制**（0.5 天）— 纯 prompt 改动，零代码成本
+3. **#1 Hooks 补充 4 个事件**（1-2 天）— `UserPromptSubmit`、`Notification`、`SubagentStop`、`PreCompact`
+4. **#3 精确 Token 计数**（1-2 天）— 集成 tiktoken-rs 或 Anthropic token counting API
+5. **#10 非交互模式增强**（2-3 天）— CI/CD 集成
+6. **#8 记忆架构升级**（5-10 天）— 分层记忆 + 策略组合
+
+### 排期甘特图
+
 ```mermaid
 gantt
-    title Daedalus 提升路线图
+    title Daedalus 提升路线图（更新于 2026-05-15）
     dateFormat  YYYY-MM-DD
-    section P0 核心
-    精确 Token 计数       :p0_3, 2026-05-13, 2d
-    Undo/Checkpoint       :p0_2, after p0_3, 3d
-    Hooks 生命周期        :p0_1, after p0_2, 5d
-    section P1 体验
-    流式 Bash 输出        :p1_4, after p0_1, 2d
-    Context Rot 防护      :p1_6, after p1_4, 2d
-    断点续传              :p1_5, after p1_6, 5d
-    多模态输入            :p1_7, after p1_5, 5d
-    section P2 架构
-    任务规划              :p2_9, after p1_7, 5d
-    非交互模式增强        :p2_10, after p2_9, 3d
-    记忆架构升级          :p2_8, after p2_10, 10d
-    section P3 前沿
-    自适应模型选择        :p3_11, after p2_8, 3d
-    Agent 自我反思        :p3_12, after p3_11, 5d
-    知识图谱增强          :p3_13, after p3_12, 10d
+
+    section P0 收尾
+    #1 Hooks 补充 4 事件     :p0_1, 2026-05-19, 2d
+    #3 精确 Token 计数       :p0_3, 2026-05-21, 2d
+
+    section P4 Multi-Agent 编排 (高 ROI)
+    #14 子代理上下文预算     :done, p4_14, 2026-05-15, 1d
+    #15 增量式探索策略       :done, p4_15, 2026-05-15, 1d
+    #17 均衡分区引导         :done, p4_17, 2026-05-15, 1d
+    #20 Prompt 经济学优化    :done, p4_20, 2026-05-15, 1d
+    #18 中间总结机制         :p4_18, 2026-05-19, 1d
+    #16 结构化输出与验证     :p4_16, 2026-05-19, 2d
+
+    section P2 架构演进
+    #10 非交互模式增强       :p2_10, 2026-06-02, 3d
+    #8 记忆架构升级          :p2_8, 2026-06-05, 10d
+
+    section P3 前沿 & P4 可观测性
+    #19 Trace 可观测性       :p4_19, 2026-06-16, 5d
+    #11 自适应模型选择       :p3_11, 2026-06-23, 3d
+    #12 Agent 自我反思       :p3_12, 2026-06-26, 5d
+    #13 知识图谱增强         :p3_13, 2026-07-03, 10d
 ```
 
-**推荐的前 5 步**（v1.1 更新）：
+---
 
-1. ~~**精确 Token 计数**（1-2 天）~~ → ✅ 启发式已改进，剩余：集成 tiktoken-rs（1-2 天）
-2. ~~**Undo/Checkpoint**（2-3 天）~~ → ✅ 已完成
-3. ~~**Hooks 生命周期**（3-5 天）~~ → ✅ 4/8 事件已实现，剩余：补充 4 个事件（1-2 天）
-4. ~~**流式 Bash 输出**（1-2 天）~~ → ✅ 已完成
-5. ~~**Context Rot 防护**（1-2 天）~~ → ✅ 精细版已实现（ContextHealth 多信号评估 + 分级提示 + 增强 Compact Prompt）
+## P4：Multi-Agent 编排优化
 
-**更新后的优先事项**：
+> **背景**：基于 2026-05-14 代码评审 trace 分析（716s / 540 万 prompt tokens / 67 次 LLM 调用），
+> 识别出 Multi-Agent 编排系统的 4 类系统性问题：信息衰减、验证缺失、负载倾斜、上下文膨胀。
+> 以下方案均为**语言无关、任务无关**的通用优化，不针对特定编程语言或场景。
 
-1. **Hooks 补充 4 个事件**（1-2 天）— `UserPromptSubmit`、`Notification`、`SubagentStop`、`PreCompact`
-2. **精确 Token 计数**（1-2 天）— 集成 tiktoken-rs 或 Anthropic token counting API
-3. ~~**任务规划与分解**（3-5 天）~~ → ✅ 已完成（CreatePlanTool/UpdatePlanTool + GLOBAL_PLAN + /plan & /skip 命令）
-4. **非交互模式增强**（2-3 天）— CI/CD 集成
-5. **记忆架构升级**（5-10 天）— 分层记忆 + 策略组合
+### 14. 子代理上下文预算管理 ✅ 已完成
+
+#### 问题
+
+子代理无限探索，后期上下文膨胀导致推理质量下降和延迟飙升。
+Trace 显示 10 次 LLM 调用 > 100s，全部发生在子代理上下文接近满载时。
+
+#### 方案
+
+为子代理引入与主代理相同的 Context Pressure 机制。当前 `run_tool_loop` 已有
+`context_pressure` 检测，需确保子代理的 `LoopConfig` 正确继承：
+
+1. 子代理的 `context_window_tokens` 从 `SubagentDefinition` 或全局配置继承
+2. 子代理的 `context_soft_limit_ratio` 设为更激进的值（0.6 而非 0.7）
+3. 子代理的 `max_tool_rounds` 根据分区大小动态计算
+
+**动态 max_rounds 公式**：
+
+```
+optimal_max_rounds = ceil(estimated_work_items / items_per_round) × 1.3
+```
+
+**Prompt 引导**（注入 orchestrator system prompt）：
+
+```
+MAX_ROUNDS GUIDANCE:
+- Simple exploration (list files, check patterns): 10-15 rounds
+- Focused analysis (single module, <20 files): 20-30 rounds
+- Deep analysis (large module, 20-40 files): 30-50 rounds
+- Formula: estimated_files × 1.5 + 5 (for synthesis)
+```
+
+#### 改动范围
+
+- `src/subagent/runner.rs`：`LoopConfig` 构建逻辑（soft limit 0.6 + hard limit 0.85 + context_budget_tokens 支持）
+- `src/subagent/tool.rs`：spawn_subagent description 中增加 max_rounds 引导
+- `src/subagent/types.rs`：新增 `context_budget_tokens: Option<usize>` 字段
+- `src/subagent/loader.rs`：解析 frontmatter 中的 `contextBudgetTokens` 字段
+- `src/subagent/prompt.rs`：公共预算意识 prompt
+
+#### 预估工作量
+
+✅ 已完成（2026-05-15）
+### 15. 增量式文件探索策略 ✅ 已完成
+
+#### 问题
+
+子代理倾向于全量读取文件，导致 token 消耗过大。Trace 显示子代理读取的代码文件
+消耗约 350 万 tokens，其中大量内容与最终发现无关。
+
+#### 方案
+
+在子代理的 system prompt 中注入**语言无关的增量探索策略**。
+此策略不绑定任何特定编程语言，而是基于通用的文件探索原则。
+
+**注入位置**：`src/subagent/prompt.rs` 的 `build_tool_guidance_section()` 中，
+作为 Tool Usage Strategy 的第 6 条规则。
+
+**泛化的增量探索指令**：
+
+```
+6. **Incremental exploration** (mandatory for large-scope tasks):
+   Phase 1 — Structure discovery:
+     - Use `list_directory` or `bash` to get the file tree
+     - Use `bash` with language-appropriate commands to extract signatures:
+       * Function/method/class definitions (e.g., grep for def/fn/func/class/interface)
+       * Export statements and public APIs
+       * File sizes (to prioritize large/complex files)
+   Phase 2 — Targeted deep-dive:
+     - Only read specific functions/blocks that appear suspicious from Phase 1
+     - For large files (>300 lines), always use offset+limit to read specific sections
+     - Never read an entire large file unless you have strong reason to believe
+       the issue spans the whole file
+   Phase 3 — Verification:
+     - After forming a hypothesis, read the minimal code needed to confirm/deny it
+     - Cite exact line numbers and copy-paste actual code as evidence
+
+   Cost awareness: Each file you read consumes context budget. Reading 50 files
+   of 200 lines each ≈ 10K lines ≈ 30K tokens. Plan your reads carefully.
+```
+
+**关键设计原则**：
+- 不提及任何具体语言的关键字（如 `pub fn`、`def`、`class`）
+- 使用"language-appropriate commands"让 LLM 自行选择合适的 grep 模式
+- 强调成本意识（token budget），让 LLM 自主权衡探索深度
+- 三阶段递进：结构发现 → 定向深入 → 验证确认
+
+**实际实现**：
+- code-reviewer 的三阶段探索策略已写入 `src/subagent/builtins.rs`
+- explore agent 的效率指导（offset+limit、grep_search 优先、take_note）已写入 `src/subagent/builtins.rs`
+- 公共 tool guidance 中增加了 Context budget awareness 规则（`src/subagent/prompt.rs`）
+- 所有 prompt 中的 `find src -name '*.rs'` 已泛化为 `find . -type f -name '*.EXT'`
+
+#### 改动范围
+
+- `src/subagent/builtins.rs`：code-reviewer 三阶段探索策略 + explore agent 效率指导
+- `src/subagent/prompt.rs`：`build_tool_guidance_section()` 增加上下文预算意识规则 + take_note 指导
+- 所有 prompt 中的 Rust 特化命令已泛化为语言无关
+
+#### 预估工作量
+
+✅ 已完成（2026-05-15）
+### 16. 结构化输出与分层验证
+
+#### 问题
+
+子代理返回自由文本，主代理需要 LLM 解析，容易丢失信息或引入误报。
+Trace 显示主代理在综合阶段未回源验证，直接信任子代理输出。
+
+#### 方案
+
+**A. 结构化输出约束**
+
+在 orchestrator 构建 `spawn_subagent` 的 task description 时，追加输出格式要求：
+
+```
+OUTPUT FORMAT (MANDATORY):
+Return findings as a structured list. Each finding MUST include:
+- severity: CRITICAL | HIGH | MEDIUM | LOW
+- confidence: HIGH | MEDIUM | LOW
+- location: exact file path and line number (file:line)
+- evidence: the actual code snippet (copy-paste from file, not paraphrase)
+- description: what is wrong and why it matters
+- suggestion: how to fix (with code if applicable)
+
+Do NOT include findings you are not confident about without marking them [LOW].
+```
+
+**B. 主代理验证环节（Verify-before-Synthesize）**
+
+修改 `spawn_subagent` 工具 description 中的 `SYNTHESIS & VALIDATION` 部分，
+从"建议"升级为"强制"：
+
+```
+SYNTHESIS & VALIDATION — MANDATORY:
+After ALL subagents complete:
+1. Parse all findings and group by severity
+2. For findings with confidence < HIGH AND severity >= HIGH:
+   - Read the cited file:line yourself
+   - Verify the claim matches the actual code
+   - REMOVE findings that are incorrect or exaggerated
+3. Deduplicate: merge findings that describe the same underlying issue
+4. Cross-reference: if two subagents report related issues, note the connection
+5. Only then write the final report
+```
+
+**C. 去重机制**
+
+主代理综合时检测跨子代理的重复发现（如同一问题被不同子代理从不同角度报告）。
+通过要求子代理在 evidence 中包含精确的 `file:line`，主代理可程序化检测重复。
+
+#### 改动范围
+
+- `src/subagent/tool.rs`：`build_subagent_openai_json()` 的 description 字段
+- 子代理定义文件（如 `code-reviewer.md`）：追加输出格式要求
+
+#### 预估工作量
+
+2 天
+
+---
+
+### 17. 工作量感知的均衡分区 ✅ 已完成
+
+#### 问题
+
+按逻辑模块分区导致负载不均。Trace 显示最慢子代理（433s）比最快（289s）慢 50%，
+而并行系统的总耗时取决于最慢的那个。
+
+#### 方案
+
+在 orchestrator 的 system prompt 中增加分区指导，引导 LLM 按预估工作量而非
+逻辑边界分区：
+
+```
+PARTITION GUIDELINES:
+- Target: each partition should have roughly equal estimated work (±20%)
+- Use file count and total LOC as proxy for work estimation
+- If a module has >1500 LOC or >20 files, give it a dedicated subagent
+- If a module has <500 LOC or <5 files, combine it with related modules
+- Maximum partitions: 5 (diminishing returns beyond this due to synthesis overhead)
+- Always verify partition balance before spawning:
+  List each partition's file count and LOC, ensure max/min ratio < 1.5
+```
+
+#### 改动范围
+
+- `src/subagent/tool.rs`：spawn_subagent description 中增加 PARTITION BALANCE 引导
+- `src/subagent/builtins.rs`：plan agent Task Decomposition 泛化（`*.rs` → `*.EXT`，移除 Rust 特化命令）
+
+#### 预估工作量
+
+✅ 已完成（2026-05-15）
+### 18. 子代理中间总结机制
+
+#### 问题
+
+子代理在长时间运行后上下文膨胀，后期推理质量下降。
+Trace 显示子代理的最终总结轮延迟 > 100s，说明上下文已接近满载。
+
+#### 方案
+
+在子代理的 system prompt 中注入"中间总结"指令，利用已有的 `take_note` 工具：
+
+```
+PROGRESS CHECKPOINTS (mandatory for tasks with >15 files):
+Every 10-15 rounds, pause and use `take_note` to record:
+1. Findings discovered so far (in structured format)
+2. Files already reviewed (do NOT re-read them later)
+3. Remaining work estimate and priority
+
+Benefits:
+- Notes survive context truncation and are always visible
+- Prevents re-reading files you've already analyzed
+- Ensures findings are preserved even if you hit the round limit
+```
+
+`take_note` 工具已存在（`SharedNotes`），且 notes 在最终结果中包含。
+此方案无需代码改动，仅需 prompt 调整。
+
+#### 改动范围
+
+- `src/subagent/prompt.rs`：`build_tool_guidance_section()` 或 `build_constraints_section()`
+
+#### 预估工作量
+
+0.5 天
+
+---
+
+### 19. Trace 可观测性增强
+
+#### 问题
+
+当前 trace 只有顶层 usage 汇总，无法看到每个子代理的独立消耗。
+Trace 文件 677KB，其中 System Prompt 重复了 67 次。
+
+#### 方案
+
+**A. 子代理级别 usage 汇总**
+
+在 `SubagentResult` 中增加统计字段，trace 输出时包含：
+
+```yaml
+- [tool_call] "tool.spawn_subagent" (289806ms, ok)
+    agent: code-reviewer
+    task_preview: "Review src/agent/ and src/subagent/..."
+    subtask_usage:
+      prompt_tokens: 1_200_000
+      completion_tokens: 15_000
+      cached_tokens: 800_000
+    rounds_used: 12
+    files_read: 35
+    findings_count: 8
+```
+
+**B. Trace 体积优化**
+
+- 首次出现时完整记录 system prompt，后续用引用替代
+- `available_tools` 列表只记录一次（首次 LLM 调用时）
+- 预期体积减少 60-70%
+
+**C. 效率指标**
+
+```rust
+pub struct SubagentMetrics {
+    pub total_tokens: usize,
+    pub findings_count: usize,
+    pub tokens_per_finding: usize,  // lower is better
+    pub round_utilization: f32,     // rounds_used / max_rounds
+}
+```
+
+#### 改动范围
+
+- `src/tracing/exporters/file.rs`：序列化逻辑
+- `src/subagent/runner.rs`：收集子代理执行统计
+- `src/subagent/types.rs`：`SubagentResult` 增加 metrics 字段
+
+#### 预估工作量
+
+4-5 天
+
+---
+
+### 20. Prompt 经济学优化 ✅ 已完成
+
+#### 问题
+
+System Prompt 占总 token 消耗的 17%（~920K），且每次 LLM 调用都重复发送。
+子代理注入了完整的 15 个工具描述，但实际只使用 5-6 个。
+
+#### 方案
+
+**A. 工具描述裁剪**
+
+当前 `build_tool_guidance_section()` 列出所有可用工具。优化为只列出子代理
+实际白名单中的工具（`SubagentDefinition.tools` 字段已支持白名单）。
+
+**B. 共享前缀缓存优化**
+
+调整 `build_effective_prompt_with_context()` 的组装顺序，将所有子代理
+共享的内容放在前面以利用 KV-cache：
+
+```
+当前顺序（缓存不友好）:
+1. base_prompt (每个子代理不同) ← 差异在前面，破坏缓存
+2. shared_context
+3. environment
+4. tool_guidance
+5. constraints
+
+优化顺序（缓存友好）:
+1. environment (所有子代理相同)
+2. constraints (所有子代理相同)
+3. tool_guidance (相同工具集时相同)
+4. shared_context (同批次相同)
+5. base_prompt (差异部分放最后)
+```
+
+**注意**：此优化需要验证 LLM 对 prompt 顺序的敏感度。如果 identity 放在
+末尾导致行为偏差，可以只将 environment + constraints 提前。
+
+#### 改动范围
+
+- `src/subagent/prompt.rs`：`build_effective_prompt_with_context()` 组装顺序优化（env → constraints → tools → shared_context → agent_identity）
+- `src/subagent/prompt.rs`：`build_tool_guidance_section()` 条件化工具描述裁剪（只列出白名单内工具）
+- `src/subagent/prompt.rs`：`<agent_identity>` 标签包裹 base_prompt
+- 新增 3 个单元测试验证 cache-friendly 顺序和条件化工具描述
+
+#### 预估工作量
+
+✅ 已完成（2026-05-15）
+
+---
+
+### Multi-Agent 编排优化排期
+
+```mermaid
+gantt
+    title Multi-Agent 编排优化排期
+    dateFormat  YYYY-MM-DD
+
+    section Phase 1: 单代理效率 ✅ 已完成
+    14. 子代理上下文预算              :done, p1_14, 2026-05-15, 1d
+    15. 增量式探索策略 (prompt)       :done, p1_15, 2026-05-15, 1d
+    17. 均衡分区引导                  :done, p1_17, 2026-05-15, 1d
+    20. Prompt 经济学优化             :done, p1_20, 2026-05-15, 1d
+
+    section Phase 2: 编排策略 (Week 1)
+    18. 中间总结机制 (prompt)          :p2_18, 2026-05-19, 1d
+    16. 结构化输出与分层验证          :p2_16, 2026-05-19, 2d
+
+    section Phase 3: 可观测性 (Week 2)
+    19. Trace 可观测性增强            :p3_19, 2026-05-26, 5d
+```
+
+**预期收益**：
+
+| 阶段 | 完成后预期效果 | 状态 |
+|------|---------------|------|
+| Phase 1 完成 | 子代理 token 消耗 -40%，单代理延迟 -30%，总耗时 12min → 7min | ✅ 已完成 |
+| Phase 2 完成 | 报告准确率 80% → 95%，总耗时再降 30%，达到 5min | 📋 进行中 |
+| Phase 3 完成 | 可量化每次优化效果，防止回归，支持持续改善 | 📋 待开始 |
+
+**最高 ROI 的 3 个改动**（如果时间有限）：
+
+1. ✅ ~~**#14 子代理上下文预算**（2-3 天）— 防止上下文膨胀导致的质量下降~~ **已完成**
+2. ✅ ~~**#15 增量式探索策略**（1 天）— 同时降低 token 消耗和延迟~~ **已完成**
+3. **#16 结构化输出与分层验证**（2 天）— 直接消除误报（下一优先）
 
 ---
 

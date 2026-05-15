@@ -127,6 +127,7 @@ mod tests {
             on_start: None,
             on_complete: None,
             shared_context: None,
+            context_budget_tokens: None,
         }
     }
 

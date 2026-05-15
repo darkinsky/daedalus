@@ -64,6 +64,16 @@ pub struct SubagentDefinition {
     /// each one a common understanding of the project. Not persisted to disk;
     /// only set at runtime by the orchestrator when spawning subagents.
     pub shared_context: Option<String>,
+    /// Optional context budget in tokens for this subagent.
+    ///
+    /// When set, overrides the default round-based cap calculation.
+    /// This allows fine-grained control over when context pressure hints
+    /// fire for specific subagents. For example, a code-reviewer that
+    /// processes many files might need a larger budget than a plan agent.
+    ///
+    /// If not set, the effective budget is calculated as:
+    /// `min(parent_context_window, max_rounds * 5000)`
+    pub context_budget_tokens: Option<usize>,
 }
 
 /// Permission mode for subagent tool execution.

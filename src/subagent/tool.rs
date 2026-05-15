@@ -302,6 +302,19 @@ pub fn build_tool_definition(registry: &SubagentRegistry) -> Option<serde_json::
          - Use ONE bash command to gather all needed info (file list + LOC stats) in a single call.\n\
          - Maximum 2 rounds of exploration before you MUST start dispatching subagents.\n\
          - If you need a plan agent to partition work, spawn it immediately — don't pre-explore.\n\n\
+         MAX_ROUNDS GUIDANCE — Set max_rounds based on task complexity:\n\
+         - Simple exploration (list files, check patterns): 10-15 rounds\n\
+         - Focused analysis (single module, <20 files): 20-30 rounds\n\
+         - Deep analysis (large module, 20-40 files): 30-50 rounds\n\
+         - Formula: estimated_files × 1.5 + 5 (for synthesis)\n\
+         - Always set max_rounds explicitly — do NOT rely on the default (100).\n\
+         - Subagents have aggressive context budgets; excess rounds waste tokens.\n\n\
+         PARTITION BALANCE — When spawning multiple subagents:\n\
+         - Target roughly equal estimated work per subagent (±20%)\n\
+         - Use file count and total LOC as proxy for work estimation\n\
+         - If a module has >1500 LOC or >20 files, give it a dedicated subagent\n\
+         - If a module has <500 LOC or <5 files, combine it with related modules\n\
+         - Maximum 5 partitions (diminishing returns beyond this due to synthesis overhead)\n\n\
          SYNTHESIS & VALIDATION — When collecting subagent results:\n\
          - Subagents annotate findings with confidence levels: [HIGH], [MEDIUM], [LOW].\n\
          - For Critical/High-severity findings marked [MEDIUM] or [LOW], verify them yourself \

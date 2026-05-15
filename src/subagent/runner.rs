@@ -440,18 +440,27 @@ impl SubagentRunner {
 
         let context_window = self.parent_llm_config.resolved_context_window();
         // For subagents, cap the effective context window used for pressure
-        // calculations. The cap is derived from the subagent's round budget:
-        // each tool round typically adds ~3-5K tokens of tool output, so a
-        // subagent with N rounds should not exceed ~N * 5K tokens of context.
-        // This ensures context pressure hints trigger at practical thresholds
-        // rather than theoretical model limits (e.g., 700K for a 1M model).
+        // calculations. Priority order:
+        //   1. definition.context_budget_tokens (explicit per-agent config)
+        //   2. Round-based cap: max_tool_rounds * 5_000 (heuristic)
+        //   3. Parent model's context window (absolute ceiling)
         //
-        // Examples:
-        //   - plan agent (10 rounds): cap = 50K → soft limit at 35K
-        //   - code-reviewer (40 rounds): cap = 200K → soft limit at 140K
-        //   - default (100 rounds): cap = 500K → soft limit at 350K
-        let round_based_cap = max_tool_rounds * 5_000;
-        let effective_context_window = context_window.min(round_based_cap);
+        // The round-based cap ensures context pressure hints trigger at
+        // practical thresholds rather than theoretical model limits
+        // (e.g., 700K for a 1M model).
+        //
+        // Examples with default soft_limit_ratio=0.6:
+        //   - plan agent (10 rounds): cap = 50K → soft limit at 30K
+        //   - code-reviewer (40 rounds): cap = 200K → soft limit at 120K
+        //   - default (100 rounds): cap = 500K → soft limit at 300K
+        let effective_context_window = if let Some(budget) = definition.context_budget_tokens {
+            // Explicit budget from definition — use directly, capped by model limit
+            budget.min(context_window)
+        } else {
+            // Heuristic: each round adds ~3-5K tokens of tool output
+            let round_based_cap = max_tool_rounds * 5_000;
+            context_window.min(round_based_cap)
+        };
         let cfg = LoopConfig {
             max_tool_rounds,
             agent_label: format!("Subagent '{}'", definition.name),
@@ -467,9 +476,15 @@ impl SubagentRunner {
             // many tool rounds (e.g. code-reviewer scanning 200+ files).
             // Use the capped effective_context_window so pressure hints fire
             // at practical thresholds rather than theoretical model limits.
+            //
+            // Subagents use a MORE AGGRESSIVE soft limit (0.6 vs 0.7 for main agent)
+            // because:
+            // 1. They have no memory/compact mechanism — once context fills, quality drops
+            // 2. Earlier "wrap up" hints give the LLM time to synthesize findings
+            // 3. The hard limit (0.85) provides a safety net before force-stop
             context_window_tokens: Some(effective_context_window),
-            context_soft_limit_ratio: 0.7,
-            context_hard_limit_ratio: 0.9,
+            context_soft_limit_ratio: 0.6,
+            context_hard_limit_ratio: 0.85,
             // Subagents don't use checkpoints (they're short-lived).
             checkpoint_path: None,
             user_input: None,

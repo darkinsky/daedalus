@@ -47,6 +47,7 @@ struct FrontMatter {
     isolation: Option<String>,
     on_start: Option<String>,
     on_complete: Option<String>,
+    context_budget_tokens: Option<usize>,
 }
 
 impl SubagentLoader {
@@ -171,6 +172,7 @@ impl SubagentLoader {
                     on_start: front_matter.on_start,
                     on_complete: front_matter.on_complete,
                     shared_context: None,
+                    context_budget_tokens: front_matter.context_budget_tokens,
                 });
             }
         }
@@ -192,6 +194,7 @@ impl SubagentLoader {
             on_start: None,
             on_complete: None,
             shared_context: None,
+            context_budget_tokens: None,
         })
     }
 
@@ -226,6 +229,7 @@ impl SubagentLoader {
             isolation: None,
             on_start: None,
             on_complete: None,
+            context_budget_tokens: None,
         };
 
         // Simple line-by-line YAML parsing (avoids pulling in a full YAML parser
@@ -341,6 +345,11 @@ impl SubagentLoader {
             }
             "onComplete" | "on_complete" => {
                 fm.on_complete = Some(value.to_string());
+            }
+            "contextBudgetTokens" | "context_budget_tokens" => {
+                if let Ok(n) = value.parse::<usize>() {
+                    fm.context_budget_tokens = Some(n);
+                }
             }
             _ => {
                 tracing::debug!(key = key, value = value, "Unknown frontmatter field, ignoring");
