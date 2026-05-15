@@ -42,6 +42,7 @@ mod tests {
             name: "grep_search".to_string(),
             description: "Search with regex".to_string(),
             source: "built-in".to_string(),
+                usage_hint: None,
         }];
         let section = build(&tools).unwrap();
         assert!(section.contains("<search_strategy>"));

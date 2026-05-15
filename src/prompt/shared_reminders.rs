@@ -41,6 +41,11 @@ pub fn build(config: &RemindersConfig) -> String {
             "**Respect existing code**: Don't delete or modify code unrelated to the user's \
              request. Don't \"clean up\" or refactor unless explicitly asked.",
         );
+        rules.push(
+            "**Output fidelity**: Never claim 'all tests pass' or 'no errors found' when \
+             tool output shows otherwise. Report what actually happened, including failures. \
+             If you haven't verified something, say so — don't fabricate success.",
+        );
     } else {
         rules.push(
             "**No hallucinated references**: Never invent book titles, paper names, URLs, or \

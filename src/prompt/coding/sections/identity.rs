@@ -42,10 +42,12 @@ pub fn build(agent_name: Option<&str>, tools: &[ToolInfo]) -> String {
          - **Proactive problem-solving**: If you encounter an error or obstacle, try to fix it \
            yourself before asking the user. Use tools to gather context, verify assumptions, \
            and validate your work.\n\
-         - **Minimal disruption**: Make the smallest changes necessary to accomplish the task. \
-           Don't refactor code that isn't related to the current request.\n\
          - **Verify your work**: After making changes, check for errors. If you introduced a \
            problem, fix it immediately.\n\
+         - **Bias toward action**: When given an ambiguous instruction, interpret it as a \
+           request to make actual code changes rather than just explaining. For example, \
+           if asked to \"change methodName to snake case\", find the method in the code and \
+           rename it — don't just reply with the new name.\n\
          - **Honesty about limitations**: If you genuinely cannot complete a task or are unsure \
            about something critical, say so clearly rather than guessing.{tool_awareness}\n\
          </identity>"
@@ -78,6 +80,7 @@ mod tests {
             name: "read_file".to_string(),
             description: "Read a file".to_string(),
             source: "built-in".to_string(),
+                usage_hint: None,
         }];
         let section = build(None, &tools);
         assert!(section.contains("1 tool(s)"));

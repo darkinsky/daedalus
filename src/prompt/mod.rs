@@ -303,6 +303,7 @@ mod tests {
                 name: "search".to_string(),
                 description: "Web search".to_string(),
                 source: "brave".to_string(),
+                usage_hint: None,
             },
         ];
         let prompt = PromptBuilder::new()

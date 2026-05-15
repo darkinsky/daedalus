@@ -135,6 +135,7 @@ impl McpManager {
                 name: tool.name.clone(),
                 description: tool.description.clone().unwrap_or_default(),
                 source: server.to_string(),
+                usage_hint: None,
             })
             .collect()
     }

@@ -18,6 +18,11 @@ pub fn build(tools: &[ToolInfo]) -> String {
          - **Ask only when necessary**: If you can find the answer through tools, do so. \
          Only ask the user when genuinely ambiguous or when multiple valid approaches exist \
          and the choice matters.\n\
+         - **Output efficiency**: Be concise in text between tool calls (1-2 sentences max). \
+         Keep final responses focused — summarize what was done and what the user needs to \
+         know, not every step of the process.\n\
+         - **No preamble**: Don't start responses with 'I'll help you with that' or \
+         'Let me look into this'. Just do it.\n\
          </communication_style>"
             .to_string()
     } else {
@@ -48,6 +53,7 @@ mod tests {
             name: "read_file".to_string(),
             description: "Read a file".to_string(),
             source: "built-in".to_string(),
+                usage_hint: None,
         }];
         let section = build(&tools);
         assert!(section.contains("Action over explanation"));

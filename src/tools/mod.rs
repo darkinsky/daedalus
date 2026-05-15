@@ -190,6 +190,12 @@ pub struct ToolInfo {
     pub description: String,
     /// Which source provides this tool (e.g., "built-in", MCP server name).
     pub source: String,
+    /// Optional per-tool usage guidance injected into the system prompt.
+    ///
+    /// When set, this hint is rendered below the tool's entry in the tool
+    /// inventory section, providing specific when-to-use / when-NOT-to-use
+    /// guidance for this particular tool.
+    pub usage_hint: Option<String>,
 }
 
 /// A built-in tool that can be called directly without an external MCP server.
@@ -351,6 +357,7 @@ impl BuiltinToolRegistry {
                 name: t.name().to_string(),
                 description: t.description().to_string(),
                 source: "built-in".to_string(),
+                usage_hint: None,
             })
             .collect()
     }

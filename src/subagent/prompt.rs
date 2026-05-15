@@ -314,11 +314,13 @@ mod tests {
                 name: "read_file".to_string(),
                 description: "Read file contents".to_string(),
                 source: "built-in".to_string(),
+                usage_hint: None,
             },
             ToolInfo {
                 name: "grep_search".to_string(),
                 description: "Search with regex".to_string(),
                 source: "built-in".to_string(),
+                usage_hint: None,
             },
         ];
 
@@ -361,6 +363,7 @@ mod tests {
                 name: "read_file".to_string(),
                 description: "Read file contents".to_string(),
                 source: "built-in".to_string(),
+                usage_hint: None,
             },
         ];
         let shared = "Architecture: modular Rust project with trait-based abstractions.\nKey types: LlmApi, ToolExecutor, ChatMessage";
@@ -416,11 +419,13 @@ mod tests {
                 name: "bash".to_string(),
                 description: "Execute shell commands".to_string(),
                 source: "built-in".to_string(),
+                usage_hint: None,
             },
             ToolInfo {
                 name: "list_directory".to_string(),
                 description: "List directory contents".to_string(),
                 source: "built-in".to_string(),
+                usage_hint: None,
             },
         ];
 
@@ -445,6 +450,7 @@ mod tests {
                 name: "read_file".to_string(),
                 description: "Read file contents".to_string(),
                 source: "built-in".to_string(),
+                usage_hint: None,
             },
         ];
 
@@ -468,6 +474,7 @@ mod tests {
                 name: "read_file".to_string(),
                 description: "Read file contents".to_string(),
                 source: "built-in".to_string(),
+                usage_hint: None,
             },
         ];
         let shared = "Project uses microservices architecture.";

@@ -31,6 +31,23 @@ pub fn build(tools: &[ToolInfo]) -> Option<String> {
          issues. Fix problems you introduced — don't leave broken code.\n\
          6. **One concern at a time**: If a task involves multiple files, handle them \
          systematically. Don't jump between unrelated changes.\n\
+         7. **Security awareness**: When writing code that handles user input, network requests, \
+         or database queries, apply secure coding practices:\n\
+            - Sanitize/validate all external inputs\n\
+            - Use parameterized queries (never string-concatenate SQL)\n\
+            - Escape output in web contexts (prevent XSS)\n\
+            - Avoid hardcoding secrets or credentials\n\
+            - Use established libraries for crypto, auth, and session management\n\
+         \n\
+         ## Code Style Discipline         \n\
+         - Don't add features, refactor code, or make \"improvements\" beyond what was asked. \
+         A bug fix doesn't need surrounding code cleaned up.\n\
+         - Don't add error handling for scenarios that can't happen in the current context.\n\
+         - Don't add docstrings, comments, or type annotations to code you didn't change.\n\
+         - Prefer simple, direct solutions. Three similar lines is better than a premature \
+         abstraction.\n\
+         - When fixing a bug, fix the bug — don't also reorganize the file, rename variables, \
+         or \"improve\" adjacent code.\n\
          \n\
          ## File Operation Safety\n\
          \n\
@@ -61,6 +78,7 @@ mod tests {
             name: "edit_file".to_string(),
             description: "Edit a file".to_string(),
             source: "built-in".to_string(),
+                usage_hint: None,
         }];
         let section = build(&tools).unwrap();
         assert!(section.contains("<code_changes>"));

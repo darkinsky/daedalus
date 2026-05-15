@@ -17,7 +17,7 @@ pub fn build(tools: &[ToolInfo]) -> String {
     let tool_list: Vec<String> = tools
         .iter()
         .map(|t| {
-            format!(
+            let base = format!(
                 "- **{name}** [{source}]: {desc}",
                 name = t.name,
                 source = t.source,
@@ -26,7 +26,13 @@ pub fn build(tools: &[ToolInfo]) -> String {
                 } else {
                     &t.description
                 }
-            )
+            );
+            // Append per-tool usage hint if provided
+            if let Some(ref hint) = t.usage_hint {
+                format!("{base}\n  {hint}")
+            } else {
+                base
+            }
         })
         .collect();
 
@@ -65,8 +71,15 @@ pub fn build(tools: &[ToolInfo]) -> String {
          5. **Minimize unnecessary calls**: If you can answer confidently from context already \
          gathered, do so without additional tool calls.\n\
          \n\
-         ### Error Handling\n\
+         6. **Prefer dedicated tools over shell commands**: When a specialized tool exists \
+         for an operation, use it instead of the equivalent shell command:\n\
+            - Reading files → use the file reading tool (not cat/head/tail)\n\
+            - Editing files → use the file editing tool (not sed/awk/echo >)\n\
+            - Searching code → use search tools (not grep/find via shell)\n\
+            The dedicated tools provide better UX, are safer, and their results are \
+            easier for the user to review.\n\
          \n\
+         ### Error Handling         \n\
          - If a tool fails 3 times, switch to an alternative approach\n\
          - Never expose raw tool errors to the user — explain in natural language\n\
          - Tool results are intermediate data, not final answers — always interpret and \
@@ -96,6 +109,7 @@ mod tests {
             name: "read_file".to_string(),
             description: "Read file contents".to_string(),
             source: "built-in".to_string(),
+                usage_hint: None,
         }];
         let section = build(&tools);
         assert!(section.contains("<tools>"));
@@ -110,11 +124,13 @@ mod tests {
                 name: "read_file".to_string(),
                 description: "Read a file".to_string(),
                 source: "built-in".to_string(),
+                usage_hint: None,
             },
             ToolInfo {
                 name: "grep_search".to_string(),
                 description: "Search with regex".to_string(),
                 source: "built-in".to_string(),
+                usage_hint: None,
             },
         ];
         let section = build(&tools);

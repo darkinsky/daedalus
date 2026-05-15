@@ -142,6 +142,7 @@ mod tests {
             name: "edit_file".to_string(),
             description: "Edit a file".to_string(),
             source: "built-in".to_string(),
+                usage_hint: None,
         }];
         let section = build(&tools);
         assert!(section.contains("Making Code Changes"));

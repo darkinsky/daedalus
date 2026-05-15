@@ -68,6 +68,7 @@ mod tests {
                 name: "web_search".to_string(),
                 description: "Search the web".to_string(),
                 source: "search-server".to_string(),
+                usage_hint: None,
             },
         ];
         let section = build_role_section(None, &tools);

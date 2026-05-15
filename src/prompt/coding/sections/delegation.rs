@@ -74,6 +74,7 @@ mod tests {
             name: "read_file".to_string(),
             description: "Read a file".to_string(),
             source: "built-in".to_string(),
+                usage_hint: None,
         }];
         assert!(build(&tools).is_none());
     }
@@ -89,6 +90,7 @@ mod tests {
             name: "spawn_subagent".to_string(),
             description: "Spawn a subagent".to_string(),
             source: "built-in".to_string(),
+                usage_hint: None,
         }];
         let section = build(&tools).unwrap();
         assert!(section.contains("<delegation>"));

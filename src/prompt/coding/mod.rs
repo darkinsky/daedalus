@@ -202,6 +202,11 @@ impl<'a> CodingPromptBuilder<'a> {
             parts.push(code_changes);
         }
 
+        // 6b. Action safety (reversibility & blast radius, only when tools available)
+        if let Some(action_safety) = sections::action_safety::build(self.inputs.tools) {
+            parts.push(action_safety);
+        }
+
         // 7. Search strategy (only when tools available)
         if let Some(search) = sections::search_strategy::build(self.inputs.tools) {
             parts.push(search);
@@ -302,6 +307,7 @@ mod tests {
             name: "read_file".to_string(),
             description: "Read file contents".to_string(),
             source: "built-in".to_string(),
+                usage_hint: None,
         }];
         let prompt = CodingPromptBuilder::new().tools(&tools).build();
         assert!(prompt.contains("<tools>"));

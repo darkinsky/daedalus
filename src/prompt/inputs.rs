@@ -7,6 +7,32 @@
 
 use crate::tools::ToolInfo;
 
+/// Cache policy for a prompt section.
+///
+/// Controls how a section interacts with API-level prompt caching:
+/// - `Static` sections never change and are always in the cached prefix.
+/// - `SessionStatic` sections are stable within a session but may change
+///   between sessions (e.g., environment context, project rules).
+/// - `Volatile` sections may change every turn and will bust the cache
+///   when they do (use sparingly).
+///
+/// Currently all built-in sections are `Static` or `SessionStatic`.
+/// This enum is defined for future extensibility (e.g., hooks feedback,
+/// dynamic MCP tool changes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(dead_code)]
+pub enum CachePolicy {
+    /// Never changes across requests. Safe to cache globally.
+    #[default]
+    Static,
+    /// Stable within a session, may change between sessions.
+    /// Placed after the cache boundary marker.
+    SessionStatic,
+    /// May change every turn. Busts the cache when it does.
+    /// Use only when absolutely necessary.
+    Volatile,
+}
+
 /// Shared input fields for all prompt builder styles.
 ///
 /// Both `PromptBuilder` and `CodingPromptBuilder` compose this struct
