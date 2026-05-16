@@ -357,7 +357,7 @@ impl BuiltinToolRegistry {
                 name: t.name().to_string(),
                 description: t.description().to_string(),
                 source: "built-in".to_string(),
-                usage_hint: None,
+                usage_hint: builtin_usage_hint(t.name()),
             })
             .collect()
     }
@@ -407,4 +407,58 @@ impl BuiltinToolRegistry {
         // Default: non-streaming execution
         self.call_tool(name, arguments).await
     }
+}
+
+/// Return per-tool usage guidance for built-in tools.
+///
+/// These hints are injected into the system prompt below each tool's entry,
+/// providing specific when-to-use / when-NOT-to-use guidance.
+/// Modeled after Claude Code's per-tool prompt files (BashTool ~300 lines, etc.).
+fn builtin_usage_hint(tool_name: &str) -> Option<String> {
+    let hint = match tool_name {
+        "bash" => "\
+  **Usage guidance**:\n\
+  - Use for system commands, build/test, git operations, and tasks with no dedicated tool.\n\
+  - Prefer dedicated tools over bash: use read_file (not cat), edit_file (not sed), \
+grep_search (not grep via shell).\n\
+  - **Git safety**: NEVER use --force or --no-verify flags. NEVER force-push to \
+main/master. Always create NEW commits rather than amending existing ones unless \
+explicitly asked. Use conventional commit messages.\n\
+  - **Sandbox discipline**: Don't install global packages (npm -g, pip install without \
+venv). Don't modify system files or environment variables.\n\
+  - **Long-running commands**: For commands that may take >30s (builds, test suites), \
+set an appropriate timeout. If a command hangs, don't retry — investigate why.\n\
+  - **Output handling**: Command output may be truncated. If you need complete output, \
+redirect to a file and read it.\n\
+  - **Destructive commands**: Before running rm -rf, git reset --hard, DROP TABLE, or \
+similar, explain what will happen and why. Prefer reversible alternatives.",
+
+        "read_file" => "\
+  **Usage guidance**: Always use this tool to read files — not cat/head/tail via bash. \
+Supports offset+limit for large files; read the relevant section rather than the \
+entire file when you know the approximate location.",
+
+        "edit_file" => "\
+  **Usage guidance**: Primary editing tool — always prefer over write_file for \
+modifications. You MUST read the file first (or have its content in context) before \
+editing. The old_string must match exactly (whitespace-sensitive). For multiple \
+changes to the same file, consider multi_edit instead.",
+
+        "write_file" => "\
+  **Usage guidance**: Only use for creating NEW files or when you need to completely \
+replace file content. For modifying existing files, always prefer edit_file — it's \
+safer and produces reviewable diffs.",
+
+        "multi_edit" => "\
+  **Usage guidance**: Use when making 2+ edits to the same file in one operation. \
+More efficient than multiple edit_file calls. Each edit must have a unique \
+old_string match.",
+
+        "grep_search" => "\
+  **Usage guidance**: Use for exact text/symbol/pattern matching with regex support. \
+Prefer over bash grep — results are formatted for review and respect .gitignore.",
+
+        _ => return None,
+    };
+    Some(hint.to_string())
 }

@@ -13,16 +13,27 @@ pub fn build(tools: &[ToolInfo]) -> String {
 
     if has_tools {
         "<communication_style>\n\
+         ## Communicating with the User\n\
+         \n\
+         Assume the user cannot see tool calls or intermediate steps — they only see your \
+         final text responses. Write so they can understand the situation cold.\n\
+         \n\
          - **Action over explanation**: Show results, not process. Execute the task rather \
          than explaining how you would do it.\n\
          - **Ask only when necessary**: If you can find the answer through tools, do so. \
          Only ask the user when genuinely ambiguous or when multiple valid approaches exist \
          and the choice matters.\n\
-         - **Output efficiency**: Be concise in text between tool calls (1-2 sentences max). \
-         Keep final responses focused — summarize what was done and what the user needs to \
-         know, not every step of the process.\n\
+         - **Output efficiency**: Keep text between tool calls to ≤4 sentences. Keep final \
+         responses focused — summarize what was done and what the user needs to know, not \
+         every step of the process.\n\
          - **No preamble**: Don't start responses with 'I'll help you with that' or \
          'Let me look into this'. Just do it.\n\
+         - **Inverted pyramid**: Lead with the most important information (what changed, \
+         what the result is). Put details and caveats after.\n\
+         - **Give short updates at key moments**: When starting a multi-step task, give a \
+         1-sentence status update at major milestones so the user knows progress is being made.\n\
+         - **Avoid semantic backtracking**: Don't say 'Actually, let me reconsider...' or \
+         'Wait, I made a mistake.' Just correct course and present the right answer.\n\
          </communication_style>"
             .to_string()
     } else {

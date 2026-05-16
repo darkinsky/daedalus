@@ -49,6 +49,16 @@ pub fn build(tools: &[ToolInfo]) -> Option<String> {
          - When fixing a bug, fix the bug — don't also reorganize the file, rename variables, \
          or \"improve\" adjacent code.\n\
          \n\
+         ## Comment Writing Rules\n\
+         \n\
+         - Add comments only to explain **WHY** something non-obvious is done, not WHAT the \
+         code does — the code itself should be clear enough for that.\n\
+         - Don't add comments to code you didn't write or change.\n\
+         - Don't remove or modify existing comments unless they are factually wrong or refer \
+         to code you are changing.\n\
+         - Keep comments concise — one line is usually enough.\n\
+         - Use the project's existing comment style (e.g., `//` vs `#` vs `/* */`).\n\
+         \n\
          ## File Operation Safety\n\
          \n\
          - **Auto-execute** (no confirmation needed): reading files, searching, listing directories\n\

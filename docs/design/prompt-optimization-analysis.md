@@ -1200,14 +1200,14 @@ pie title 剩余差距分类
 
 如果要继续缩小差距，按 ROI 排序：
 
-| 优先级 | 改进项 | 预期收益 | 工作量 | 类型 |
-|:------:|--------|:--------:|:------:|:----:|
-| 1 | 为 bash 工具填充 usage_hint（sandbox 规则、git commit 流程） | 🔼🔼🔼 | 1 天 | Prompt |
-| 2 | 为 edit_file/read_file 填充 usage_hint | 🔼🔼 | 0.5 天 | Prompt |
-| 3 | 扩展通信指导为完整 section | 🔼🔼 | 0.5 天 | Prompt |
-| 4 | 添加数字长度锚点（`≤25 words`） | 🔼 | 0.5h | Prompt |
-| 5 | 添加注释写作规范（5 条） | 🔼 | 0.5h | Prompt |
-| 6 | 添加 prompt 注入防护提醒 | 🔼 | 0.5h | Prompt |
+| 优先级 | 改进项 | 预期收益 | 工作量 | 类型 | 状态 |
+|:------:|--------|:--------:|:------:|:----:|:----:|
+| 1 | 为 bash 工具填充 usage_hint（sandbox 规则、git commit 流程） | 🔼🔼🔼 | 1 天 | Prompt | ✅ 已完成 |
+| 2 | 为 edit_file/read_file 填充 usage_hint | 🔼🔼 | 0.5 天 | Prompt | ✅ 已完成 |
+| 3 | 扩展通信指导为完整 section | 🔼🔼 | 0.5 天 | Prompt | ✅ 已完成 |
+| 4 | 添加数字长度锚点（`≤25 words`） | 🔼 | 0.5h | Prompt | ✅ 已完成 |
+| 5 | 添加注释写作规范（5 条） | 🔼 | 0.5h | Prompt | ✅ 已完成 |
+| 6 | 添加 prompt 注入防护提醒 | 🔼 | 0.5h | Prompt | ✅ 已完成 |
 | 7 | 实现 Verification Agent | 🔼🔼🔼 | 5+ 天 | 产品 |
 | 8 | 实现 Skill 系统 | 🔼🔼 | 5+ 天 | 产品 |
 
@@ -1227,3 +1227,4 @@ pie title 剩余差距分类
 | 日期 | 版本 | 变更 | 来源 |
 |------|------|------|------|
 | 2026-05-15 | v3.0 | 第三轮对比分析：优化完成后的差距评估 + 剩余差距分类 + 下一步建议 | Claude Code 源码最终对比 |
+| 2026-05-15 | v3.1 | 第三轮 Prompt 优化全部完成：per-tool usage_hint 填充(bash/read_file/edit_file/write_file/multi_edit/grep_search) + 完整通信指导(倒金字塔/语义回溯禁止/里程碑更新) + 数字长度锚点(≤4 sentences) + 注释写作规范(5条) + prompt 注入防护提醒 | 代码实现 |
