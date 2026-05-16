@@ -15,6 +15,7 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/plan", "Show the current task plan status"),
     ("/skip", "Skip the current plan step"),
     ("/resume", "Resume the last interrupted tool-calling loop"),
+    ("/context", "Show context window usage analysis"),
     ("/exit", "Exit the application (alias: /quit)"),
 ];
 
@@ -46,6 +47,8 @@ pub enum Command<'a> {
     Skip,
     /// Resume the last interrupted tool-calling loop.
     Resume,
+    /// Show context window usage analysis.
+    Context,
     Unknown(&'a str),
 }
 
@@ -115,5 +118,6 @@ pub fn parse(input: &str) -> Option<Command<'_>> {
         "/plan" => Command::Plan,
         "/skip" => Command::Skip,
         "/resume" => Command::Resume,
+        "/context" | "/ctx" => Command::Context,
         _ => Command::Unknown(input),    })
 }

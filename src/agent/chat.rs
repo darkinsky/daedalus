@@ -101,6 +101,8 @@ pub struct ChatAgent {
     permission_mode: PermissionMode,
     /// Hooks configuration (from YAML).
     hooks_config: HooksConfig,
+    /// Prompt cache break detector.
+    cache_monitor: crate::llm::cache_monitor::CacheMonitor,
 }
 
 impl ChatAgent {
@@ -170,6 +172,7 @@ impl ChatAgent {
             permission_rules: Arc::new(tokio::sync::Mutex::new(PermissionRuleSet::new())),
             permission_mode: PermissionMode::Default,
             hooks_config: HooksConfig::default(),
+            cache_monitor: crate::llm::cache_monitor::CacheMonitor::new(),
         }
     }
 
@@ -629,6 +632,15 @@ impl AgentMetadata for ChatAgent {
             crate::middleware::builtin::permission_rules::PermissionMode::Plan => "plan",
         }
     }
+    fn context_messages(&self) -> Vec<crate::llm::ChatMessage> {
+        // Try to get a snapshot of the current messages from memory.
+        // Uses try_lock to avoid blocking — returns empty if memory is in use.
+        let shared = self.session.shared_memory();
+        match shared.try_lock() {
+            Ok(mem) => mem.build_messages(),
+            Err(_) => vec![],
+        }
+    }
     fn permission_rules(&self) -> Option<&Arc<tokio::sync::Mutex<PermissionRuleSet>>> {
         Some(&self.permission_rules)
     }
@@ -664,6 +676,12 @@ impl AgentMode for ChatAgent {
         };
 
         let response = pipeline.execute(request).await?;
+
+        // Record cache usage for break detection
+        if let Some(ref usage) = response.chat_response.usage {
+            self.cache_monitor.record_usage(usage);
+        }
+
         Ok(response.chat_response)
     }
 
@@ -703,6 +721,8 @@ impl AgentMode for ChatAgent {
     fn new_session(&mut self) {
         // Clear undo history — new session starts with a clean slate
         crate::tools::checkpoint::clear();
+        // New session completely changes the message prefix → expected cache miss
+        self.cache_monitor.notify_expected_invalidation();
         self.reset_with_updated_prompt();
         tracing::info!(
             session_id = %self.session.id,
@@ -788,6 +808,9 @@ impl AgentMode for ChatAgent {
         let shared = self.session.shared_memory();
         let mut mem = shared.lock().await;
         let result = mem.compact(&*self.llm, instruction).await?;
+
+        // Notify cache monitor that the next cache miss is expected
+        self.cache_monitor.notify_expected_invalidation();
 
         // Persist after compact to save the compressed state
         if let Some(ref workspace) = self.workspace {

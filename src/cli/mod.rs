@@ -1,6 +1,7 @@
 pub mod cli_args;
 pub(crate) mod commands;
 mod completer;
+pub(crate) mod context_analysis;
 pub(crate) mod cost;
 mod output_format;
 mod print_runner;

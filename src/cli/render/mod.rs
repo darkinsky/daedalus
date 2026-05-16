@@ -519,3 +519,141 @@ pub fn turn_summary(
         }
     }
 }
+
+// ── Context analysis ──
+
+/// Render the `/context` command output — a complete context window usage analysis.
+pub fn context_usage(analysis: &super::context_analysis::ContextAnalysis) {
+    println!();
+    println!(
+        "{}",
+        "  Context Window Usage:"
+            .with(Color::White)
+            .attribute(Attribute::Bold)
+    );
+    println!();
+
+    // Progress bar visualization
+    let bar_width: usize = 40;
+    let filled = (analysis.usage_percentage / 100.0 * bar_width as f64).round() as usize;
+    let empty = bar_width.saturating_sub(filled);
+    let bar_color = if analysis.usage_percentage > 93.0 {
+        Color::Red
+    } else if analysis.usage_percentage > 80.0 {
+        Color::Yellow
+    } else {
+        Color::Green
+    };
+    println!(
+        "    {} {}{} {:.1}%",
+        "Usage:".with(Color::DarkGrey),
+        "\u{2588}".repeat(filled).with(bar_color),
+        "\u{2591}".repeat(empty).with(Color::DarkGrey),
+        analysis.usage_percentage,
+    );
+    println!(
+        "           {} / {} tokens  (pressure: {})",
+        format_number(analysis.total_tokens as u64),
+        format_number(analysis.context_window as u64),
+        analysis.pressure_level.as_str().with(bar_color),
+    );
+    println!();
+
+    // Category breakdown
+    println!(
+        "{}",
+        "  Breakdown by category:"
+            .with(Color::White)
+            .attribute(Attribute::Bold)
+    );
+    println!();
+
+    for cat in &analysis.categories {
+        let pct = if analysis.total_tokens > 0 {
+            (cat.tokens as f64 / analysis.total_tokens as f64) * 100.0
+        } else {
+            0.0
+        };
+        let cat_bar_len = (pct / 100.0 * 20.0).round() as usize;
+        println!(
+            "    {:<20} {:>8} tokens  {:>5.1}%  {}",
+            cat.name.as_str().with(Color::Cyan),
+            format_number(cat.tokens as u64),
+            pct,
+            "\u{25AA}".repeat(cat_bar_len).with(Color::Blue),
+        );
+    }
+    println!();
+
+    // Top tool results (if any)
+    if !analysis.message_breakdown.tool_results_by_type.is_empty() {
+        let mut sorted: Vec<(&String, &usize)> = analysis
+            .message_breakdown
+            .tool_results_by_type
+            .iter()
+            .collect();
+        sorted.sort_by(|a, b| b.1.cmp(a.1));
+
+        println!(
+            "{}",
+            "  Top tool results by token usage:"
+                .with(Color::White)
+                .attribute(Attribute::Bold)
+        );
+        println!();
+        for (tool, tokens) in sorted.iter().take(5) {
+            let pct = if analysis.total_tokens > 0 {
+                (**tokens as f64 / analysis.total_tokens as f64) * 100.0
+            } else {
+                0.0
+            };
+            println!(
+                "    {:<20} {:>8} tokens  {:>5.1}%",
+                tool.as_str().with(Color::Magenta),
+                format_number(**tokens as u64),
+                pct,
+            );
+        }
+        println!();
+    }
+
+    // Duplicate file reads
+    if !analysis.message_breakdown.duplicate_file_reads.is_empty() {
+        println!(
+            "{}",
+            "  Duplicate file reads detected:"
+                .with(Color::Yellow)
+                .attribute(Attribute::Bold)
+        );
+        println!();
+        for dup in &analysis.message_breakdown.duplicate_file_reads {
+            println!(
+                "    {} read {} times (~{} tokens wasted)",
+                dup.path.as_str().with(Color::White),
+                dup.count.to_string().with(Color::Yellow),
+                format_number(dup.wasted_tokens as u64),
+            );
+        }
+        println!();
+    }
+
+    // Suggestions
+    if !analysis.suggestions.is_empty() {
+        println!(
+            "{}",
+            "  Suggestions:"
+                .with(Color::White)
+                .attribute(Attribute::Bold)
+        );
+        println!();
+        for sug in &analysis.suggestions {
+            let icon = if sug.severity == "warning" {
+                "\u{26A0}".with(Color::Yellow)
+            } else {
+                "\u{2139}".with(Color::Cyan)
+            };
+            println!("    {} {}", icon, sug.message.as_str().with(Color::Grey));
+        }
+        println!();
+    }
+}

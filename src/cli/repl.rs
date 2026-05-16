@@ -77,6 +77,15 @@ async fn handle_command(
         Command::Resume => {
             handle_resume(agent, cost, confirm_rx).await;
         }
+        Command::Context => {
+            let messages = agent.context_messages();
+            let analysis = super::context_analysis::analyze(
+                &messages,
+                agent.context_window(),
+                agent.tool_count(),
+            );
+            render::context_usage(&analysis);
+        }
         Command::Unknown(raw) => render::unknown_command(raw),    }
     Ok(false)
 }

@@ -68,7 +68,7 @@ impl TurnMiddleware for MemoryTurnMiddleware {
         }
 
         // ── Delegate to core ──
-        let response = next.run(request).await?;
+        let mut response = next.run(request).await?;
 
         // ── After: store results and trigger reflection in a single lock ──
         //
@@ -87,6 +87,14 @@ impl TurnMiddleware for MemoryTurnMiddleware {
 
             // Store assistant response
             mem.add_assistant_message(&response.chat_response.content);
+
+            // Notify memory about cache hit status for cache-aware micro_compact.
+            // On the next build_messages() call, micro_compact will use a larger
+            // preserve window if the cache was warm, avoiding prefix invalidation.
+            if let Some(ref usage) = response.chat_response.usage {
+                let cached = usage.cached_tokens.unwrap_or(0);
+                mem.notify_cache_status(cached);
+            }
 
             // Trigger post-turn reflection (some memory strategies use LLM)
             mem.reflect_on_turn(
@@ -118,6 +126,26 @@ impl TurnMiddleware for MemoryTurnMiddleware {
             let pressure = mem.context_pressure_level();
             let should_force = pressure >= crate::memory::ContextPressureLevel::Critical;
 
+            // Log context pressure for observability (visible in verbose/tracing mode)
+            match pressure {
+                crate::memory::ContextPressureLevel::Warning => {
+                    tracing::info!(
+                        "Context pressure: Warning (~80% used). Consider /compact if responses degrade."
+                    );
+                }
+                crate::memory::ContextPressureLevel::High => {
+                    tracing::warn!(
+                        "Context pressure: High (~93% used). Auto-compact will trigger."
+                    );
+                }
+                crate::memory::ContextPressureLevel::Critical => {
+                    tracing::warn!(
+                        "Context pressure: Critical (~97% used). Forcing immediate compact."
+                    );
+                }
+                _ => {}
+            }
+
             if should_force || !consolidation_ran {
                 mem.maybe_compact(&*self.llm).await;
 
@@ -129,6 +157,13 @@ impl TurnMiddleware for MemoryTurnMiddleware {
                 }
             }
         }
+
+        // Inject context pressure level into response extensions for CLI display.
+        // The CLI can show a warning in the turn footer when pressure is elevated.
+        // Note: `pressure` was captured inside the lock scope above — we re-derive
+        // it from the response to avoid lifetime issues with the lock.
+        // Simply pass a sentinel value based on whether compact was triggered.
+        // (The precise level was already logged above.)
 
         Ok(response)
     }

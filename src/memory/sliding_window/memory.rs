@@ -34,6 +34,11 @@ pub struct CompactResult {
 /// `MICRO_COMPACT_MAX_CHARS` characters.
 const MICRO_COMPACT_PRESERVE_RECENT: usize = 6;
 
+/// Preserve window when prompt cache is warm. Larger than normal to avoid
+/// modifying already-cached content. Only the very oldest messages get
+/// truncated, preserving the stable prefix that the LLM provider cached.
+const MICRO_COMPACT_PRESERVE_RECENT_CACHE_WARM: usize = 12;
+
 /// Maximum character length for tool context messages outside the
 /// micro-compact preservation window.
 const MICRO_COMPACT_MAX_CHARS: usize = 200;
@@ -80,6 +85,11 @@ pub struct SlidingWindowMemory {
     config: SlidingWindowConfig,
     /// Consecutive auto-compact failure count for circuit breaker.
     compact_failure_count: usize,
+    /// Whether the prompt cache was warm on the last LLM call.
+    ///
+    /// When true, micro_compact uses a larger preserve window to avoid
+    /// modifying the cached prefix. When false, uses aggressive truncation.
+    cache_warm: bool,
 }
 
 #[allow(dead_code)]
@@ -99,6 +109,7 @@ impl SlidingWindowMemory {
             consolidation_cursor: 0,
             config,
             compact_failure_count: 0,
+            cache_warm: false,
         }
     }
 
@@ -599,15 +610,25 @@ impl SlidingWindowMemory {
     // ── Micro-compact (zero-LLM-cost context reduction) ──
 
     /// Truncate old tool context messages in-place to reduce context size.
-    fn micro_compact(messages: &mut [ChatMessage]) {
+    ///
+    /// When `cache_warm` is true, uses a larger preserve window to avoid
+    /// modifying the cached prefix that the LLM provider has already stored.
+    /// This reduces the chance of cache invalidation on the next API call.
+    fn micro_compact(messages: &mut [ChatMessage], cache_warm: bool) {
         use crate::llm::ChatRole;
 
+        let preserve_recent = if cache_warm {
+            MICRO_COMPACT_PRESERVE_RECENT_CACHE_WARM
+        } else {
+            MICRO_COMPACT_PRESERVE_RECENT
+        };
+
         let total = messages.len();
-        if total <= 1 + MICRO_COMPACT_PRESERVE_RECENT {
+        if total <= 1 + preserve_recent {
             return;
         }
 
-        let cutoff = total - MICRO_COMPACT_PRESERVE_RECENT;
+        let cutoff = total - preserve_recent;
 
         for msg in &mut messages[1..cutoff] {
             if msg.role != ChatRole::Assistant {
@@ -635,6 +656,40 @@ impl SlidingWindowMemory {
             msg.content = truncated_lines.join("\n");
         }
     }
+
+    /// Mark stable messages as cache breakpoints for better prompt caching.
+    ///
+    /// Strategy: find the last message that was truncated by micro_compact.
+    /// Truncated content is stable (won't change in future turns), making it
+    /// an ideal additional cache prefix boundary.
+    ///
+    /// This allows the LLM provider to cache up to this point, so subsequent
+    /// turns only need to process new messages after the breakpoint.
+    fn mark_stable_cache_breakpoints(messages: &mut [ChatMessage]) {
+        use crate::llm::{CacheControl, ChatRole};
+
+        // Find the last truncated tool-context message (stable content).
+        // Search backwards from the end, skipping the recent preserved window.
+        let mut last_truncated_idx = None;
+        for (i, msg) in messages.iter().enumerate().rev() {
+            if msg.role == ChatRole::System {
+                break; // Don't go past the system message
+            }
+            // A message truncated by micro_compact contains the marker
+            if msg.content.contains("...(truncated)]") {
+                last_truncated_idx = Some(i);
+                break;
+            }
+        }
+
+        // Mark the last truncated message as a cache breakpoint
+        if let Some(idx) = last_truncated_idx {
+            // Only mark if it doesn't already have a cache_control set
+            if messages[idx].cache_control.is_none() {
+                messages[idx].cache_control = Some(CacheControl::Ephemeral);
+            }
+        }
+    }
 }
 
 // ── Memory trait implementation ──
@@ -660,7 +715,14 @@ impl Memory for SlidingWindowMemory {
         );
         messages.extend(window.iter().cloned());
 
-        Self::micro_compact(&mut messages);
+        Self::micro_compact(&mut messages, self.cache_warm);
+
+        // Mark additional cache breakpoints beyond the system message.
+        // The system message already has CacheControl::Ephemeral (set above).
+        // Here we mark the last micro-compacted (truncated) message as a
+        // cache breakpoint — its content is now stable and won't change,
+        // making it an ideal prefix boundary for prompt caching.
+        Self::mark_stable_cache_breakpoints(&mut messages);
 
         // Filter out non-system messages with empty content.
         messages.retain(|msg| {
@@ -673,6 +735,13 @@ impl Memory for SlidingWindowMemory {
     fn clear(&mut self) {
         self.messages.clear();
         self.consolidation_cursor = 0;
+    }
+
+    fn notify_cache_status(&mut self, cached_tokens: u64) {
+        // Consider cache "warm" if >1000 tokens were served from cache.
+        // When warm, micro_compact uses a larger preserve window to avoid
+        // breaking the cached prefix on the next call.
+        self.cache_warm = cached_tokens > 1000;
     }
 
     fn should_consolidate(&self) -> bool {

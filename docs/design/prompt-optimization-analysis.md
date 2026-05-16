@@ -1228,3 +1228,4 @@ pie title 剩余差距分类
 |------|------|------|------|
 | 2026-05-15 | v3.0 | 第三轮对比分析：优化完成后的差距评估 + 剩余差距分类 + 下一步建议 | Claude Code 源码最终对比 |
 | 2026-05-15 | v3.1 | 第三轮 Prompt 优化全部完成：per-tool usage_hint 填充(bash/read_file/edit_file/write_file/multi_edit/grep_search) + 完整通信指导(倒金字塔/语义回溯禁止/里程碑更新) + 数字长度锚点(≤4 sentences) + 注释写作规范(5条) + prompt 注入防护提醒 | 代码实现 |
+| 2026-05-16 | — | 性能关键领域差距分析独立成文 → [performance-gap-analysis.md](./performance-gap-analysis.md) | Claude Code 源码对比 |

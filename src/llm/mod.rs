@@ -2,6 +2,7 @@ mod types;
 mod adapter;
 mod provider;
 pub mod model_registry;
+pub mod cache_monitor;
 
 // Explicit re-exports instead of glob (`pub use types::*`).
 // This makes it clear which symbols come from the llm module and

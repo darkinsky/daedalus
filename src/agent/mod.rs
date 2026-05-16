@@ -109,6 +109,14 @@ pub trait AgentMetadata {
         "default"
     }
 
+    /// Return a snapshot of the current messages (for context analysis).
+    ///
+    /// Used by the `/context` command to analyze context window usage.
+    /// Returns the same messages that would be sent to the LLM.
+    fn context_messages(&self) -> Vec<crate::llm::ChatMessage> {
+        vec![]
+    }
+
     /// Return the shared permission rules engine, if available.
     ///
     /// Used by the CLI layer for `/permissions` display. Returns the live

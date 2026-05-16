@@ -338,6 +338,18 @@ pub trait Memory: Send + Sync {
     /// and whatever conversation history the memory strategy decides to include.
     fn build_messages(&self) -> Vec<ChatMessage>;
 
+    /// Notify the memory strategy about prompt cache hit status.
+    ///
+    /// Called after each LLM response with the cached_tokens value.
+    /// Memory strategies that perform cache-aware micro_compact can use
+    /// this to adjust their truncation aggressiveness.
+    ///
+    /// When cached_tokens > threshold, the strategy should preserve more
+    /// of the message prefix to maintain cache hits on subsequent calls.
+    fn notify_cache_status(&mut self, _cached_tokens: u64) {
+        // Default: no-op (strategies without cache awareness ignore this)
+    }
+
     /// Clear all conversation history (but keep the system prompt,
     /// long-term memory, and history log).
     #[allow(dead_code)]
