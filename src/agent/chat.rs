@@ -831,6 +831,9 @@ impl AgentMode for ChatAgent {
         let mut mem = shared.lock().await;
         let result = mem.compact_range(&*self.llm, instruction, range).await?;
 
+        // Notify cache monitor that the next cache miss is expected
+        self.cache_monitor.notify_expected_invalidation();
+
         // Persist after compact to save the compressed state
         if let Some(ref workspace) = self.workspace {
             if let Err(e) = mem.persist(workspace) {
