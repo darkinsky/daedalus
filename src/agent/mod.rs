@@ -219,6 +219,15 @@ pub trait AgentMode: AgentMetadata + Send + Sync {
         None
     }
 
+    /// Return the shared plan state for this session, if available.
+    ///
+    /// Used by the CLI `/plan` and `/skip` commands and by the tool loop
+    /// to inject plan context. The plan state is session-scoped and reset
+    /// when `new_session()` is called.
+    fn shared_plan(&self) -> Option<crate::agent::tool_loop::plan_tracker::SharedPlan> {
+        None
+    }
+
     /// Run context compression (compact) on the conversation history.
     ///
     /// Compresses older messages into a summary while preserving recent

@@ -41,132 +41,16 @@ impl ApiAdapter for OpenAiAdapter {
         options: Option<&ChatOptions>,
         config_venus: &VenusExtensions,
     ) -> Value {
-        let mut msg_array: Vec<Value> = messages
-            .iter()
-            .map(|msg| {
-                // Multimodal message with content_parts
-                if msg.has_content_parts() {
-                    let parts: Vec<Value> = msg.content_parts.iter().map(|part| {
-                        match part {
-                            crate::llm::ContentPart::Text { text } => {
-                                json!({"type": "text", "text": text})
-                            }
-                            crate::llm::ContentPart::Image { source, detail } => {
-                                match source {
-                                    crate::llm::ImageSource::Base64 { media_type, data } => {
-                                        let mut img = json!({
-                                            "type": "image_url",
-                                            "image_url": {
-                                                "url": format!("data:{};base64,{}", media_type, data)
-                                            }
-                                        });
-                                        if let Some(d) = detail {
-                                            img["image_url"]["detail"] = json!(d);
-                                        }
-                                        img
-                                    }
-                                    crate::llm::ImageSource::Url { url } => {
-                                        let mut img = json!({
-                                            "type": "image_url",
-                                            "image_url": {"url": url}
-                                        });
-                                        if let Some(d) = detail {
-                                            img["image_url"]["detail"] = json!(d);
-                                        }
-                                        img
-                                    }
-                                }
-                            }
-                        }
-                    }).collect();
-                    json!({
-                        "role": msg.role.to_string(),
-                        "content": parts,
-                    })
-                } else if msg.cache_control.is_some() {
-                    json!({
-                        "role": msg.role.to_string(),
-                        "content": [{
-                            "type": "text",
-                            "text": msg.content,
-                            "cache_control": { "type": "ephemeral" }
-                        }]
-                    })
-                } else {
-                    json!({
-                        "role": msg.role.to_string(),
-                        "content": msg.content,
-                    })
-                }
-            })
-            .collect();
+        let mut msg_array: Vec<Value> = messages.iter().map(serialize_message).collect();
 
-        // Replay tool history with prompt caching optimization.
-        // Use the FIRST (oldest) truncated round as cache boundary — its content
-        // is already at maximum compression and won't change in future rounds,
-        // making the cached prefix stable across requests.
-        let first_stable_round_idx = tool_history.iter()
-            .position(|round| {
-                round.responses.iter().any(|r| r.content.contains("...(truncated,"))
-            });
-
-        for (round_idx, round) in tool_history.iter().enumerate() {
-            // Assistant message with tool_calls
-            let tool_calls_json: Vec<Value> = round.calls
-                .iter()
-                .map(|tc| {
-                    json!({
-                        "id": tc.call_id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function_name,
-                            "arguments": tc.arguments.to_string(),
-                        }
-                    })
-                })
-                .collect();
-
-            let mut assistant_msg = json!({
-                "role": "assistant",
-                "content": null,
-                "tool_calls": tool_calls_json,
-            });
-            // DeepSeek V4 requires reasoning_content passback
-            if let Some(ref reasoning) = round.reasoning_content {
-                assistant_msg["reasoning_content"] = json!(reasoning);
-            }
-            msg_array.push(assistant_msg);
-
-            // Tool response messages
-            let is_cache_boundary = first_stable_round_idx == Some(round_idx);
-            let resp_count = round.responses.len();
-            for (resp_idx, resp) in round.responses.iter().enumerate() {
-                if is_cache_boundary && resp_idx == resp_count - 1 {
-                    msg_array.push(json!({
-                        "role": "tool",
-                        "tool_call_id": resp.call_id,
-                        "content": [{
-                            "type": "text",
-                            "text": resp.content,
-                            "cache_control": { "type": "ephemeral" }
-                        }],
-                    }));
-                } else {
-                    msg_array.push(json!({
-                        "role": "tool",
-                        "tool_call_id": resp.call_id,
-                        "content": resp.content,
-                    }));
-                }
-            }
-        }
+        // Replay tool history
+        append_tool_history(&mut msg_array, tool_history);
 
         let mut body = json!({
             "model": model,
             "messages": msg_array,
         });
 
-        // Add tool definitions
         if !tools.is_empty() {
             body["tools"] = json!(tools);
         }
@@ -215,36 +99,7 @@ impl ApiAdapter for OpenAiAdapter {
     }
 
     fn parse_stream_event(&self, data: &str) -> Option<StreamChunk> {
-        if data.trim() == "[DONE]" {
-            return Some(StreamChunk::Done);
-        }
-
-        let parsed: Value = serde_json::from_str(data).ok()?;
-
-        // Check for usage (typically in the last chunk)
-        if let Some(usage) = parse_usage(&parsed) {
-            return Some(StreamChunk::Usage(usage));
-        }
-
-        let choices = parsed.get("choices")?.as_array()?;
-        let choice = choices.first()?;
-        let delta = choice.get("delta")?;
-
-        // Content delta
-        if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-            if !content.is_empty() {
-                return Some(StreamChunk::ContentDelta(content.to_string()));
-            }
-        }
-
-        // Reasoning content delta
-        if let Some(reasoning) = delta.get("reasoning_content").and_then(|r| r.as_str()) {
-            if !reasoning.is_empty() {
-                return Some(StreamChunk::ReasoningDelta(reasoning.to_string()));
-            }
-        }
-
-        None
+        parse_openai_stream_event(data)
     }
 
     fn name(&self) -> &str {
@@ -364,6 +219,161 @@ fn extract_think_content(content: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+// ── Shared body-building helpers (used by both OpenAI and Venus adapters) ──
+
+/// Serialize a single `ChatMessage` to the OpenAI JSON format.
+///
+/// Handles three cases: multimodal (content_parts), cache_control (content block),
+/// and plain text.
+pub(super) fn serialize_message(msg: &ChatMessage) -> Value {
+    if msg.has_content_parts() {
+        let parts: Vec<Value> = msg.content_parts.iter().map(|part| {
+            match part {
+                crate::llm::ContentPart::Text { text } => {
+                    json!({"type": "text", "text": text})
+                }
+                crate::llm::ContentPart::Image { source, detail } => {
+                    match source {
+                        crate::llm::ImageSource::Base64 { media_type, data } => {
+                            let mut img = json!({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": format!("data:{};base64,{}", media_type, data)
+                                }
+                            });
+                            if let Some(d) = detail {
+                                img["image_url"]["detail"] = json!(d);
+                            }
+                            img
+                        }
+                        crate::llm::ImageSource::Url { url } => {
+                            let mut img = json!({
+                                "type": "image_url",
+                                "image_url": {"url": url}
+                            });
+                            if let Some(d) = detail {
+                                img["image_url"]["detail"] = json!(d);
+                            }
+                            img
+                        }
+                    }
+                }
+            }
+        }).collect();
+        json!({
+            "role": msg.role.to_string(),
+            "content": parts,
+        })
+    } else if msg.cache_control.is_some() {
+        json!({
+            "role": msg.role.to_string(),
+            "content": [{
+                "type": "text",
+                "text": msg.content,
+                "cache_control": { "type": "ephemeral" }
+            }]
+        })
+    } else {
+        json!({
+            "role": msg.role.to_string(),
+            "content": msg.content,
+        })
+    }
+}
+
+/// Serialize tool history rounds into OpenAI-format message array entries.
+///
+/// Appends assistant (with tool_calls) and tool response messages to `msg_array`.
+/// Applies prompt cache boundary on the first truncated round.
+pub(super) fn append_tool_history(msg_array: &mut Vec<Value>, tool_history: &[ToolRound]) {
+    // Use the FIRST truncated round as cache boundary
+    let first_stable_round_idx = tool_history.iter()
+        .position(|round| {
+            round.responses.iter().any(|r| r.content.contains("...(truncated,"))
+        });
+
+    for (round_idx, round) in tool_history.iter().enumerate() {
+        let tool_calls_json: Vec<Value> = round.calls
+            .iter()
+            .map(|tc| {
+                json!({
+                    "id": tc.call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function_name,
+                        "arguments": tc.arguments.to_string(),
+                    }
+                })
+            })
+            .collect();
+
+        let mut assistant_msg = json!({
+            "role": "assistant",
+            "content": null,
+            "tool_calls": tool_calls_json,
+        });
+        if let Some(ref reasoning) = round.reasoning_content {
+            assistant_msg["reasoning_content"] = json!(reasoning);
+        }
+        msg_array.push(assistant_msg);
+
+        let is_cache_boundary = first_stable_round_idx == Some(round_idx);
+        let resp_count = round.responses.len();
+        for (resp_idx, resp) in round.responses.iter().enumerate() {
+            if is_cache_boundary && resp_idx == resp_count - 1 {
+                msg_array.push(json!({
+                    "role": "tool",
+                    "tool_call_id": resp.call_id,
+                    "content": [{
+                        "type": "text",
+                        "text": resp.content,
+                        "cache_control": { "type": "ephemeral" }
+                    }],
+                }));
+            } else {
+                msg_array.push(json!({
+                    "role": "tool",
+                    "tool_call_id": resp.call_id,
+                    "content": resp.content,
+                }));
+            }
+        }
+    }
+}
+
+/// Parse a streaming SSE event in OpenAI format.
+///
+/// Shared by OpenAI and Venus adapters (identical wire format for streaming).
+pub(super) fn parse_openai_stream_event(data: &str) -> Option<StreamChunk> {
+    if data.trim() == "[DONE]" {
+        return Some(StreamChunk::Done);
+    }
+
+    let parsed: Value = serde_json::from_str(data).ok()?;
+
+    if let Some(usage) = parse_usage(&parsed) {
+        return Some(StreamChunk::Usage(usage));
+    }
+
+    let choices = parsed.get("choices")?.as_array()?;
+    let choice = choices.first()?;
+    let delta = choice.get("delta")?;
+
+    if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+        if !content.is_empty() {
+            return Some(StreamChunk::ContentDelta(content.to_string()));
+        }
+    }
+
+    if let Some(reasoning) = delta.get("reasoning_content").and_then(|r| r.as_str()) {
+        if !reasoning.is_empty() {
+            return Some(StreamChunk::ReasoningDelta(reasoning.to_string()));
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]

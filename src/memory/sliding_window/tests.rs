@@ -812,6 +812,7 @@ MEMORY:
             compact_threshold_ratio: 0.93,
             compact_hard_limit_ratio: 0.97,
             compact_preserve_recent: 2,
+            compact_custom_prompt: None,
         };
         let memory = SlidingWindowMemory::new("System", config);
 
@@ -836,6 +837,7 @@ MEMORY:
             compact_threshold_ratio: 0.93,
             compact_hard_limit_ratio: 0.97,
             compact_preserve_recent: 2,
+            compact_custom_prompt: None,
         };
         let mut memory = SlidingWindowMemory::new("System", config);
 
@@ -867,6 +869,7 @@ MEMORY:
             compact_threshold_ratio: 0.5,
             compact_hard_limit_ratio: 0.9,
             compact_preserve_recent: 2,
+            compact_custom_prompt: None,
         };
         let mut memory = SlidingWindowMemory::new("System", config);
 

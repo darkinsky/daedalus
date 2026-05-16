@@ -58,6 +58,14 @@ pub struct SlidingWindowConfig {
     /// These messages are NOT summarized — they stay as-is so the LLM
     /// retains immediate context. Default: 10.
     pub compact_preserve_recent: usize,
+
+    /// Optional custom system prompt for the compact LLM call.
+    /// When `None`, uses the built-in default from `prompts::COMPACT_SYSTEM_PROMPT`.
+    /// This enables:
+    /// - User customization (via YAML config)
+    /// - Future "compression strategy evolution" (auto-tuning the prompt)
+    #[serde(default)]
+    pub compact_custom_prompt: Option<String>,
 }
 
 impl Default for SlidingWindowConfig {
@@ -71,6 +79,7 @@ impl Default for SlidingWindowConfig {
             compact_threshold_ratio: 0.93,
             compact_hard_limit_ratio: 0.97,
             compact_preserve_recent: 10,
+            compact_custom_prompt: None,
         }
     }
 }
@@ -96,6 +105,7 @@ impl SlidingWindowConfig {
             compact_threshold_ratio: 1.0, // never auto-compact
             compact_hard_limit_ratio: 1.0,
             compact_preserve_recent: 10,
+            compact_custom_prompt: None,
         }
     }
 }

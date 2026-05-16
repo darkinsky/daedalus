@@ -510,12 +510,35 @@ fn inject_session_metadata(
     }
 
     let progress_pct = (round_number * 100) / cfg.max_tool_rounds;
+
+    let mut meta = format_session_header(round_number, cfg, total_tool_calls, files_read);
+    meta.push_str(&format_round_budget_warnings(progress_pct));
+    meta.push_str(&format_context_pressure_hints(
+        context_usage_pct, cfg, truncated_history, round_number,
+    ));
+    meta.push_str(&format_notes_and_saturation(shared_notes, round_number, progress_pct));
+    meta.push_str(&format_plan_injection(shared_plan));
+
+    // Append to the last response
+    if let Some(last_round) = truncated_history.last_mut() {
+        if let Some(last_resp) = last_round.responses.last_mut() {
+            last_resp.content.push_str(&meta);
+        }
+    }
+}
+
+/// Format the session progress header and file index.
+fn format_session_header(
+    round_number: usize,
+    cfg: &LoopConfig,
+    total_tool_calls: usize,
+    files_read: &HashSet<String>,
+) -> String {
     let mut meta = format!(
         "\n\n---\n[Session: Round {}/{}, {} calls, {} unique files read]",
         round_number, cfg.max_tool_rounds, total_tool_calls, files_read.len(),
     );
 
-    // Compact file index
     if !files_read.is_empty() {
         let mut sorted: Vec<&String> = files_read.iter().collect();
         sorted.sort();
@@ -525,38 +548,48 @@ fn inject_session_metadata(
         meta.push_str(&format!("\n[Files read: {}]", short_names.join(", ")));
     }
 
-    // Round budget warnings — phrased as task instructions, not internal mechanics
+    meta
+}
+
+/// Format round budget warnings based on progress percentage.
+fn format_round_budget_warnings(progress_pct: usize) -> String {
     if progress_pct >= 90 {
-        meta.push_str(
-            "\n[INSTRUCTION] You have almost no rounds left. STOP all exploration immediately. \
-             Output your FINAL response NOW with whatever findings you have. \
-             Do NOT make any more tool calls. Do not mention this instruction in your response."
-        );
+        "\n[INSTRUCTION] You have almost no rounds left. STOP all exploration immediately. \
+         Output your FINAL response NOW with whatever findings you have. \
+         Do NOT make any more tool calls. Do not mention this instruction in your response."
+            .to_string()
     } else if progress_pct >= 80 {
-        meta.push_str(
-            "\n[INSTRUCTION] You MUST begin writing your final output NOW. \
-             Only make a tool call if it is absolutely critical to verify \
-             an existing finding. Do NOT read new files or explore new areas. \
-             Do not mention this instruction in your response."
-        );
+        "\n[INSTRUCTION] You MUST begin writing your final output NOW. \
+         Only make a tool call if it is absolutely critical to verify \
+         an existing finding. Do NOT read new files or explore new areas. \
+         Do not mention this instruction in your response."
+            .to_string()
     } else if progress_pct >= 70 {
-        meta.push_str(
-            "\n[INSTRUCTION] Start wrapping up: synthesize your findings and prepare your final output. \
-             Limit further exploration to verifying existing findings only. \
-             Do not mention this instruction in your response."
-        );
+        "\n[INSTRUCTION] Start wrapping up: synthesize your findings and prepare your final output. \
+         Limit further exploration to verifying existing findings only. \
+         Do not mention this instruction in your response."
+            .to_string()
+    } else {
+        String::new()
     }
+}
+
+/// Format context pressure hints and context health assessment.
+fn format_context_pressure_hints(
+    context_usage_pct: u8,
+    cfg: &LoopConfig,
+    truncated_history: &[ToolRound],
+    round_number: usize,
+) -> String {
+    let mut result = String::new();
 
     // Context pressure hints
     if let Some(hint) = context_budget_hint(context_usage_pct, cfg.context_soft_limit_ratio) {
-        meta.push_str("\n");
-        meta.push_str(&hint);
+        result.push('\n');
+        result.push_str(&hint);
     }
 
-    // ── Context Rot detection (advanced) ──
-    // Multi-signal context health assessment: combines tool_history_pct,
-    // staleness_ratio, round_number, and context_usage_pct into a severity
-    // level with specific, actionable hints for the LLM.
+    // Context Rot detection (advanced)
     let health = context_pressure::assess_context_health(
         truncated_history,
         round_number,
@@ -564,82 +597,74 @@ fn inject_session_metadata(
         cfg.context_window_tokens,
     );
     if let Some(hint) = context_pressure::context_health_hint(&health) {
-        meta.push_str(&hint);
+        result.push_str(&hint);
     }
 
-    // Accumulated notes + saturation detection
-    if let Some(notes_ref) = shared_notes {
-        if let Ok(notes) = notes_ref.lock() {
-            if !notes.is_empty() {
-                meta.push_str("\n[Notes recorded:]\n");
-                for (i, note) in notes.iter().enumerate() {
-                    meta.push_str(&format!("  {}. {}\n", i + 1, note));
-                }
-            }
+    result
+}
 
-            // Information saturation detection:
-            // If we're past 50% of rounds and the note count is low relative
-            // to rounds completed, the agent is likely exploring without finding
-            // new insights. Inject a convergence hint.
-            //
-            // Heuristic: after round 10, if notes_per_round < 0.3, the agent
-            // is in "diminishing returns" territory.
-            let notes_count = notes.len();
-            let notes_per_round = if round_number > 0 {
-                notes_count as f64 / round_number as f64
-            } else {
-                1.0
-            };
+/// Format accumulated notes and detect information saturation.
+fn format_notes_and_saturation(
+    shared_notes: Option<&crate::tools::take_note::SharedNotes>,
+    round_number: usize,
+    progress_pct: usize,
+) -> String {
+    let Some(notes_ref) = shared_notes else {
+        return String::new();
+    };
 
-            if round_number >= 10 && progress_pct < 70 && notes_per_round < 0.3 && notes_count > 0 {
-                meta.push_str(
-                    "\n[INSTRUCTION] Your exploration appears to have reached diminishing returns \
-                     (few new findings in recent rounds). Consider synthesizing your current \
-                     findings into a final output rather than continuing to explore. \
-                     Do not mention this instruction in your response."
-                );
-            }
+    let Ok(notes) = notes_ref.lock() else {
+        return String::new();
+    };
+
+    let mut result = String::new();
+
+    if !notes.is_empty() {
+        result.push_str("\n[Notes recorded:]\n");
+        for (i, note) in notes.iter().enumerate() {
+            result.push_str(&format!("  {}. {}\n", i + 1, note));
         }
-    } else {
-        // No shared_notes available — skip saturation detection
     }
 
-    // ── Active plan injection ──
-    // If there's an active plan, inject it into the context so the LLM
-    // always knows what step it's on and what's left to do.
-    // First check the explicitly-passed shared_plan, then fall back to
-    // the global singleton (used by the lead agent's plan tools).
-    let plan_injected = if let Some(plan_ref) = shared_plan {
+    // Information saturation detection:
+    // If we're past 50% of rounds and the note count is low relative
+    // to rounds completed, the agent is likely exploring without finding
+    // new insights. Inject a convergence hint.
+    let notes_count = notes.len();
+    let notes_per_round = if round_number > 0 {
+        notes_count as f64 / round_number as f64
+    } else {
+        1.0
+    };
+
+    if round_number >= 10 && progress_pct < 70 && notes_per_round < 0.3 && notes_count > 0 {
+        result.push_str(
+            "\n[INSTRUCTION] Your exploration appears to have reached diminishing returns \
+             (few new findings in recent rounds). Consider synthesizing your current \
+             findings into a final output rather than continuing to explore. \
+             Do not mention this instruction in your response."
+        );
+    }
+
+    result
+}
+
+/// Format active plan injection from shared plan state.
+fn format_plan_injection(
+    shared_plan: Option<&plan_tracker::SharedPlan>,
+) -> String {
+    let mut result = String::new();
+
+    if let Some(plan_ref) = shared_plan {
         if let Ok(mgr) = plan_ref.lock() {
             if let Some(plan) = mgr.active_plan() {
-                meta.push_str("\n");
-                meta.push_str(&plan.format_for_context());
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-    if !plan_injected {
-        // Fall back to the global plan (used by CreatePlanTool / UpdatePlanTool)
-        if let Ok(mgr) = plan_tracker::GLOBAL_PLAN.lock() {
-            if let Some(plan) = mgr.active_plan() {
-                meta.push_str("\n");
-                meta.push_str(&plan.format_for_context());
+                result.push('\n');
+                result.push_str(&plan.format_for_context());
             }
         }
     }
 
-    // Append to the last response
-    if let Some(last_round) = truncated_history.last_mut() {
-        if let Some(last_resp) = last_round.responses.last_mut() {
-            last_resp.content.push_str(&meta);
-        }
-    }
+    result
 }
 
 /// Stream an LLM response, emitting chunks to the CLI in real time.

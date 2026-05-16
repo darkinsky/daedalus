@@ -70,6 +70,8 @@ pub(crate) struct CoreTurnHandler {
     session_id: String,
     /// Optional checkpoint path for crash recovery (passed to tool loop).
     checkpoint_path: Option<std::path::PathBuf>,
+    /// Session-scoped task plan state (shared with plan tools and tool loop).
+    shared_plan: Option<crate::agent::tool_loop::plan_tracker::SharedPlan>,
 }
 
 impl CoreTurnHandler {
@@ -92,6 +94,7 @@ impl CoreTurnHandler {
         hooks_config: HooksConfig,
         session_id: String,
         checkpoint_path: Option<std::path::PathBuf>,
+        shared_plan: Option<crate::agent::tool_loop::plan_tracker::SharedPlan>,
     ) -> Self {
         Self {
             llm,
@@ -108,6 +111,7 @@ impl CoreTurnHandler {
             hooks_config,
             session_id,
             checkpoint_path,
+            shared_plan,
         }
     }
 }
@@ -179,7 +183,7 @@ impl CoreTurnHandler {
             tracing_hook: tracing_hook.as_ref(),
             tool_pipeline: Some(&tool_pipeline),
             shared_notes: None, // Lead agent doesn't use take_note (subagents do)
-            shared_plan: None,  // Plan tools manage their own SharedPlan internally
+            shared_plan: self.shared_plan.as_ref(),
         };
 
         let LoopResult {

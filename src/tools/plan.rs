@@ -2,30 +2,29 @@
 //!
 //! Provides `CreatePlanTool` and `UpdatePlanTool` that allow the LLM to
 //! create structured execution plans and update step progress. The plan
-//! state is stored in `GLOBAL_PLAN` (a process-wide singleton), ensuring
-//! the active plan is visible to the tool loop, CLI commands, and both tools.
-//!
-//! This avoids threading a `SharedPlan` through the middleware pipeline —
-//! the global singleton is simpler and sufficient since only one session
-//! is active at a time in the CLI.
+//! state is stored in a `SharedPlan` (session-scoped `Arc<Mutex<PlanManager>>`),
+//! ensuring the active plan is visible to the tool loop, CLI commands,
+//! and both tools without relying on global mutable state.
 
 use anyhow::Result;
 use async_trait::async_trait;
 
 use super::BuiltinTool;
-use crate::agent::tool_loop::plan_tracker::{GLOBAL_PLAN, StepStatus};
+use crate::agent::tool_loop::plan_tracker::{SharedPlan, StepStatus};
 
 /// Built-in tool that creates a structured task plan.
 ///
 /// When the LLM encounters a complex multi-step task, it can call this
 /// tool to create a plan that will be tracked and injected into context
 /// metadata each round, preventing goal drift.
-pub struct CreatePlanTool;
+pub struct CreatePlanTool {
+    plan: SharedPlan,
+}
 
 impl CreatePlanTool {
-    /// Create a new create_plan tool.
-    pub fn new() -> Self {
-        Self
+    /// Create a new create_plan tool with the given shared plan state.
+    pub fn new(plan: SharedPlan) -> Self {
+        Self { plan }
     }
 }
 
@@ -90,7 +89,7 @@ impl BuiltinTool for CreatePlanTool {
         }
 
         let plan_summary = {
-            let mut mgr = GLOBAL_PLAN
+            let mut mgr = self.plan
                 .lock()
                 .map_err(|_| anyhow::anyhow!("Failed to acquire plan lock"))?;
             let plan = mgr.create_plan(title.to_string(), steps);
@@ -113,12 +112,14 @@ impl BuiltinTool for CreatePlanTool {
 /// The LLM calls this after completing (or failing) a step to keep
 /// the plan state accurate. The updated state is automatically
 /// reflected in the next round's context metadata.
-pub struct UpdatePlanTool;
+pub struct UpdatePlanTool {
+    plan: SharedPlan,
+}
 
 impl UpdatePlanTool {
-    /// Create a new update_plan tool.
-    pub fn new() -> Self {
-        Self
+    /// Create a new update_plan tool with the given shared plan state.
+    pub fn new(plan: SharedPlan) -> Self {
+        Self { plan }
     }
 }
 
@@ -168,7 +169,7 @@ impl BuiltinTool for UpdatePlanTool {
             .parse()
             .map_err(|e: String| anyhow::anyhow!("{}", e))?;
 
-        let mut mgr = GLOBAL_PLAN
+        let mut mgr = self.plan
             .lock()
             .map_err(|_| anyhow::anyhow!("Failed to acquire plan lock"))?;
 
@@ -185,22 +186,17 @@ impl BuiltinTool for UpdatePlanTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::tool_loop::plan_tracker::new_shared_plan;
 
-    /// Serialize all tests that use GLOBAL_PLAN to avoid parallel interference.
-    /// Tests run in parallel by default, and since GLOBAL_PLAN is a process-wide
-    /// singleton, concurrent tests can corrupt each other's state.
-    static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Reset the global plan state before each test to avoid interference.
-    fn reset_global_plan() {
-        crate::agent::tool_loop::plan_tracker::reset_global_plan();
+    /// Create a fresh shared plan for each test — no global state needed.
+    fn test_plan() -> SharedPlan {
+        new_shared_plan()
     }
 
     #[tokio::test]
     async fn test_create_plan_basic() {
-        let _guard = TEST_MUTEX.lock().unwrap();
-        reset_global_plan();
-        let tool = CreatePlanTool::new();
+        let plan = test_plan();
+        let tool = CreatePlanTool::new(plan);
 
         let result = tool
             .execute(serde_json::json!({
@@ -216,9 +212,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_plan_empty_steps() {
-        let _guard = TEST_MUTEX.lock().unwrap();
-        reset_global_plan();
-        let tool = CreatePlanTool::new();
+        let plan = test_plan();
+        let tool = CreatePlanTool::new(plan);
 
         let result = tool
             .execute(serde_json::json!({
@@ -233,9 +228,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_plan_missing_title() {
-        let _guard = TEST_MUTEX.lock().unwrap();
-        reset_global_plan();
-        let tool = CreatePlanTool::new();
+        let plan = test_plan();
+        let tool = CreatePlanTool::new(plan);
 
         let result = tool
             .execute(serde_json::json!({
@@ -248,14 +242,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_plan_basic() {
-        let _guard = TEST_MUTEX.lock().unwrap();
-        reset_global_plan();
+        let plan = test_plan();
         {
-            let mut mgr = GLOBAL_PLAN.lock().unwrap();
+            let mut mgr = plan.lock().unwrap();
             mgr.create_plan("Test".to_string(), vec!["A".to_string(), "B".to_string()]);
         }
 
-        let tool = UpdatePlanTool::new();
+        let tool = UpdatePlanTool::new(plan);
 
         let result = tool
             .execute(serde_json::json!({
@@ -280,9 +273,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_plan_no_active() {
-        let _guard = TEST_MUTEX.lock().unwrap();
-        reset_global_plan();
-        let tool = UpdatePlanTool::new();
+        let plan = test_plan();
+        let tool = UpdatePlanTool::new(plan);
 
         let result = tool
             .execute(serde_json::json!({
@@ -297,14 +289,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_plan_invalid_status() {
-        let _guard = TEST_MUTEX.lock().unwrap();
-        reset_global_plan();
+        let plan = test_plan();
         {
-            let mut mgr = GLOBAL_PLAN.lock().unwrap();
+            let mut mgr = plan.lock().unwrap();
             mgr.create_plan("Test".to_string(), vec!["A".to_string()]);
         }
 
-        let tool = UpdatePlanTool::new();
+        let tool = UpdatePlanTool::new(plan);
 
         let result = tool
             .execute(serde_json::json!({

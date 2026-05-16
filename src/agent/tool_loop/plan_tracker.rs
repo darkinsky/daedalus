@@ -3,35 +3,15 @@
 //! Provides a `PlanManager` that tracks the lifecycle of a task plan:
 //! create → track progress → update steps → complete.
 //!
-//! The plan state is stored in `GLOBAL_PLAN` (a process-wide singleton),
-//! ensuring the active plan is visible to the tool loop, CLI commands,
-//! and both `CreatePlanTool` / `UpdatePlanTool`.
+//! The plan state is stored in a `SharedPlan` (`Arc<Mutex<PlanManager>>`),
+//! which is session-scoped and injected into the tool loop, CLI commands,
+//! and both `CreatePlanTool` / `UpdatePlanTool` via dependency injection.
 //! Each round, the active plan is injected into session metadata so the
 //! LLM always knows what step it's on.
 
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-
-/// Global shared plan state, accessible from tools, tool loop, and CLI.
-///
-/// Uses a `lazy_static`-style `Mutex<PlanManager>` so that:
-/// - `CreatePlanTool` / `UpdatePlanTool` can modify the plan
-/// - `inject_session_metadata` can read the plan each round
-/// - `/plan` and `/skip` CLI commands can display/modify the plan
-///
-/// The plan is session-scoped: call [`reset_global_plan`] when a new
-/// session starts to clear stale state.
-pub static GLOBAL_PLAN: std::sync::LazyLock<Mutex<PlanManager>> =
-    std::sync::LazyLock::new(|| Mutex::new(PlanManager::new()));
-
-/// Reset the global plan state. Should be called when a new session starts
-/// to prevent stale plan data from leaking across sessions.
-pub fn reset_global_plan() {
-    if let Ok(mut mgr) = GLOBAL_PLAN.lock() {
-        *mgr = PlanManager::new();
-    }
-}
 
 /// Shared plan state accessible by both the plan tools and the tool loop.
 ///
@@ -41,7 +21,6 @@ pub fn reset_global_plan() {
 pub type SharedPlan = Arc<Mutex<PlanManager>>;
 
 /// Create a new empty shared plan manager.
-#[allow(dead_code)]
 pub fn new_shared_plan() -> SharedPlan {
     Arc::new(Mutex::new(PlanManager::new()))
 }

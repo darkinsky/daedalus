@@ -84,14 +84,23 @@ pub struct ToolRouter {
 
 impl ToolRouter {
     /// Create a new tool router with built-in tools and no MCP servers.
-    pub fn new() -> Self {
-        Self::with_bash_config(BashConfig::default())
+    ///
+    /// `shared_plan` is injected so that plan tools and the tool loop share
+    /// the same plan state. Pass `None` to create an isolated plan (e.g.,
+    /// for subagents).
+    pub fn new(
+        shared_plan: Option<crate::agent::tool_loop::plan_tracker::SharedPlan>,
+    ) -> Self {
+        Self::with_bash_config(BashConfig::default(), shared_plan)
     }
 
     /// Create a new tool router with custom bash tool configuration.
-    pub fn with_bash_config(bash_config: BashConfig) -> Self {
+    pub fn with_bash_config(
+        bash_config: BashConfig,
+        shared_plan: Option<crate::agent::tool_loop::plan_tracker::SharedPlan>,
+    ) -> Self {
         Self {
-            builtin: BuiltinToolRegistry::new_with_config(bash_config),
+            builtin: BuiltinToolRegistry::new_with_config(bash_config, shared_plan),
             mcp: None,
             skills: Arc::new(SkillRegistry::new()),
             subagents: Arc::new(SubagentRegistry::new()),

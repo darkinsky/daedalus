@@ -57,6 +57,13 @@ pub fn get_modified_files() -> HashSet<PathBuf> {
         .unwrap_or_default()
 }
 
+/// Clear the modified files set (called on session reset).
+pub(crate) fn clear_modified_files() {
+    if let Ok(mut set) = MODIFIED_FILES.lock() {
+        set.clear();
+    }
+}
+
 /// RAII guard for file-level locking.
 struct FileEditGuard {
     path: PathBuf,

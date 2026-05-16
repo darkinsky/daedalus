@@ -10,6 +10,7 @@ pub(crate) mod plan;
 pub(crate) mod recall_history;
 mod read_file;
 mod search_files;
+pub(crate) mod session_state;
 pub(crate) mod take_note;
 pub(crate) mod text_utils;
 pub(crate) mod web_search;
@@ -267,11 +268,23 @@ impl BuiltinToolRegistry {
     /// Uses default configuration for all tools. For custom configuration,
     /// use `new_with_config()`.
     pub fn new() -> Self {
-        Self::new_with_config(BashConfig::default())
+        Self::new_with_config(BashConfig::default(), None)
     }
 
-    /// Create a new registry with custom tool configuration.
-    pub fn new_with_config(bash_config: BashConfig) -> Self {
+    /// Create a new registry with custom tool configuration and a shared plan.
+    ///
+    /// The `shared_plan` is injected so that `CreatePlanTool` / `UpdatePlanTool`
+    /// operate on the same plan instance that the tool loop reads for context
+    /// injection. If `None`, a new isolated plan is created (suitable for
+    /// subagents that don't share the lead agent's plan).
+    pub fn new_with_config(
+        bash_config: BashConfig,
+        shared_plan: Option<crate::agent::tool_loop::plan_tracker::SharedPlan>,
+    ) -> Self {
+        let shared_plan = shared_plan.unwrap_or_else(
+            crate::agent::tool_loop::plan_tracker::new_shared_plan,
+        );
+
         let tools: Vec<Box<dyn BuiltinTool>> = vec![
             Box::new(read_file::ReadFileTool),
             Box::new(write_file::WriteFileTool),
@@ -283,8 +296,8 @@ impl BuiltinToolRegistry {
             Box::new(get_file_info::GetFileInfoTool),
             Box::new(bash::BashTool::new(bash_config.clone())),
             Box::new(take_note::TakeNoteTool::new(take_note::new_shared_notes())),
-            Box::new(plan::CreatePlanTool::new()),
-            Box::new(plan::UpdatePlanTool::new()),
+            Box::new(plan::CreatePlanTool::new(shared_plan.clone())),
+            Box::new(plan::UpdatePlanTool::new(shared_plan)),
         ];
 
         tracing::info!(

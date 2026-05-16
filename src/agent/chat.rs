@@ -103,6 +103,8 @@ pub struct ChatAgent {
     hooks_config: HooksConfig,
     /// Prompt cache break detector.
     cache_monitor: crate::llm::cache_monitor::CacheMonitor,
+    /// Session-scoped task plan state (shared with plan tools and tool loop).
+    shared_plan: crate::agent::tool_loop::plan_tracker::SharedPlan,
 }
 
 impl ChatAgent {
@@ -145,12 +147,14 @@ impl ChatAgent {
             "ChatAgent initialized with middleware pipeline"
         );
 
+        let shared_plan = crate::agent::tool_loop::plan_tracker::new_shared_plan();
+
         Self {
             llm,
             session,
             system_prompt,
             memory_factory,
-            tool_router: Arc::new(ToolRouter::new()),
+            tool_router: Arc::new(ToolRouter::new(Some(shared_plan.clone()))),
             prompt_config: PromptConfig {
                 prompt_override,
                 agent_name: config.agent_name.clone(),
@@ -173,6 +177,7 @@ impl ChatAgent {
             permission_mode: PermissionMode::Default,
             hooks_config: HooksConfig::default(),
             cache_monitor: crate::llm::cache_monitor::CacheMonitor::new(),
+            shared_plan,
         }
     }
 
@@ -216,14 +221,21 @@ impl ChatAgent {
 
     /// Get exclusive mutable access to the tool router.
     ///
-    /// # Panics
-    ///
-    /// Panics if the `Arc<ToolRouter>` has been cloned (i.e., a pipeline is
-    /// currently running). This is only safe during setup (load_skills,
-    /// load_subagents, etc.) before the router is shared with any pipeline.
-    fn router_mut_exclusive(&mut self) -> &mut ToolRouter {
+    /// Returns `None` if the `Arc<ToolRouter>` has been cloned (i.e., a
+    /// pipeline is currently running). Only succeeds during setup
+    /// (load_skills, load_subagents, etc.) before the router is shared.
+    fn try_router_mut_exclusive(&mut self) -> Option<&mut ToolRouter> {
         Arc::get_mut(&mut self.tool_router)
-            .expect("ToolRouter should have no other references during setup")
+    }
+
+    /// Get exclusive mutable access to the tool router, logging a warning
+    /// if the Arc has other references (should only happen due to a bug).
+    ///
+    /// Callers that require mutation should prefer this over unwrapping
+    /// `try_router_mut_exclusive()` to avoid panics.
+    fn router_mut_exclusive(&mut self) -> &mut ToolRouter {
+        self.try_router_mut_exclusive()
+            .expect("BUG: ToolRouter has other references during setup — this indicates a lifecycle error")
     }
 
     pub fn load_skills(&mut self, dir: &Path) -> Result<usize> {
@@ -419,9 +431,16 @@ impl ChatAgent {
         let persistent_state = {
             // try_lock is safe here: this is only called during setup/new_session
             // when no middleware pipeline is running (no concurrent access).
-            let mut mem = shared.try_lock()
-                .expect("Memory should not be locked during session migration");
-            mem.take_persistent_state()
+            match shared.try_lock() {
+                Ok(mut mem) => mem.take_persistent_state(),
+                Err(_) => {
+                    tracing::error!(
+                        "Memory was locked during session migration — \
+                         this indicates a lifecycle bug. Skipping state migration."
+                    );
+                    None
+                }
+            }
         };
         let mut memory = self.memory_factory.create_memory(&self.system_prompt);
         if let Some(state) = persistent_state {
@@ -468,6 +487,7 @@ impl ChatAgent {
             self.hooks_config.clone(),
             self.session.id.clone(),
             self.checkpoint_path(),
+            Some(self.shared_plan.clone()),
         ));
 
         let mut pipeline = TurnPipeline::new(core);
@@ -719,10 +739,14 @@ impl AgentMode for ChatAgent {
     }
 
     fn new_session(&mut self) {
-        // Clear undo history — new session starts with a clean slate
-        crate::tools::checkpoint::clear();
+        // Reset all session-scoped tool state (undo history, modified files, edit guards)
+        crate::tools::session_state::reset_session_state();
         // New session completely changes the message prefix → expected cache miss
         self.cache_monitor.notify_expected_invalidation();
+        // Reset plan state so stale plans don't leak into the new session
+        if let Ok(mut mgr) = self.shared_plan.lock() {
+            *mgr = crate::agent::tool_loop::plan_tracker::PlanManager::new();
+        }
         self.reset_with_updated_prompt();
         tracing::info!(
             session_id = %self.session.id,
@@ -802,6 +826,10 @@ impl AgentMode for ChatAgent {
         self.workspace.as_ref().map(|ws| {
             crate::agent::tool_loop::checkpoint::checkpoint_path(&ws.root())
         })
+    }
+
+    fn shared_plan(&self) -> Option<crate::agent::tool_loop::plan_tracker::SharedPlan> {
+        Some(self.shared_plan.clone())
     }
 
     async fn compact(&mut self, instruction: Option<&str>) -> anyhow::Result<String> {

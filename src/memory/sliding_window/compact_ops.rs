@@ -143,7 +143,10 @@ pub(super) async fn run_compact(
     );
 
     let llm_messages = vec![
-        ChatMessage::system(super::prompts::COMPACT_SYSTEM_PROMPT),
+        ChatMessage::system(
+            input.config.compact_custom_prompt.clone()
+                .unwrap_or_else(|| super::prompts::COMPACT_SYSTEM_PROMPT.to_string())
+        ),
         ChatMessage::user(user_prompt),
     ];
 

@@ -300,19 +300,26 @@ pub(crate) fn truncate_tool_history(history: &[ToolRound], cfg: &TruncationConfi
 ///
 /// This ensures the same token budget preserves more useful information overall.
 fn tool_density_multiplier(tool_name: &str) -> f64 {
+    /// Every line is a search match with context — highest density.
+    const DENSITY_GREP: f64 = 1.5;
+    /// File listings are compact and structural.
+    const DENSITY_LISTING: f64 = 1.3;
+    /// Bash output varies but is often dense.
+    const DENSITY_BASH: f64 = 1.2;
+    /// File content has imports/whitespace padding — below average.
+    const DENSITY_FILE_READ: f64 = 0.8;
+    /// Edit results are confirmations, not information — lowest density.
+    const DENSITY_EDIT: f64 = 0.5;
+    /// Default for unknown tools.
+    const DENSITY_DEFAULT: f64 = 1.0;
+
     match tool_name {
-        // High density: every line is a search match with context
-        "grep_search" => 1.5,
-        // High density: file listings are compact and structural
-        "list_directory" | "search_files" => 1.3,
-        // Medium-high: bash output varies but is often dense
-        "bash" => 1.2,
-        // Medium: file content has imports/whitespace padding
-        "read_file" | "get_file_info" => 0.8,
-        // Low density: edit results are confirmations, not information
-        "edit_file" | "multi_edit" | "write_file" => 0.5,
-        // Default: standard density
-        _ => 1.0,
+        "grep_search" => DENSITY_GREP,
+        "list_directory" | "search_files" => DENSITY_LISTING,
+        "bash" => DENSITY_BASH,
+        "read_file" | "get_file_info" => DENSITY_FILE_READ,
+        "edit_file" | "multi_edit" | "write_file" => DENSITY_EDIT,
+        _ => DENSITY_DEFAULT,
     }
 }
 
@@ -327,12 +334,17 @@ fn should_use_head_tail_truncation(tool_name: &str) -> bool {
 
 /// Truncate content preserving both head and tail portions.
 ///
-/// Allocates 60% of the budget to the head (imports, declarations) and
-/// 40% to the tail (implementations, tests). Inserts a clear separator
-/// showing how many lines were omitted.
+/// Allocates `HEAD_RATIO`% of the budget to the head (imports, declarations)
+/// and `TAIL_RATIO`% to the tail (implementations, tests). Inserts a clear
+/// separator showing how many lines were omitted.
 fn truncate_head_tail(content: &str, max_bytes: usize) -> String {
-    let head_budget = max_bytes * 60 / 100;
-    let tail_budget = max_bytes * 40 / 100;
+    /// Percentage of truncation budget allocated to the head (imports, declarations).
+    const HEAD_RATIO_PCT: usize = 60;
+    /// Percentage of truncation budget allocated to the tail (implementations, results).
+    const TAIL_RATIO_PCT: usize = 40;
+
+    let head_budget = max_bytes * HEAD_RATIO_PCT / 100;
+    let tail_budget = max_bytes * TAIL_RATIO_PCT / 100;
 
     let head = crate::tools::truncate_at_char_boundary(content, head_budget);
 
