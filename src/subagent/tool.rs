@@ -314,17 +314,22 @@ pub fn build_tool_definition(registry: &SubagentRegistry) -> Option<serde_json::
          - Use file count and total LOC as proxy for work estimation\n\
          - If a module has >1500 LOC or >20 files, give it a dedicated subagent\n\
          - If a module has <500 LOC or <5 files, combine it with related modules\n\
+         - Consider average file size: modules with large files (avg >400 LOC) fill \
+         context faster — set lower max_rounds or split the module further\n\
          - Maximum 5 partitions (diminishing returns beyond this due to synthesis overhead)\n\n\
-         SYNTHESIS & VALIDATION — When collecting results from multiple parallel code-reviewer subagents:\n\
+         SYNTHESIS & VALIDATION — MANDATORY when collecting results from multiple subagents:\n\
          1. Group findings by severity.\n\
-         2. VERIFY: For any finding with severity >= HIGH AND confidence < [HIGH], \
-         you MUST read the cited file:line yourself and confirm the issue exists. \
-         REMOVE findings that are incorrect or exaggerated.\n\
+         2. VERIFY (cannot be skipped): Select the top N findings by severity \
+         (N = min(10, total_critical + total_high)). For EACH, call read_file on the \
+         cited file:line and confirm the issue exists. Check for mitigating context \
+         (comments like SAFETY, TODO, Phase N, best-effort, or guards in calling code). \
+         REMOVE or DOWNGRADE findings that are incorrect, exaggerated, or already mitigated.\n\
          3. DEDUPLICATE: Merge findings that describe the same issue across subagents. \
          If two findings reference the same file within 10 lines, they likely overlap.\n\
          4. CROSS-REFERENCE: Check consistency across subagent reports. Flag contradictions.\n\
          5. Only after verification and deduplication, write the final synthesized report.\n\
-         Do NOT blindly concatenate subagent outputs — synthesize, deduplicate, and validate.\n\n\
+         Do NOT blindly concatenate subagent outputs — synthesize, deduplicate, and validate.\n\
+         A report without any read_file verification calls is INVALID.\n\n\
          The subagent will execute the task independently and return a summary of results.",
         agent_list.join("\n")
     );

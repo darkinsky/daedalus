@@ -32,6 +32,7 @@
 | 文档 | 简述 | 最后更新 |
 |------|------|---------|
 | [code-review-trace-analysis-2026-04-25.md](tuning/code-review-trace-analysis-2026-04-25.md) | 代码审查任务 Trace 分析：subagent maxTurns 耗尽导致主 Agent 重复工作、循环犹豫反模式、context overflow、MaxRoundsExceeded 优雅降级、分批审查策略、成本分析与优化路线图 | 2026-04-25 |
+| [code-review-trace-analysis-2026-05-17.md](tuning/code-review-trace-analysis-2026-05-17.md) | 多子代理并行编排 Trace 分析：编排器综合验证缺失、子代理通读 vs 扫描策略、take_note 使用率、严重程度校准、跨子代理边界信息传递、编译器辅助验证、负载均衡优化 | 2026-05-17 |
 
 ## 隐含规则
 

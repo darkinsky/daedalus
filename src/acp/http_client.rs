@@ -339,37 +339,46 @@ impl AcpServer for RemoteAcpServer {
             ));
         }
 
-        // Parse the SSE stream
+        // Parse the SSE stream incrementally (not buffer-all)
         let mut final_response: Option<TaskResponse> = None;
         let mut final_error: Option<AcpError> = None;
+        let mut line_buf = String::new();
 
-        // Read the response body as text and parse SSE events manually
-        let body = response.text().await.map_err(|e| {
-            AcpError::internal(format!("Failed to read SSE stream: {}", e))
-        })?;
+        use futures::StreamExt;
+        let mut stream = response.bytes_stream();
 
-        for line in body.lines() {
-            // SSE format: "event: <type>\ndata: <json>\n\n"
-            // We handle the simplified case where data follows event
-            if let Some(data) = line.strip_prefix("data: ") {
-                // Try to parse as TaskEvent first
-                if let Ok(event) = serde_json::from_str::<TaskEvent>(data) {
-                    callback(event);
-                    continue;
-                }
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| {
+                AcpError::internal(format!("Failed to read SSE stream chunk: {}", e))
+            })?;
+            let text = String::from_utf8_lossy(&chunk);
+            line_buf.push_str(&text);
 
-                // Try to parse as TaskResponse
-                if let Ok(response) = serde_json::from_str::<TaskResponse>(data) {
-                    final_response = Some(response);
-                    continue;
-                }
+            // Process complete lines
+            while let Some(newline_pos) = line_buf.find('\n') {
+                let line = line_buf[..newline_pos].trim_end_matches('\r').to_string();
+                line_buf = line_buf[newline_pos + 1..].to_string();
 
-                // Try to parse as ErrorResponse
-                if let Ok(err) = serde_json::from_str::<ErrorResponse>(data) {
-                    final_error = Some(AcpError::new(
-                        AcpErrorCode::InternalError,
-                        format!("[{}] {}", err.code, err.message),
-                    ));
+                if let Some(data) = line.strip_prefix("data: ") {
+                    // Try to parse as TaskEvent first
+                    if let Ok(event) = serde_json::from_str::<TaskEvent>(data) {
+                        callback(event);
+                        continue;
+                    }
+
+                    // Try to parse as TaskResponse
+                    if let Ok(response) = serde_json::from_str::<TaskResponse>(data) {
+                        final_response = Some(response);
+                        continue;
+                    }
+
+                    // Try to parse as ErrorResponse
+                    if let Ok(err) = serde_json::from_str::<ErrorResponse>(data) {
+                        final_error = Some(AcpError::new(
+                            AcpErrorCode::InternalError,
+                            format!("[{}] {}", err.code, err.message),
+                        ));
+                    }
                 }
             }
         }

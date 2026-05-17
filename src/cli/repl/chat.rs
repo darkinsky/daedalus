@@ -70,7 +70,7 @@ impl ChatTurnContext {
 
     /// Process the result of a chat turn (success or error) and render output.
     async fn finish(
-        self,
+        mut self,
         result: Result<ChatResponse, anyhow::Error>,
         agent: &mut dyn AgentMode,
         cost: &SharedSessionCost,
@@ -80,6 +80,7 @@ impl ChatTurnContext {
                 let elapsed = self.start.elapsed().as_secs_f64();
                 self.spinner.finish_and_clear();
                 self.confirm_handle.abort();
+                let _ = (&mut self.confirm_handle).await;
 
                 agent.set_subagent_event_callback(None);
 
@@ -148,6 +149,7 @@ impl ChatTurnContext {
             Err(e) => {
                 self.spinner.finish_and_clear();
                 self.confirm_handle.abort();
+                let _ = (&mut self.confirm_handle).await;
                 agent.set_subagent_event_callback(None);
 
                 tracing::error!("Agent error: {}", e);

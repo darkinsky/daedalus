@@ -226,16 +226,21 @@ impl Drop for WorktreeGuard {
             "Cleaning up git worktree"
         );
 
-        // Remove the worktree
-        let _ = std::process::Command::new("git")
-            .args(["worktree", "remove", "--force"])
-            .arg(&self.worktree_dir)
-            .output();
+        // Use spawn_blocking to avoid blocking the tokio worker thread.
+        let worktree_dir = self.worktree_dir.clone();
+        let branch_name = self.branch_name.clone();
+        let _ = std::thread::spawn(move || {
+            // Remove the worktree
+            let _ = std::process::Command::new("git")
+                .args(["worktree", "remove", "--force"])
+                .arg(&worktree_dir)
+                .output();
 
-        // Delete the temporary branch
-        let _ = std::process::Command::new("git")
-            .args(["branch", "-D"])
-            .arg(&self.branch_name)
-            .output();
+            // Delete the temporary branch
+            let _ = std::process::Command::new("git")
+                .args(["branch", "-D"])
+                .arg(&branch_name)
+                .output();
+        });
     }
 }

@@ -255,9 +255,9 @@ impl AgentConfig {
         let context_window = llm.resolved_context_window();
 
         // Propagate context_window to memory's context_budget if the user
-        // didn't explicitly configure it (still at default 128K).
+        // didn't explicitly configure it (default is 0 = "use model default").
         let mut memory = memory;
-        if memory.sliding_window.context_budget == 128_000 && context_window != 128_000 {
+        if memory.sliding_window.context_budget == 0 {
             memory.sliding_window.context_budget = context_window;
             tracing::debug!(
                 context_window,

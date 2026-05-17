@@ -147,7 +147,7 @@ impl MemPalaceMemory {
         parts.join("\n\n")
     }
 
-    /// Ensure ChromaDB collection exists.
+    /// Ensure ChromaDB collection exists. Retries on each call if not yet initialized.
     async fn ensure_chroma(&mut self) {
         if self.chroma_initialized {
             return;
@@ -158,10 +158,11 @@ impl MemPalaceMemory {
                 tracing::info!("ChromaDB collection initialized for MemPalace");
             }
             Err(e) => {
-                tracing::error!(
+                // Log but don't set chroma_initialized — next call will retry.
+                tracing::warn!(
                     error = %e,
-                    "Failed to initialize ChromaDB collection. \
-                     Ensure ChromaDB is running at {}",
+                    "ChromaDB initialization failed (will retry next turn). \
+                     Vector search is degraded. Ensure ChromaDB is running at {}",
                     self.config.chroma_url
                 );
             }

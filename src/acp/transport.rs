@@ -486,18 +486,21 @@ async fn handle_cancel_task(
     tracing::info!(
         agent = %name,
         task_id = %body.task_id,
-        "HTTP task cancellation request"
+        "HTTP task cancellation request (not yet implemented)"
     );
 
-    // Phase 2: cancellation is acknowledged but not yet enforced.
-    // The server would need a cancellation token mechanism to actually
-    // interrupt a running task. For now, we return a "canceled" response.
-    Json(serde_json::json!({
-        "success": true,
-        "task_id": body.task_id,
-        "state": TaskState::Canceled.to_string(),
-        "message": "Cancellation requested (best-effort in Phase 2)"
-    }))
+    // Phase 2: cancellation is not yet enforced.
+    // Return 501 to honestly indicate the operation is not implemented,
+    // rather than returning success which misleads callers.
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({
+            "success": false,
+            "task_id": body.task_id,
+            "state": TaskState::Canceled.to_string(),
+            "message": "Task cancellation is not yet implemented (Phase 2)"
+        })),
+    )
     .into_response()
 }
 
@@ -711,7 +714,7 @@ mod tests {
             .body(Body::from(serde_json::to_string(&body).unwrap()))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
     }
 
     #[tokio::test]

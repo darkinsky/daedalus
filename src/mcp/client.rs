@@ -68,7 +68,7 @@ impl McpClient {
         cmd.args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::null());
 
         if let Some(env_vars) = env {
             for (key, value) in env_vars {

@@ -68,7 +68,7 @@ async fn handle_command(
         Command::Tools => render::tools_list(agent),
         Command::Skills => render::skills_list(agent),
         Command::Agents => render::agents_list(agent),
-        Command::Permissions => handle_permissions(agent),
+        Command::Permissions => handle_permissions(agent).await,
         Command::Undo => handle_undo().await,
         Command::Plan => handle_plan(agent),
         Command::Skip => handle_skip(agent),
@@ -102,18 +102,17 @@ async fn handle_command(
 // ── Slash command handlers ──
 
 /// Handle the `/permissions` command — display active permission rules.
-fn handle_permissions(agent: &dyn AgentMode) {
+async fn handle_permissions(agent: &dyn AgentMode) {
     let mode = agent.permission_mode_name();
 
     if let Some(rules_arc) = agent.permission_rules() {
-        let rt = tokio::runtime::Handle::current();
-        let all_rules: Vec<_> = rt.block_on(async {
+        let all_rules: Vec<_> = {
             let rules = rules_arc.lock().await;
             rules.all_rules()
                 .into_iter()
                 .map(|(r, s)| (r.clone(), s))
                 .collect()
-        });
+        };
         render::permissions_list(&all_rules, mode);
     } else {
         let workspace_root = agent.workspace_root();

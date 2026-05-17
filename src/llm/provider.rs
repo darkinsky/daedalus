@@ -13,7 +13,7 @@
 //!         └── GeminiAdapter — Google Gemini API
 //! ```
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -63,11 +63,17 @@ impl LlmProvider {
             .to_string();
 
         let adapter = adapter::create_adapter(&config);
+
+        // Validate API key early — reject keys with bytes that can't be used in HTTP headers.
+        // This prevents panics in adapter.headers() which use .expect() on HeaderValue construction.
+        reqwest::header::HeaderValue::from_bytes(config.api_key.as_bytes())
+            .context("API key contains invalid HTTP header bytes (non-visible ASCII characters)")?;
+
         let client = Client::builder()
             .timeout(HTTP_TIMEOUT)
             .connect_timeout(HTTP_CONNECT_TIMEOUT)
             .build()
-            .unwrap_or_else(|_| Client::new());
+            .context("Failed to build HTTP client")?;
 
         tracing::info!(
             model = %config.model,

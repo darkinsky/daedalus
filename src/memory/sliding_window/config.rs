@@ -39,7 +39,7 @@ pub struct SlidingWindowConfig {
     /// Estimated token budget for the context window.
     /// When the estimated token count of `build_messages()` exceeds
     /// `compact_threshold_ratio * context_budget`, auto-compact triggers.
-    /// Default: 128_000 (128k context window).
+    /// Default: 0 (not explicitly configured — will be populated from model registry).
     pub context_budget: usize,
     /// Ratio of context budget usage that triggers a warning log.
     /// E.g., 0.8 means warn when 80% of the budget is used.
@@ -74,7 +74,7 @@ impl Default for SlidingWindowConfig {
             max_messages: Some(100),
             consolidation_threshold: 100,
             retention_window: 50,
-            context_budget: 128_000,
+            context_budget: 0,
             compact_warning_ratio: 0.8,
             compact_threshold_ratio: 0.93,
             compact_hard_limit_ratio: 0.97,
