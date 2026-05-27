@@ -343,6 +343,54 @@ pub async fn run_tool_loop(
             });
         }
 
+        // ── Metadata-only short-circuit ──
+        // If the LLM produced a non-empty content response AND all tool calls
+        // are metadata-only (e.g., update_plan, take_note), execute the tools
+        // for their side effects but return the content as the final answer
+        // without an additional LLM round-trip.
+        let all_metadata_only = !response.content.trim().is_empty()
+            && response.tool_calls.iter().all(|tc| is_metadata_only_tool(&tc.function_name));
+
+        if all_metadata_only {
+            tracing::debug!(
+                agent = %cfg.agent_label,
+                round = round_number,
+                tool_count = response.tool_calls.len(),
+                "All tool calls are metadata-only with non-empty content — executing and short-circuiting"
+            );
+
+            // Execute the metadata-only tools for their side effects
+            let (responses, _) = execute_with_cache(
+                ctx, &response.tool_calls, &mut read_only_cache, round_number,
+            ).await;
+
+            // Record this round in tool_history for audit/replay purposes
+            let round_reasoning = response.reasoning_content.clone();
+            tool_history.push(ToolRound {
+                calls: response.tool_calls,
+                responses,
+                reasoning_content: round_reasoning,
+            });
+
+            // Clear checkpoint on successful completion
+            if let Some(ref cp_path) = cfg.checkpoint_path {
+                checkpoint::ToolLoopCheckpoint::clear(cp_path);
+            }
+            let reasoning = if cfg.track_reasoning {
+                response.reasoning_content.or(last_reasoning)
+            } else {
+                None
+            };
+            return Ok(LoopResult {
+                outcome: LoopOutcome::Final {
+                    content: response.content,
+                    reasoning,
+                },
+                usage: total_usage,
+                tool_history,
+            });
+        }
+
         // Emit intermediate LLM response
         emit(ctx.on_tool_event, ToolEvent::LlmResponse {
             round: round_number,
@@ -875,6 +923,14 @@ fn is_write_tool(tool_name: &str) -> bool {
         tool_name,
         "edit_file" | "multi_edit" | "write_file" | "bash"
     )
+}
+
+/// Tools that only update internal metadata (plan state, notes) without producing
+/// results the LLM needs to reason about. When the LLM emits a final answer
+/// alongside only metadata-only tool calls, the loop can short-circuit: execute
+/// the tools for side effects and return the content without another LLM round.
+fn is_metadata_only_tool(tool_name: &str) -> bool {
+    matches!(tool_name, "update_plan" | "take_note")
 }
 
 /// Lightweight read-only tool result cache.

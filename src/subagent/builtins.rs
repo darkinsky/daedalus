@@ -247,29 +247,87 @@ You can ONLY read files — never modify them.
 
 ## Task Decomposition (for parallel execution)
 
-When asked to partition work for parallel subagents:
+When asked to partition work for parallel subagents, use **affinity-based partitioning**:
+group files by how strongly they depend on each other, NOT by equal code volume.
 
-1. **One-shot metrics** — use a single bash command:
-   `find . -type f -name '*.EXT' -exec wc -l {} + | sort -rn`
-   (replace EXT with the project's language extension: rs, py, ts, go, java, etc.)
-   This gives you file count AND line count per file in one call.
-2. **Balance by LOC, not file count**: Each partition should have roughly equal
-   total lines of code (~6,000-8,000 lines). A 2,000-line file counts more than
-   ten 50-line files. Never combine a large module (>3,000 LOC) with others.
-3. **Cross-module dependency map**: For each partition, explicitly list:
-   - Shared types/interfaces/abstractions used across partitions (e.g., Partition A defines an interface that Partition B implements)
-   - Common utility files that multiple partitions depend on
-   - Caller/callee relationships across partition boundaries
-   Include these as a <cross_module_context> section in each partition's task description.
-4. **Self-contained descriptions**: Each partition description must include:
-   - Exact file paths to review
-   - Specific focus areas and what to look for
-   - Cross-module context (from step 3) so the agent understands interfaces
-   - A <shared_context> block with project-wide information (architecture overview,
-     key patterns, shared types) that all partitions need
-5. **Minimum quality gate**: Each partition's task description should instruct the
-   executing agent to: (a) read every file in scope, (b) use take_note for each
-   finding, (c) annotate findings with confidence level (high/medium/low).
+### Step 1: Gather structure + dependencies (ONE bash command)
+
+Detect the project language first (look for Cargo.toml, package.json, go.mod, etc.),
+then run a single command that collects both LOC metrics AND dependency information:
+
+```
+find . -type f -name '*.EXT' -exec wc -l {} + | sort -rn && echo '=== DEPS ===' && grep -rn 'IMPORT_PATTERN' --include='*.EXT' . | head -500
+```
+
+Replace EXT and IMPORT_PATTERN based on the detected language:
+- Rust: EXT=rs, IMPORT_PATTERN='^use crate::\\|^mod '
+- Python: EXT=py, IMPORT_PATTERN='^import \\|^from '
+- TypeScript/JS: EXT=ts, IMPORT_PATTERN='^import '
+- Go: EXT=go, IMPORT_PATTERN='^import'
+- Java: EXT=java, IMPORT_PATTERN='^import '
+
+### Step 2: Build a dependency adjacency list
+
+From the grep output, construct a mental model of which modules/directories depend
+on which others. Identify:
+- **Bidirectional dependencies**: A imports B AND B imports A → MUST be in same partition
+- **Hub modules**: modules imported by many others (shared types, utils, interfaces)
+- **Leaf modules**: modules that import others but are not imported by anyone else
+
+### Step 3: Cluster by affinity (primary criterion)
+
+Group files into partitions using these rules in priority order:
+
+1. **Never split strongly-coupled code**:
+   - Files with bidirectional imports → same partition
+   - A type/interface definition and its primary consumers → same partition
+   - A module index file (mod.rs, __init__.py, index.ts) and its children → same partition
+   - Test files and the code they test → same partition
+
+2. **Group by functional cohesion**:
+   - Files in the same directory/package that share a common purpose → same partition
+   - Implementation files that extend the same abstraction → same partition
+   - Files that form a call chain (A calls B calls C) → prefer same partition
+
+3. **Hub modules get special treatment**:
+   - If a hub module is small (<300 LOC), include it in ALL relevant partitions'
+     <shared_context> as interface documentation (not as files to review)
+   - If a hub module is large (>300 LOC), it becomes its own partition or joins
+     its most frequent caller
+
+### Step 4: Apply LOC constraints (secondary — bounds only)
+
+LOC is a constraint, NOT the optimization target:
+- **Soft upper bound**: ~10,000 LOC per partition (split at sub-module boundaries if exceeded)
+- **Soft lower bound**: ~2,000 LOC per partition (merge with most-dependent neighbor if below)
+- Imbalanced partitions are ACCEPTABLE if they preserve cohesion
+  (e.g., 3,000 LOC + 8,000 LOC + 5,000 LOC is fine)
+
+### Step 5: Generate cross-partition interfaces
+
+For each partition, explicitly document:
+- **Depends on** (defined elsewhere): types/functions this partition calls but doesn't own
+- **Depended upon** (defined here): types/functions other partitions rely on from here
+- **Shared types**: data structures that cross partition boundaries
+
+Include these as a <cross_module_context> section in each partition's task description.
+
+### Step 6: Assemble partition descriptions
+
+Each partition description must include:
+- Exact file paths assigned to this partition
+- Specific focus areas and what to look for
+- <cross_module_context> (from step 5) so the agent understands external interfaces
+- A <shared_context> block with project-wide information (architecture overview,
+  key patterns, shared types) that all partitions need
+- Instruction to: (a) read every file in scope, (b) use take_note for each
+  finding, (c) annotate findings with confidence level (high/medium/low)
+
+### Partitioning anti-patterns (NEVER do these)
+- ❌ Splitting a struct/class definition from its method implementations
+- ❌ Putting a trait/interface in one partition and ALL its implementors in another
+- ❌ Separating tightly-coupled caller/callee pairs just to balance LOC
+- ❌ Creating a partition with only utility files that have no cohesion with each other
 
 ## Output Format
 

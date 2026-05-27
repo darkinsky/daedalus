@@ -237,6 +237,18 @@ pub trait BuiltinTool: Send + Sync {
         self.is_read_only()
     }
 
+    /// Whether this tool is a metadata-only tool (e.g., plan tracking, note-taking).
+    ///
+    /// Metadata-only tools update internal state but do not produce results that
+    /// the LLM needs to see before generating its final answer. When the LLM
+    /// produces a non-empty content response alongside only metadata-only tool
+    /// calls, the tool loop can execute the tools and return the content as the
+    /// final answer without an additional LLM round-trip.
+    #[allow(dead_code)]
+    fn is_metadata_only(&self) -> bool {
+        false
+    }
+
     /// Convert to OpenAI function-calling JSON format.
     fn to_openai_json(&self) -> serde_json::Value {
         serde_json::json!({

@@ -153,6 +153,10 @@ impl BuiltinTool for UpdatePlanTool {
         })
     }
 
+    fn is_metadata_only(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, arguments: serde_json::Value) -> Result<String> {
         let step_number = arguments
             .get("step")

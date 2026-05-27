@@ -70,6 +70,10 @@ impl BuiltinTool for TakeNoteTool {
         })
     }
 
+    fn is_metadata_only(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, arguments: serde_json::Value) -> Result<String> {
         let note = arguments
             .get("note")
