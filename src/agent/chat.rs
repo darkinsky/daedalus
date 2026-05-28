@@ -16,6 +16,8 @@ use crate::middleware::builtin::logging::LoggingTurnMiddleware;
 use crate::middleware::builtin::memory::MemoryTurnMiddleware;
 use crate::middleware::builtin::cost::{CostTurnMiddleware, SessionCost, SharedSessionCost};
 use crate::middleware::builtin::metrics::MetricsTurnMiddleware;
+use crate::middleware::builtin::context_engineering::ContextEngineeringMiddleware;
+use crate::middleware::builtin::harness::HarnessTurnMiddleware;
 use crate::middleware::builtin::confirmation::ConfirmationSender;
 use crate::middleware::builtin::permission_rules::{PermissionsConfig, PermissionRuleSet, PermissionMode};
 use crate::middleware::config::MiddlewareConfig;
@@ -500,10 +502,12 @@ impl ChatAgent {
 
         if self.middleware_config.turn.is_empty() {
             // ── Default stack (innermost first) ──
-            // memory → cost → metrics → request_logging → tracing
+            // memory → context_engineering → cost → metrics → harness → request_logging → tracing
             pipeline = self.add_turn_layer(pipeline, "memory", tracing_globally_enabled);
+            pipeline = self.add_turn_layer(pipeline, "context_engineering", tracing_globally_enabled);
             pipeline = self.add_turn_layer(pipeline, "cost", tracing_globally_enabled);
             pipeline = self.add_turn_layer(pipeline, "metrics", tracing_globally_enabled);
+            pipeline = self.add_turn_layer(pipeline, "harness", tracing_globally_enabled);
             pipeline = self.add_turn_layer(pipeline, "request_logging", tracing_globally_enabled);
             if tracing_globally_enabled {
                 pipeline = self.add_turn_layer(pipeline, "tracing", tracing_globally_enabled);
@@ -580,6 +584,13 @@ impl ChatAgent {
             }
             "metrics" => {
                 pipeline.with(Box::new(MetricsTurnMiddleware::new()))
+            }
+            "context_engineering" => {
+                let context_window = self.context_window;
+                pipeline.with(Box::new(ContextEngineeringMiddleware::new(context_window)))
+            }
+            "harness" => {
+                pipeline.with(Box::new(HarnessTurnMiddleware::new()))
             }
             other => {
                 tracing::warn!(

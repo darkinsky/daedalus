@@ -16,6 +16,7 @@ pub(crate) mod truncation;
 pub(crate) mod context_pressure;
 pub(crate) mod checkpoint;
 pub(crate) mod plan_tracker;
+pub(crate) mod hierarchical_compression;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -41,6 +42,7 @@ pub(crate) use truncation::{truncate_tool_history, estimate_history_chars, CHARS
 pub(crate) use context_pressure::{
     estimate_context_usage_pct, context_budget_hint, force_final_response, emit,
 };
+pub(crate) use hierarchical_compression::compress_hierarchically;
 
 // ── Injected abstractions ──
 
@@ -267,6 +269,25 @@ pub async fn run_tool_loop(
         let trunc_cfg = cfg.truncation.as_ref().cloned().unwrap_or_default();
         let effective_trunc_cfg = trunc_cfg.tighten_for_pressure(context_usage_pct);
         let mut truncated_history = truncate_tool_history(&tool_history, &effective_trunc_cfg);
+
+        // ── Hierarchical compression (L1/L2/L3 based on context health) ──
+        let health = context_pressure::assess_context_health(
+            &truncated_history,
+            round_number,
+            context_usage_pct,
+            cfg.context_window_tokens,
+        );
+        if health.severity > context_pressure::ContextHealthSeverity::Healthy {
+            let compression_cfg = cfg.context_window_tokens
+                .map(|cw| hierarchical_compression::CompressionConfig::for_context_window(cw))
+                .unwrap_or_default();
+            let (compressed, _stats) = compress_hierarchically(
+                &truncated_history,
+                health.severity,
+                &compression_cfg,
+            );
+            truncated_history = compressed;
+        }
 
         // ── Inject session metadata into tool history ──
         inject_session_metadata(

@@ -24,6 +24,7 @@ use crate::middleware::builtin::logging::LoggingToolMiddleware;
 use crate::middleware::builtin::permission::{PermissionPolicy, PermissionToolMiddleware};
 use crate::middleware::builtin::permission_rules::{PermissionMode, PermissionRuleSet};
 use crate::middleware::builtin::tracing::TracingToolMiddleware;
+use crate::middleware::builtin::harness::HarnessToolMiddleware;
 use crate::middleware::pipeline::ToolPipeline;
 use crate::middleware::{Extensions, TurnNext, TurnRequest, TurnResponse};
 use crate::tools::ToolEventCallback;
@@ -331,11 +332,12 @@ impl CoreTurnHandler {
 
         if self.tool_middleware_config.is_empty() {
             // ── Default stack (innermost first) ──
-            // event → confirmation → tool_logging → permission → tracing → hooks
+            // event → confirmation → tool_logging → permission → harness → tracing → hooks
             pipeline = self.add_tool_layer(pipeline, "event", &serde_json::Value::Null);
             pipeline = self.add_tool_layer(pipeline, "confirmation", &serde_json::Value::Null);
             pipeline = self.add_tool_layer(pipeline, "tool_logging", &serde_json::Value::Null);
             pipeline = self.add_tool_layer(pipeline, "permission", &serde_json::Value::Null);
+            pipeline = self.add_tool_layer(pipeline, "harness", &serde_json::Value::Null);
             pipeline = self.add_tool_layer(pipeline, "tracing", &serde_json::Value::Null);
         } else {
             // ── Config-driven (innermost first, no reversal) ──
@@ -401,6 +403,9 @@ impl CoreTurnHandler {
                 } else {
                     pipeline
                 }
+            }
+            "harness" => {
+                pipeline.with(Box::new(HarnessToolMiddleware::new()))
             }
             other => {
                 tracing::warn!(

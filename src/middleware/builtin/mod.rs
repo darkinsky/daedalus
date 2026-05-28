@@ -10,6 +10,8 @@
 //! - [`memory::MemoryTurnMiddleware`] — User/assistant message storage and retrieval
 //! - [`cost::CostTurnMiddleware`] — Cumulative token usage accounting
 //! - [`metrics::MetricsTurnMiddleware`] — Turn timing and round counting
+//! - [`context_engineering::ContextEngineeringMiddleware`] — Intelligent context assembly and budget allocation
+//! - [`harness::HarnessTurnMiddleware`] — Agent constraint and control system
 //!
 //! ## Tool Middleware
 //!
@@ -18,6 +20,7 @@
 //! - [`confirmation::ConfirmationToolMiddleware`] — Interactive user approval for sensitive tools
 //! - [`logging::LoggingToolMiddleware`] — Tool call structured logging
 //! - [`event::EventToolMiddleware`] — CLI event emission (ToolCallStart/Complete)
+//! - [`harness::HarnessToolMiddleware`] — Per-call safety controls (error tracking, oscillation detection)
 
 pub mod tracing;
 pub mod logging;
@@ -28,3 +31,5 @@ pub mod permission_rules;
 pub mod confirmation;
 pub mod cost;
 pub mod metrics;
+pub mod context_engineering;
+pub mod harness;
