@@ -4,6 +4,7 @@ use super::{
     MemoryFactory, SlidingWindowFactory, CheatsheetFactory,
     AgenticFactory, MemPalaceFactory, WikiFactory, AceFactory,
 };
+use super::sliding_window::config::SlidingWindowConfig;
 
 /// Create the appropriate memory factory based on the configured strategy and workspace.
 ///
@@ -22,7 +23,7 @@ pub fn create_memory_factory(
     use crate::config::MemoryStrategy;
 
     match strategy {
-        MemoryStrategy::SlidingWindow => sliding_window_factory(workspace),
+        MemoryStrategy::SlidingWindow => sliding_window_factory(workspace, &memory_config.sliding_window),
         MemoryStrategy::DynamicCheatsheet => {
             let factory = CheatsheetFactory::with_workspace(
                 workspace.cheatsheet_path(),
@@ -45,7 +46,7 @@ pub fn create_memory_factory(
                         "Failed to create embedding provider for agentic memory, \
                          falling back to sliding_window"
                     );
-                    sliding_window_factory(workspace)
+                    sliding_window_factory(workspace, &memory_config.sliding_window)
                 }
             }
         }
@@ -100,17 +101,22 @@ pub fn create_memory_factory(
                          falling back to sliding_window. \
                          Please configure `embedding` section in daedalus.yaml."
                     );
-                    sliding_window_factory(workspace)
+                    sliding_window_factory(workspace, &memory_config.sliding_window)
                 }
             }
         }
     }
 }
 
-/// Create a sliding-window memory factory with workspace persistence.
-fn sliding_window_factory(workspace: &crate::workspace::Workspace) -> Box<dyn MemoryFactory> {
+/// Create a sliding-window memory factory with workspace persistence and config.
+fn sliding_window_factory(
+    workspace: &crate::workspace::Workspace,
+    config: &SlidingWindowConfig,
+) -> Box<dyn MemoryFactory> {
     Box::new(SlidingWindowFactory::with_workspace(
         workspace.long_term_memory_path(),
         workspace.history_log_path(),
-    ).with_session_messages_path(workspace.session_messages_path()))
+    )
+    .with_session_messages_path(workspace.session_messages_path())
+    .with_config(config.clone()))
 }

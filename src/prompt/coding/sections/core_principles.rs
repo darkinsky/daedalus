@@ -15,9 +15,9 @@ pub fn build() -> String {
        - *Simple* (single-file fix, quick question): Act immediately, no plan needed.\n\
        - *Medium* (multi-file feature, cross-module debug): State your approach in 2-3 \
      sentences, then execute.\n\
-       - *Complex* (architecture change, large refactor, 5+ files): Write a brief \
-     structured plan (Goal → Steps → Risks) before executing. This plan helps you \
-     stay on track and helps the user understand your approach.\n\
+     - *Complex* (architecture change, large refactor, 5+ files): Call `create_plan` to \
+     create a tracked execution plan before executing. This externalizes your plan into \
+     a persistent state that prevents goal drift across rounds.\n\
      - **Iterate on failure**: If something doesn't work, diagnose the root cause before \
      switching tactics. Don't retry with identical arguments — change your approach. \
      Escalate to the user only when genuinely stuck after 2-3 attempts.\n\

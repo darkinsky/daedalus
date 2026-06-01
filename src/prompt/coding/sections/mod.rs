@@ -6,6 +6,7 @@ pub mod core_principles;
 pub mod delegation;
 pub mod environment;
 pub mod identity;
+pub mod planning;
 pub mod reminders;
 pub mod rules;
 pub mod search_strategy;

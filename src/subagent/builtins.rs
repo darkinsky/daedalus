@@ -21,9 +21,10 @@ pub fn builtin_agents() -> Vec<SubagentDefinition> {
 }
 
 /// Standard read-only tool whitelist shared by all built-in subagents.
-/// Includes `bash` (for `wc -l`, `find`, etc.) and `take_note` (for
-/// persisting findings across context truncation).
-const READ_ONLY_TOOLS: &[&str] = &["read_file", "list_directory", "search_files", "grep_search", "get_file_info", "bash", "take_note"];
+/// Includes `bash` (for `wc -l`, `find`, etc.), `take_note` (for
+/// persisting findings across context truncation), and `create_plan`/
+/// `update_plan` (for tracking multi-step task progress).
+const READ_ONLY_TOOLS: &[&str] = &["read_file", "list_directory", "search_files", "grep_search", "get_file_info", "bash", "take_note", "create_plan", "update_plan"];
 
 /// Create a read-only built-in subagent with standard defaults.
 ///
@@ -35,6 +36,17 @@ fn read_only_builtin(
     description: &str,
     system_prompt: &str,
     max_turns: usize,
+) -> SubagentDefinition {
+    read_only_builtin_with_budget(name, description, system_prompt, max_turns, None)
+}
+
+/// Create a read-only built-in subagent with an explicit context budget.
+fn read_only_builtin_with_budget(
+    name: &str,
+    description: &str,
+    system_prompt: &str,
+    max_turns: usize,
+    context_budget_tokens: Option<usize>,
 ) -> SubagentDefinition {
     SubagentDefinition {
         name: name.to_string(),
@@ -50,7 +62,7 @@ fn read_only_builtin(
         on_start: None,
         on_complete: None,
         shared_context: None,
-        context_budget_tokens: None,
+        context_budget_tokens,
     }
 }
 
@@ -96,7 +108,7 @@ Organize your findings as:
 
 /// Built-in "code-reviewer" subagent — elite code quality review and audit.
 fn code_reviewer_agent() -> SubagentDefinition {
-    read_only_builtin(
+    read_only_builtin_with_budget(
         "code-reviewer",
         "Elite code reviewer. Performs deep structural analysis covering \
             correctness, safety, performance, and architecture. \
@@ -107,7 +119,11 @@ You are an elite code reviewer. Read-only environment.
 
 ## Rules
 
-1. Call `take_note` after each Critical/Major finding — notes survive truncation.
+1. **IMMEDIATE take_note** (NON-NEGOTIABLE): Call `take_note` THE SAME ROUND you
+   discover a Critical/Major finding. Do NOT continue reading more files before
+   recording. The pattern is: read file → spot issue → take_note → then move on.
+   WHY: Your context window WILL be compressed. Any finding not in take_note
+   before compression happens is PERMANENTLY LOST. There is no recovery.
 2. Broad coverage first: shallow pass over full scope beats deep dive into 20%.
 3. Every issue must cite exact file:line from code you read. No guessing.
 4. **Confidence annotation**: Tag each finding with confidence level:
@@ -118,6 +134,22 @@ You are an elite code reviewer. Read-only environment.
 5. **take_note is MANDATORY**: You MUST call `take_note` for every finding with
    severity >= Major. A review that completes with 0 `take_note` calls is considered
    incomplete — your early findings WILL be lost to context truncation.
+
+## take_note Discipline (CRITICAL — read carefully)
+
+- **Frequency**: You MUST have at least 1 `take_note` call every 3 rounds during
+  Phase 2. If you've gone 3 rounds without a `take_note`, either you missed
+  something or the code is clean — record that observation too.
+- **Timing**: Call `take_note` IN THE SAME tool_calls batch as (or immediately
+  after) the read_file that revealed the issue. Never defer to 'later'.
+- **Anti-pattern**: Batching all take_note calls in the last 1-2 rounds is
+  EXPLICITLY FORBIDDEN. This defeats the purpose of the tool — if context
+  truncation occurs before your batch, ALL findings are lost.
+- **What to record**: Each note should be self-contained:
+  `[SEVERITY] file:line — problem description | evidence snippet`
+  so the orchestrator can use it even without your final report.
+- **Minor findings too**: For 🟡 Minor issues, batch up to 3-5 per take_note
+  call (one note every few rounds), but do NOT defer them all to the end.
 
 ## Severity
 
@@ -164,7 +196,12 @@ Phase 2 — Targeted deep-dive (rounds 4-N):
   - Only read specific functions/blocks that appear suspicious from Phase 1
   - For large files (>300 lines), use offset+limit to read specific sections
   - Never read an entire large file unless the issue spans the whole file
-  - Call `take_note` after each Critical/Major finding immediately
+  - **MANDATORY WORKFLOW per file analyzed**:
+    1. Read the suspicious code section
+    2. If Critical/Major found → call `take_note` IN THIS SAME ROUND (parallel with next read)
+    3. Only then proceed to the next file
+    You may include `take_note` in the same parallel tool_calls batch as your next `read_file`.
+  - Accumulate Minor findings and record them in a batch `take_note` every 3 rounds
 
 Phase 3 — Verification (final rounds):
   - After forming findings, read minimal code to confirm/deny
@@ -212,7 +249,12 @@ IMPORTANT output rules:
 - Every Critical/Major finding MUST include copy-pasted code as evidence.
 - Do NOT report issues you haven't verified by reading the actual code.
 - Do NOT paraphrase code — copy-paste the exact lines as evidence.",
-        30,
+        40,
+        // Code reviewers need a larger context budget because they read many files.
+        // The default heuristic (max_turns * 5000 = 200K) is too small for projects
+        // with 30+ files on large-context models (1M). 400K gives enough room to
+        // hold ~60 files worth of code snippets without triggering severe compression.
+        Some(400_000),
     )
 }
 

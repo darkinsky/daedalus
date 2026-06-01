@@ -442,23 +442,28 @@ impl SubagentRunner {
         // For subagents, cap the effective context window used for pressure
         // calculations. Priority order:
         //   1. definition.context_budget_tokens (explicit per-agent config)
-        //   2. Round-based cap: max_tool_rounds * 5_000 (heuristic)
+        //   2. Round-based cap: max_tool_rounds * per_round_estimate (heuristic)
         //   3. Parent model's context window (absolute ceiling)
         //
         // The round-based cap ensures context pressure hints trigger at
         // practical thresholds rather than theoretical model limits
         // (e.g., 700K for a 1M model).
         //
-        // Examples with default soft_limit_ratio=0.6:
-        //   - plan agent (10 rounds): cap = 50K → soft limit at 30K
-        //   - code-reviewer (40 rounds): cap = 200K → soft limit at 120K
-        //   - default (100 rounds): cap = 500K → soft limit at 300K
+        // Examples with default soft_limit_ratio=0.6 on a 1M model (8K/round):
+        //   - plan agent (10 rounds): cap = 80K → soft limit at 48K
+        //   - code-reviewer (40 rounds): cap = 320K → soft limit at 192K
+        //     (but code-reviewer has explicit budget = 400K → soft limit at 240K)
+        //   - default (100 rounds): cap = 800K → soft limit at 480K
         let effective_context_window = if let Some(budget) = definition.context_budget_tokens {
             // Explicit budget from definition — use directly, capped by model limit
             budget.min(context_window)
         } else {
-            // Heuristic: each round adds ~3-5K tokens of tool output
-            let round_based_cap = max_tool_rounds * 5_000;
+            // Heuristic: each round adds ~3-8K tokens of tool output.
+            // For large-context models (>200K), use a higher per-round estimate (8K)
+            // because the LLM tends to read larger file chunks when it has more room.
+            // For smaller models, use the conservative 5K estimate.
+            let per_round_estimate = if context_window >= 200_000 { 8_000 } else { 5_000 };
+            let round_based_cap = max_tool_rounds * per_round_estimate;
             context_window.min(round_based_cap)
         };
         let cfg = LoopConfig {

@@ -236,6 +236,9 @@ impl PlanManager {
     /// Update the status of a step in the active plan.
     ///
     /// Returns an error message if no plan is active or the step number is invalid.
+    ///
+    /// Enforces single `InProgress` constraint: when setting a step to `InProgress`,
+    /// any other step currently `InProgress` is automatically reset to `Pending`.
     pub fn update_step(&mut self, step_number: usize, status: StepStatus) -> Result<String, String> {
         let plan = self
             .active_plan
@@ -243,17 +246,31 @@ impl PlanManager {
             .ok_or_else(|| "No active plan. Use create_plan first.".to_string())?;
 
         let total_steps = plan.steps.len();
+
+        // Validate step number exists before enforcing constraints
+        if !plan.steps.iter().any(|s| s.number == step_number) {
+            return Err(format!(
+                "Step {} not found. Plan has {} steps.",
+                step_number, total_steps
+            ));
+        }
+
+        // Enforce single in_progress constraint (inspired by Claude Code's TodoWrite):
+        // Only one step can be InProgress at a time. When marking a new step as
+        // InProgress, automatically reset any other InProgress step to Pending.
+        if status == StepStatus::InProgress {
+            for step in plan.steps.iter_mut() {
+                if step.number != step_number && step.status == StepStatus::InProgress {
+                    step.status = StepStatus::Pending;
+                }
+            }
+        }
+
         let step = plan
             .steps
             .iter_mut()
             .find(|s| s.number == step_number)
-            .ok_or_else(|| {
-                format!(
-                    "Step {} not found. Plan has {} steps.",
-                    step_number,
-                    total_steps
-                )
-            })?;
+            .unwrap(); // Safe: we validated existence above
 
         let old_status = step.status.clone();
         step.status = status.clone();
@@ -488,5 +505,28 @@ mod tests {
         mgr = PlanManager::new();
         assert!(mgr.active_plan().is_none());
         assert_eq!(mgr.archived_count(), 0);
+    }
+
+    #[test]
+    fn test_single_in_progress_constraint() {
+        let mut mgr = PlanManager::new();
+        mgr.create_plan(
+            "Test".to_string(),
+            vec!["A".to_string(), "B".to_string(), "C".to_string()],
+        );
+
+        // Set step 1 to in_progress
+        mgr.update_step(1, StepStatus::InProgress).unwrap();
+        assert_eq!(mgr.active_plan().unwrap().steps[0].status, StepStatus::InProgress);
+
+        // Set step 2 to in_progress — step 1 should be reset to Pending
+        mgr.update_step(2, StepStatus::InProgress).unwrap();
+        assert_eq!(mgr.active_plan().unwrap().steps[0].status, StepStatus::Pending);
+        assert_eq!(mgr.active_plan().unwrap().steps[1].status, StepStatus::InProgress);
+
+        // Set step 3 to in_progress — step 2 should be reset to Pending
+        mgr.update_step(3, StepStatus::InProgress).unwrap();
+        assert_eq!(mgr.active_plan().unwrap().steps[1].status, StepStatus::Pending);
+        assert_eq!(mgr.active_plan().unwrap().steps[2].status, StepStatus::InProgress);
     }
 }

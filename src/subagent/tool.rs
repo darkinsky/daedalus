@@ -321,8 +321,12 @@ pub fn build_tool_definition(registry: &SubagentRegistry) -> Option<serde_json::
          1. Group findings by severity.\n\
          2. VERIFY (cannot be skipped): Select the top N findings by severity \
          (N = min(10, total_critical + total_high)). For EACH, call read_file on the \
-         cited file:line and confirm the issue exists. Check for mitigating context \
-         (comments like SAFETY, TODO, Phase N, best-effort, or guards in calling code). \
+         cited file:line with enough context to see the FULL function/block (use offset \
+         and limit to read at least 50 lines around the cited line, not just 15-20). \
+         Confirm the issue exists by reading the actual implementation. Check for \
+         mitigating context (comments like SAFETY, TODO, Phase N, best-effort, or guards \
+         in calling code). Also check RELATED code — e.g., if a finding claims 'no timeout', \
+         verify by reading the Client construction site, not just the call site. \
          REMOVE or DOWNGRADE findings that are incorrect, exaggerated, or already mitigated.\n\
          3. DEDUPLICATE: Merge findings that describe the same issue across subagents. \
          If two findings reference the same file within 10 lines, they likely overlap.\n\

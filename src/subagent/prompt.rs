@@ -213,9 +213,14 @@ fn build_tool_guidance_section(tool_infos: &[ToolInfo]) -> String {
         )
     };
 
-    // Conditionally include take_note guidance
+    // Conditionally include take_note guidance — emphasize immediate recording
     let take_note_hint = if available.contains("take_note") {
-        "   - Use `take_note` to record findings as you go — notes survive context pressure\n"
+        "\n\
+         7. **`take_note` discipline** (CRITICAL for long tasks):\n\
+            - Call `take_note` IMMEDIATELY when you discover something important — do NOT defer\n\
+            - Notes survive context truncation; un-noted findings will be LOST permanently\n\
+            - Record findings in the SAME round you discover them, not in a batch at the end\n\
+            - Anti-pattern: saving all take_note calls for the last 1-2 rounds (this defeats the purpose)\n"
     } else {
         ""
     };

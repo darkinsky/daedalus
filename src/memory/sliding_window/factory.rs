@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use crate::memory::{Memory, MemoryFactory};
 use crate::memory::dynamic_cheatsheet::DynamicCheatsheet;
 use crate::memory::persistence::MemoryPersistence;
+use super::config::SlidingWindowConfig;
 use super::memory::SlidingWindowMemory;
 
 /// Factory for creating `SlidingWindowMemory` instances.
@@ -21,6 +22,8 @@ pub struct SlidingWindowFactory {
     cheatsheet_path: Option<PathBuf>,
     /// Path to the session messages persistence file (from workspace).
     session_messages_path: Option<PathBuf>,
+    /// Sliding window configuration (context_budget, thresholds, etc.).
+    config: SlidingWindowConfig,
 }
 
 impl SlidingWindowFactory {
@@ -32,6 +35,7 @@ impl SlidingWindowFactory {
             history_path: None,
             cheatsheet_path: None,
             session_messages_path: None,
+            config: SlidingWindowConfig::default(),
         }
     }
 
@@ -49,6 +53,7 @@ impl SlidingWindowFactory {
             history_path: Some(history_path),
             cheatsheet_path: None,
             session_messages_path: None,
+            config: SlidingWindowConfig::default(),
         }
     }
 
@@ -67,6 +72,7 @@ impl SlidingWindowFactory {
             history_path: Some(history_path),
             cheatsheet_path: Some(cheatsheet_path),
             session_messages_path: None,
+            config: SlidingWindowConfig::default(),
         }
     }
 
@@ -79,11 +85,21 @@ impl SlidingWindowFactory {
         self.session_messages_path = Some(path);
         self
     }
+
+    /// Set the sliding window configuration.
+    ///
+    /// This allows passing context_budget and other settings from the
+    /// agent config to the memory instances created by this factory.
+    #[allow(dead_code)]
+    pub fn with_config(mut self, config: SlidingWindowConfig) -> Self {
+        self.config = config;
+        self
+    }
 }
 
 impl MemoryFactory for SlidingWindowFactory {
     fn create_memory(&self, system_prompt: &str) -> Box<dyn Memory> {
-        let mut memory = SlidingWindowMemory::with_defaults(system_prompt);
+        let mut memory = SlidingWindowMemory::new(system_prompt, self.config.clone());
 
         // Load persisted state from workspace if paths are configured
         if let (Some(ltm_path), Some(history_path)) = (&self.ltm_path, &self.history_path) {

@@ -10,6 +10,7 @@ use crate::subagent::tool::SubagentEventSink;
 use crate::agent_tracing::SharedTracingHook;
 use crate::tools::{BuiltinToolRegistry, ToolInfo};
 use crate::tools::bash::BashConfig;
+use crate::tools::take_note::SharedNotes;
 
 /// Tool filter for --allowed-tools / --disallowed-tools CLI flags.
 ///
@@ -80,6 +81,9 @@ pub struct ToolRouter {
     shared_tracing_hook: SharedTracingHook,
     /// Optional tool filter (from --allowed-tools / --disallowed-tools).
     tool_filter: Option<ToolFilter>,
+    /// Shared notes for the lead agent's take_note tool.
+    /// Stored here so CoreTurnHandler can pass it to LoopContext.
+    shared_notes: SharedNotes,
 }
 
 impl ToolRouter {
@@ -99,15 +103,25 @@ impl ToolRouter {
         bash_config: BashConfig,
         shared_plan: Option<crate::agent::tool_loop::plan_tracker::SharedPlan>,
     ) -> Self {
+        let shared_notes = crate::tools::take_note::new_shared_notes();
         Self {
-            builtin: BuiltinToolRegistry::new_with_config(bash_config, shared_plan),
+            builtin: BuiltinToolRegistry::new_with_config(bash_config, shared_plan, Some(shared_notes.clone())),
             mcp: None,
             skills: Arc::new(SkillRegistry::new()),
             subagents: Arc::new(SubagentRegistry::new()),
             subagent_event_sink: SubagentEventSink::new(),
             shared_tracing_hook: SharedTracingHook::new(),
             tool_filter: None,
+            shared_notes,
         }
+    }
+
+    /// Get a reference to the shared notes used by the lead agent's take_note tool.
+    ///
+    /// This allows `CoreTurnHandler` to pass the same notes instance to `LoopContext`,
+    /// ensuring notes recorded via the tool are visible in session metadata injection.
+    pub fn shared_notes(&self) -> &SharedNotes {
+        &self.shared_notes
     }
 
     /// Replace the bash tool with one using the given configuration.

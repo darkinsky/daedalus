@@ -220,7 +220,12 @@ impl<'a> CodingPromptBuilder<'a> {
             parts.push(delegation);
         }
 
-        // 10. Critical reminders (last = highest salience via recency bias)
+        // 10. Planning guidance (only when create_plan tool available)
+        if let Some(planning) = sections::planning::build(self.inputs.tools) {
+            parts.push(planning);
+        }
+
+        // 11. Critical reminders (last = highest salience via recency bias)
         parts.push(sections::reminders::build());
 
         // ═══ CACHE BOUNDARY ═══

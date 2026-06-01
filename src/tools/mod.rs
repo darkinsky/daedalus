@@ -280,7 +280,7 @@ impl BuiltinToolRegistry {
     /// Uses default configuration for all tools. For custom configuration,
     /// use `new_with_config()`.
     pub fn new() -> Self {
-        Self::new_with_config(BashConfig::default(), None)
+        Self::new_with_config(BashConfig::default(), None, None)
     }
 
     /// Create a new registry with custom tool configuration and a shared plan.
@@ -289,13 +289,19 @@ impl BuiltinToolRegistry {
     /// operate on the same plan instance that the tool loop reads for context
     /// injection. If `None`, a new isolated plan is created (suitable for
     /// subagents that don't share the lead agent's plan).
+    ///
+    /// The `shared_notes` is injected so that `TakeNoteTool` and the tool loop
+    /// share the same notes instance. If `None`, a new isolated notes container
+    /// is created.
     pub fn new_with_config(
         bash_config: BashConfig,
         shared_plan: Option<crate::agent::tool_loop::plan_tracker::SharedPlan>,
+        shared_notes: Option<take_note::SharedNotes>,
     ) -> Self {
         let shared_plan = shared_plan.unwrap_or_else(
             crate::agent::tool_loop::plan_tracker::new_shared_plan,
         );
+        let shared_notes = shared_notes.unwrap_or_else(take_note::new_shared_notes);
 
         let tools: Vec<Box<dyn BuiltinTool>> = vec![
             Box::new(read_file::ReadFileTool),
@@ -307,7 +313,7 @@ impl BuiltinToolRegistry {
             Box::new(grep_search::GrepSearchTool),
             Box::new(get_file_info::GetFileInfoTool),
             Box::new(bash::BashTool::new(bash_config.clone())),
-            Box::new(take_note::TakeNoteTool::new(take_note::new_shared_notes())),
+            Box::new(take_note::TakeNoteTool::new(shared_notes)),
             Box::new(plan::CreatePlanTool::new(shared_plan.clone())),
             Box::new(plan::UpdatePlanTool::new(shared_plan)),
         ];

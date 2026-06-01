@@ -183,7 +183,7 @@ impl CoreTurnHandler {
             on_llm_response: None,
             tracing_hook: tracing_hook.as_ref(),
             tool_pipeline: Some(&tool_pipeline),
-            shared_notes: None, // Lead agent doesn't use take_note (subagents do)
+            shared_notes: Some(self.tool_router.shared_notes()),
             shared_plan: self.shared_plan.as_ref(),
         };
 

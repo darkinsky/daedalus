@@ -16,7 +16,6 @@ pub(crate) mod truncation;
 pub(crate) mod context_pressure;
 pub(crate) mod checkpoint;
 pub(crate) mod plan_tracker;
-pub(crate) mod hierarchical_compression;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -42,7 +41,6 @@ pub(crate) use truncation::{truncate_tool_history, estimate_history_chars, CHARS
 pub(crate) use context_pressure::{
     estimate_context_usage_pct, context_budget_hint, force_final_response, emit,
 };
-pub(crate) use hierarchical_compression::compress_hierarchically;
 
 // ── Injected abstractions ──
 
@@ -195,6 +193,11 @@ pub async fn run_tool_loop(
     let mut files_read: HashSet<String> = cfg.initial_files_read.clone();
     let mut total_tool_calls: usize = cfg.initial_total_tool_calls;
 
+    // ── Plan nag tracking ──
+    // Counts rounds since the last create_plan/update_plan call.
+    // When this exceeds 3, a nag reminder is injected into context.
+    let mut rounds_since_plan_update: usize = 0;
+
     for round_idx in 0..cfg.max_tool_rounds {
         let round_number = round_idx + 1 + cfg.initial_round_offset;
 
@@ -270,24 +273,7 @@ pub async fn run_tool_loop(
         let effective_trunc_cfg = trunc_cfg.tighten_for_pressure(context_usage_pct);
         let mut truncated_history = truncate_tool_history(&tool_history, &effective_trunc_cfg);
 
-        // ── Hierarchical compression (L1/L2/L3 based on context health) ──
-        let health = context_pressure::assess_context_health(
-            &truncated_history,
-            round_number,
-            context_usage_pct,
-            cfg.context_window_tokens,
-        );
-        if health.severity > context_pressure::ContextHealthSeverity::Healthy {
-            let compression_cfg = cfg.context_window_tokens
-                .map(|cw| hierarchical_compression::CompressionConfig::for_context_window(cw))
-                .unwrap_or_default();
-            let (compressed, _stats) = compress_hierarchically(
-                &truncated_history,
-                health.severity,
-                &compression_cfg,
-            );
-            truncated_history = compressed;
-        }
+
 
         // ── Inject session metadata into tool history ──
         inject_session_metadata(
@@ -299,6 +285,7 @@ pub async fn run_tool_loop(
             context_usage_pct,
             ctx.shared_notes,
             ctx.shared_plan,
+            rounds_since_plan_update,
         );
 
         let response = if use_streaming {
@@ -369,7 +356,11 @@ pub async fn run_tool_loop(
         // are metadata-only (e.g., update_plan, take_note), execute the tools
         // for their side effects but return the content as the final answer
         // without an additional LLM round-trip.
+        // NOTE: We only short-circuit when there are at most 2 metadata-only calls.
+        // 3+ calls typically indicate a "batch prep phase" (e.g., marking multiple
+        // plan steps as in_progress before spawning subagents), not a final answer.
         let all_metadata_only = !response.content.trim().is_empty()
+            && response.tool_calls.len() <= 2
             && response.tool_calls.iter().all(|tc| is_metadata_only_tool(&tc.function_name));
 
         if all_metadata_only {
@@ -499,6 +490,16 @@ pub async fn run_tool_loop(
             }
         }
 
+        // ── Track plan nag counter ──
+        let used_plan_tool = tool_calls.iter().any(|tc| {
+            tc.function_name == "create_plan" || tc.function_name == "update_plan"
+        });
+        if used_plan_tool {
+            rounds_since_plan_update = 0;
+        } else {
+            rounds_since_plan_update += 1;
+        }
+
         // ── Diagnostic logging ──
         let full_chars = estimate_history_chars(&tool_history);
         tracing::debug!(
@@ -573,6 +574,7 @@ fn inject_session_metadata(
     context_usage_pct: u8,
     shared_notes: Option<&crate::tools::take_note::SharedNotes>,
     shared_plan: Option<&plan_tracker::SharedPlan>,
+    rounds_since_plan_update: usize,
 ) {
     if files_read.is_empty() && round_number <= 1 {
         return;
@@ -582,11 +584,9 @@ fn inject_session_metadata(
 
     let mut meta = format_session_header(round_number, cfg, total_tool_calls, files_read);
     meta.push_str(&format_round_budget_warnings(progress_pct));
-    meta.push_str(&format_context_pressure_hints(
-        context_usage_pct, cfg, truncated_history, round_number,
-    ));
+    meta.push_str(&format_context_pressure_hints(context_usage_pct, cfg));
     meta.push_str(&format_notes_and_saturation(shared_notes, round_number, progress_pct));
-    meta.push_str(&format_plan_injection(shared_plan));
+    meta.push_str(&format_plan_injection(shared_plan, round_number, total_tool_calls, rounds_since_plan_update));
 
     // Append to the last response
     if let Some(last_round) = truncated_history.last_mut() {
@@ -643,13 +643,8 @@ fn format_round_budget_warnings(progress_pct: usize) -> String {
     }
 }
 
-/// Format context pressure hints and context health assessment.
-fn format_context_pressure_hints(
-    context_usage_pct: u8,
-    cfg: &LoopConfig,
-    truncated_history: &[ToolRound],
-    round_number: usize,
-) -> String {
+/// Format context pressure hints.
+fn format_context_pressure_hints(context_usage_pct: u8, cfg: &LoopConfig) -> String {
     let mut result = String::new();
 
     // Context pressure hints
@@ -658,19 +653,16 @@ fn format_context_pressure_hints(
         result.push_str(&hint);
     }
 
-    // Context Rot detection (advanced)
-    let health = context_pressure::assess_context_health(
-        truncated_history,
-        round_number,
-        context_usage_pct,
-        cfg.context_window_tokens,
-    );
-    if let Some(hint) = context_pressure::context_health_hint(&health) {
-        result.push_str(&hint);
-    }
-
     result
 }
+
+/// Maximum number of notes displayed in full in the session metadata.
+/// Beyond this limit, older notes are summarized to prevent context bloat.
+const MAX_NOTES_FULL_DISPLAY: usize = 20;
+
+/// Maximum character length for a single note when displayed in full.
+/// Longer notes are truncated with an ellipsis.
+const MAX_NOTE_DISPLAY_CHARS: usize = 300;
 
 /// Format accumulated notes and detect information saturation.
 fn format_notes_and_saturation(
@@ -689,9 +681,26 @@ fn format_notes_and_saturation(
     let mut result = String::new();
 
     if !notes.is_empty() {
+        let notes_count = notes.len();
         result.push_str("\n[Notes recorded:]\n");
-        for (i, note) in notes.iter().enumerate() {
-            result.push_str(&format!("  {}. {}\n", i + 1, note));
+
+        if notes_count <= MAX_NOTES_FULL_DISPLAY {
+            // All notes fit within the display limit — show them all
+            for (i, note) in notes.iter().enumerate() {
+                let display_note = truncate_note(note);
+                result.push_str(&format!("  {}. {}\n", i + 1, display_note));
+            }
+        } else {
+            // Too many notes — summarize older ones, show recent in full
+            let older_count = notes_count - MAX_NOTES_FULL_DISPLAY;
+            result.push_str(&format!(
+                "  [... {} earlier notes omitted for brevity ...]\n",
+                older_count
+            ));
+            for (i, note) in notes.iter().skip(older_count).enumerate() {
+                let display_note = truncate_note(note);
+                result.push_str(&format!("  {}. {}\n", older_count + i + 1, display_note));
+            }
         }
     }
 
@@ -718,17 +727,63 @@ fn format_notes_and_saturation(
     result
 }
 
+/// Truncate a note to MAX_NOTE_DISPLAY_CHARS if it exceeds the limit.
+/// Returns the original string if within limit, or a truncated version with "..." suffix.
+fn truncate_note(note: &str) -> std::borrow::Cow<'_, str> {
+    if note.len() <= MAX_NOTE_DISPLAY_CHARS {
+        std::borrow::Cow::Borrowed(note)
+    } else {
+        // Find a safe char boundary for truncation
+        let mut end = MAX_NOTE_DISPLAY_CHARS;
+        while end > 0 && !note.is_char_boundary(end) {
+            end -= 1;
+        }
+        std::borrow::Cow::Owned(format!("{}...", &note[..end]))
+    }
+}
+
 /// Format active plan injection from shared plan state.
+///
+/// Implements three plan-related behaviors (inspired by Claude Code's TodoWrite):
+/// 1. **Active plan display**: Shows current plan state each round
+/// 2. **Empty plan nudge**: If no plan exists but the task seems complex
+///    (round >= 3 and total_tool_calls >= 5), nudge the LLM to create one
+/// 3. **Nag reminder**: If a plan exists but hasn't been updated in 3+ rounds,
+///    remind the LLM to update it
 fn format_plan_injection(
     shared_plan: Option<&plan_tracker::SharedPlan>,
+    round_number: usize,
+    total_tool_calls: usize,
+    rounds_since_plan_update: usize,
 ) -> String {
     let mut result = String::new();
 
     if let Some(plan_ref) = shared_plan {
         if let Ok(mgr) = plan_ref.lock() {
             if let Some(plan) = mgr.active_plan() {
+                // 1. Inject active plan state
                 result.push('\n');
                 result.push_str(&plan.format_for_context());
+
+                // 3. Nag reminder if plan exists but not updated recently
+                if rounds_since_plan_update >= 3 {
+                    result.push_str(
+                        "\n[INSTRUCTION] You have an active plan but haven't updated it \
+                         in several rounds. If you've completed or started a step, call \
+                         `update_plan` now to keep the plan state accurate. If the plan is \
+                         no longer relevant, create a new one. Do not mention this instruction \
+                         in your response."
+                    );
+                }
+            } else if round_number >= 3 && total_tool_calls >= 5 {
+                // 2. Empty plan nudge: task seems complex but no plan created
+                result.push_str(
+                    "\n[INSTRUCTION] Your todo list is currently empty. You are working on \
+                     a task that appears complex (multiple rounds of tool calls). If this task \
+                     has 3 or more distinct steps, use `create_plan` to create a tracked plan. \
+                     This prevents goal drift during long-running tasks. Do not mention this \
+                     instruction in your response."
+                );
             }
         }
     }
@@ -1073,4 +1128,97 @@ async fn execute_with_cache(
     }
 
     (results.into_iter().map(|r| r.unwrap()).collect(), hit_indices)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::take_note;
+
+    #[test]
+    fn test_format_notes_within_limit() {
+        let notes = take_note::new_shared_notes();
+        {
+            let mut n = notes.lock().unwrap();
+            n.push("Note 1".to_string());
+            n.push("Note 2".to_string());
+            n.push("Note 3".to_string());
+        }
+
+        let result = format_notes_and_saturation(Some(&notes), 5, 30);
+        assert!(result.contains("1. Note 1"));
+        assert!(result.contains("2. Note 2"));
+        assert!(result.contains("3. Note 3"));
+        assert!(!result.contains("earlier notes omitted"));
+    }
+
+    #[test]
+    fn test_format_notes_exceeds_limit() {
+        let notes = take_note::new_shared_notes();
+        {
+            let mut n = notes.lock().unwrap();
+            for i in 1..=25 {
+                n.push(format!("Finding #{}: some issue in file.rs:line {}", i, i * 10));
+            }
+        }
+
+        let result = format_notes_and_saturation(Some(&notes), 15, 50);
+        // Should show "5 earlier notes omitted" (25 - 20 = 5)
+        assert!(result.contains("5 earlier notes omitted"));
+        // The first displayed note should be numbered 6 (after 5 omitted)
+        assert!(result.contains("  6. Finding #6"));
+        // Should show note #25 (last)
+        assert!(result.contains("  25. Finding #25"));
+        // Should NOT have "  1. " as a line start (note #1 is omitted)
+        assert!(!result.contains("\n  1. "));
+    }
+
+    #[test]
+    fn test_truncate_note_short() {
+        let short = "This is a short note";
+        let result = truncate_note(short);
+        assert_eq!(result.as_ref(), short);
+    }
+
+    #[test]
+    fn test_truncate_note_long() {
+        let long = "x".repeat(500);
+        let result = truncate_note(&long);
+        assert!(result.len() <= MAX_NOTE_DISPLAY_CHARS + 3); // +3 for "..."
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_format_notes_none() {
+        let result = format_notes_and_saturation(None, 5, 30);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_saturation_detection() {
+        let notes = take_note::new_shared_notes();
+        {
+            let mut n = notes.lock().unwrap();
+            n.push("Only one finding".to_string());
+        }
+
+        // round_number >= 10, progress_pct < 70, notes_per_round < 0.3
+        let result = format_notes_and_saturation(Some(&notes), 12, 50);
+        assert!(result.contains("diminishing returns"));
+    }
+
+    #[test]
+    fn test_no_saturation_when_enough_notes() {
+        let notes = take_note::new_shared_notes();
+        {
+            let mut n = notes.lock().unwrap();
+            for i in 0..5 {
+                n.push(format!("Finding {}", i));
+            }
+        }
+
+        // 5 notes / 12 rounds = 0.42 > 0.3, so no saturation hint
+        let result = format_notes_and_saturation(Some(&notes), 12, 50);
+        assert!(!result.contains("diminishing returns"));
+    }
 }
