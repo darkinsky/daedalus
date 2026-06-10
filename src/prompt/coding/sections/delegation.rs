@@ -28,9 +28,17 @@ pub fn build(tools: &[ToolInfo]) -> Option<String> {
          sequentially — they have isolated contexts and cannot share data.\n\
          - If a subagent returns partial results, use them as-is. Never redo its work yourself.\n\
          - On failure, retry with a narrower scope instead of a full retry.\n\
-         - **Delegate early**: If a task clearly needs subagents (e.g., full-project review, \
-         multi-module exploration), delegate in round 1-2. Do NOT spend rounds exploring \
-         the codebase yourself only to pass the same information to a subagent.\n\
+         - **Delegate early (target: 2 rounds, hard limit: 3 rounds)**: If a task clearly \
+         needs subagents (e.g., full-project review, multi-module exploration), you SHOULD \
+         dispatch subagents by round 2. Use round 1 to gather file list + LOC stats (bash) \
+         and optionally read workspace config (e.g., Cargo.toml members, package.json \
+         workspaces) for accurate partitioning. Round 3 is acceptable ONLY when a plan \
+         agent is needed for complex decomposition or when workspace config must be read \
+         to determine module boundaries. Round 4+ is NEVER acceptable. Do NOT spend rounds \
+         exploring the codebase yourself only to pass the same information to a subagent. \
+         Any exploration beyond what is strictly needed for partitioning (directory structure \
+         + approximate file counts + module boundaries) is WASTED work — subagents will do \
+         their own detailed exploration.\n\
          \n\
          ### Duplicate Detection\n\
          \n\

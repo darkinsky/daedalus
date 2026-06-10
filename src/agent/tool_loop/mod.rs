@@ -193,10 +193,9 @@ pub async fn run_tool_loop(
     let mut files_read: HashSet<String> = cfg.initial_files_read.clone();
     let mut total_tool_calls: usize = cfg.initial_total_tool_calls;
 
-    // ── Plan nag tracking ──
-    // Counts rounds since the last create_plan/update_plan call.
-    // When this exceeds 3, a nag reminder is injected into context.
-    let mut rounds_since_plan_update: usize = 0;
+    // Plan nag tracking removed — plan is now purely informational (UI only).
+    // The orchestrator can still use create_plan/update_plan for progress display,
+    // but no nag/nudge instructions are injected into LLM context.
 
     for round_idx in 0..cfg.max_tool_rounds {
         let round_number = round_idx + 1 + cfg.initial_round_offset;
@@ -285,7 +284,6 @@ pub async fn run_tool_loop(
             context_usage_pct,
             ctx.shared_notes,
             ctx.shared_plan,
-            rounds_since_plan_update,
         );
 
         let response = if use_streaming {
@@ -490,14 +488,22 @@ pub async fn run_tool_loop(
             }
         }
 
-        // ── Track plan nag counter ──
-        let used_plan_tool = tool_calls.iter().any(|tc| {
-            tc.function_name == "create_plan" || tc.function_name == "update_plan"
-        });
-        if used_plan_tool {
-            rounds_since_plan_update = 0;
-        } else {
-            rounds_since_plan_update += 1;
+
+
+        // ── Metadata-only round nudge ──
+        // If the LLM called ONLY metadata tools (update_plan) with no content,
+        // append a nudge to the last response so the LLM learns to combine
+        // plan updates with actual work in subsequent rounds.
+        if response.content.trim().is_empty()
+            && !tool_calls.is_empty()
+            && tool_calls.iter().all(|tc| is_metadata_only_tool(&tc.function_name))
+        {
+            if let Some(last_resp) = responses.last_mut() {
+                last_resp.content.push_str(
+                    " [Note: Calling only update_plan wastes a round. \
+                     Combine plan updates with other tool calls or your final answer.]"
+                );
+            }
         }
 
         // ── Diagnostic logging ──
@@ -574,7 +580,6 @@ fn inject_session_metadata(
     context_usage_pct: u8,
     shared_notes: Option<&crate::tools::take_note::SharedNotes>,
     shared_plan: Option<&plan_tracker::SharedPlan>,
-    rounds_since_plan_update: usize,
 ) {
     if files_read.is_empty() && round_number <= 1 {
         return;
@@ -586,7 +591,7 @@ fn inject_session_metadata(
     meta.push_str(&format_round_budget_warnings(progress_pct));
     meta.push_str(&format_context_pressure_hints(context_usage_pct, cfg));
     meta.push_str(&format_notes_and_saturation(shared_notes, round_number, progress_pct));
-    meta.push_str(&format_plan_injection(shared_plan, round_number, total_tool_calls, rounds_since_plan_update));
+    meta.push_str(&format_plan_injection(shared_plan));
 
     // Append to the last response
     if let Some(last_round) = truncated_history.last_mut() {
@@ -744,46 +749,20 @@ fn truncate_note(note: &str) -> std::borrow::Cow<'_, str> {
 
 /// Format active plan injection from shared plan state.
 ///
-/// Implements three plan-related behaviors (inspired by Claude Code's TodoWrite):
-/// 1. **Active plan display**: Shows current plan state each round
-/// 2. **Empty plan nudge**: If no plan exists but the task seems complex
-///    (round >= 3 and total_tool_calls >= 5), nudge the LLM to create one
-/// 3. **Nag reminder**: If a plan exists but hasn't been updated in 3+ rounds,
-///    remind the LLM to update it
+/// Shows the current plan state for informational purposes only (UI display
+/// and audit trail). No nag reminders or nudges are injected — the plan is
+/// purely a progress indicator, not a behavioral directive.
 fn format_plan_injection(
     shared_plan: Option<&plan_tracker::SharedPlan>,
-    round_number: usize,
-    total_tool_calls: usize,
-    rounds_since_plan_update: usize,
 ) -> String {
     let mut result = String::new();
 
     if let Some(plan_ref) = shared_plan {
         if let Ok(mgr) = plan_ref.lock() {
             if let Some(plan) = mgr.active_plan() {
-                // 1. Inject active plan state
+                // Inject active plan state (informational only, no INSTRUCTION directives)
                 result.push('\n');
                 result.push_str(&plan.format_for_context());
-
-                // 3. Nag reminder if plan exists but not updated recently
-                if rounds_since_plan_update >= 3 {
-                    result.push_str(
-                        "\n[INSTRUCTION] You have an active plan but haven't updated it \
-                         in several rounds. If you've completed or started a step, call \
-                         `update_plan` now to keep the plan state accurate. If the plan is \
-                         no longer relevant, create a new one. Do not mention this instruction \
-                         in your response."
-                    );
-                }
-            } else if round_number >= 3 && total_tool_calls >= 5 {
-                // 2. Empty plan nudge: task seems complex but no plan created
-                result.push_str(
-                    "\n[INSTRUCTION] Your todo list is currently empty. You are working on \
-                     a task that appears complex (multiple rounds of tool calls). If this task \
-                     has 3 or more distinct steps, use `create_plan` to create a tracked plan. \
-                     This prevents goal drift during long-running tasks. Do not mention this \
-                     instruction in your response."
-                );
             }
         }
     }
@@ -1001,12 +980,18 @@ fn is_write_tool(tool_name: &str) -> bool {
     )
 }
 
-/// Tools that only update internal metadata (plan state, notes) without producing
+/// Tools that only update internal metadata (plan state) without producing
 /// results the LLM needs to reason about. When the LLM emits a final answer
 /// alongside only metadata-only tool calls, the loop can short-circuit: execute
 /// the tools for side effects and return the content without another LLM round.
+///
+/// Only `update_plan` qualifies here. `take_note` is excluded because it is
+/// frequently called alongside transitional content (e.g., "Let me record this
+/// and continue..."), which caused premature termination in practice.
+/// `update_plan` with status "done" almost always accompanies a genuine final
+/// answer, making it safe to short-circuit.
 fn is_metadata_only_tool(tool_name: &str) -> bool {
-    matches!(tool_name, "update_plan" | "take_note")
+    tool_name == "update_plan"
 }
 
 /// Lightweight read-only tool result cache.

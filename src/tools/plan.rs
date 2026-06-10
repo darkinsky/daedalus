@@ -39,7 +39,9 @@ impl BuiltinTool for CreatePlanTool {
          The plan will be tracked and displayed in every subsequent round, \
          preventing goal drift during long-running tasks. Use when the task \
          has 3 or more distinct steps. Only one plan can be active at a time; \
-         creating a new plan archives the previous one."
+         creating a new plan archives the previous one. \
+         EFFICIENCY: Combine create_plan with your first action tools \
+         (e.g., spawn_subagent) in the same response to avoid wasting a round."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -132,7 +134,10 @@ impl BuiltinTool for UpdatePlanTool {
     fn description(&self) -> &str {
         "Update the status of a step in the active plan. Call this after \
          completing, starting, or failing a step to keep the plan state \
-         accurate. The updated plan will be visible in subsequent rounds."
+         accurate. The updated plan will be visible in subsequent rounds. \
+         EFFICIENCY: Always combine update_plan with other tool calls or \
+         your final answer in the same response — never call update_plan \
+         as the sole action in a round, as that wastes an entire LLM turn."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -151,10 +156,6 @@ impl BuiltinTool for UpdatePlanTool {
             },
             "required": ["step", "status"]
         })
-    }
-
-    fn is_metadata_only(&self) -> bool {
-        true
     }
 
     async fn execute(&self, arguments: serde_json::Value) -> Result<String> {

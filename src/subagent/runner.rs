@@ -16,7 +16,10 @@ use super::TeamTask;
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 100;
 
 /// Tool names that are never available to subagents (prevents recursion and misuse).
-const EXCLUDED_TOOLS: &[&str] = &["spawn_subagent", "spawn_team", "use_skill"];
+/// `create_plan`/`update_plan` are excluded because subagents have well-defined
+/// tasks from the orchestrator and don't need self-planning — it wastes rounds
+/// and previously caused premature termination via the metadata-only short-circuit.
+const EXCLUDED_TOOLS: &[&str] = &["spawn_subagent", "spawn_team", "use_skill", "create_plan", "update_plan"];
 
 /// Executes subagent tasks in isolated contexts.
 ///
@@ -673,9 +676,10 @@ impl SubagentRunner {
             "You have reached the maximum number of tool-calling rounds ({max_tool_rounds}). \
              Below is a summary of all work completed so far:\n\n\
              {work_summary}\n\n\
-             Based on EVERYTHING you have reviewed and found, output your COMPLETE \
-             findings NOW. Do not request any more tools. Provide a thorough, \
-             well-organized summary of all insights, issues, and observations.",
+             Your take_note records already contain the detailed findings. \
+             Output a SHORT summary (under 1500 tokens) listing your key findings \
+             with file:line references. Do NOT repeat full evidence or code snippets \
+             that are already in your notes. Do not request any more tools.",
         );
 
         let messages = vec![system, ChatMessage::user(&forcing_prompt)];

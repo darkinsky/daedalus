@@ -21,10 +21,11 @@ pub fn builtin_agents() -> Vec<SubagentDefinition> {
 }
 
 /// Standard read-only tool whitelist shared by all built-in subagents.
-/// Includes `bash` (for `wc -l`, `find`, etc.), `take_note` (for
-/// persisting findings across context truncation), and `create_plan`/
-/// `update_plan` (for tracking multi-step task progress).
-const READ_ONLY_TOOLS: &[&str] = &["read_file", "list_directory", "search_files", "grep_search", "get_file_info", "bash", "take_note", "create_plan", "update_plan"];
+/// Includes `bash` (for `wc -l`, `find`, etc.) and `take_note` (for
+/// persisting findings across context truncation).
+/// Note: `create_plan`/`update_plan` are intentionally excluded — subagents
+/// have well-defined tasks from the orchestrator and don't need self-planning.
+const READ_ONLY_TOOLS: &[&str] = &["read_file", "list_directory", "search_files", "grep_search", "get_file_info", "bash", "take_note"];
 
 /// Create a read-only built-in subagent with standard defaults.
 ///
@@ -137,19 +138,24 @@ You are an elite code reviewer. Read-only environment.
 
 ## take_note Discipline (CRITICAL — read carefully)
 
-- **Frequency**: You MUST have at least 1 `take_note` call every 3 rounds during
+- **Frequency**: You MUST have at least 1 `take_note` call every 2-3 rounds during
   Phase 2. If you've gone 3 rounds without a `take_note`, either you missed
   something or the code is clean — record that observation too.
-- **Timing**: Call `take_note` IN THE SAME tool_calls batch as (or immediately
-  after) the read_file that revealed the issue. Never defer to 'later'.
+- **Timing**: Call `take_note` IN THE SAME tool_calls batch as the read_file that
+  revealed the issue. The pattern is: [read_file, take_note, next_read_file] all
+  in ONE parallel batch. Never defer to 'later' or 'next round'.
 - **Anti-pattern**: Batching all take_note calls in the last 1-2 rounds is
   EXPLICITLY FORBIDDEN. This defeats the purpose of the tool — if context
   truncation occurs before your batch, ALL findings are lost.
-- **What to record**: Each note should be self-contained:
-  `[SEVERITY] file:line — problem description | evidence snippet`
-  so the orchestrator can use it even without your final report.
+- **What to record**: Each note should be SELF-CONTAINED and COMPLETE:
+  `[SEVERITY] file:line — problem description | evidence: <actual code> | impact | fix`
+  Include the actual code snippet as evidence IN the note. The orchestrator uses
+  your notes directly — they must stand alone without your final report.
 - **Minor findings too**: For 🟡 Minor issues, batch up to 3-5 per take_note
   call (one note every few rounds), but do NOT defer them all to the end.
+- **Notes ARE the deliverable**: Your take_note records are what the orchestrator
+  actually uses. The final text output is just a summary index. Invest your
+  token budget in thorough notes, not in a long final report.
 
 ## Severity
 
@@ -220,35 +226,33 @@ that is called incorrectly by code outside your scope).
 
 ## Output (MANDATORY FORMAT — deviations will be rejected)
 
+Your `take_note` calls ARE your primary deliverable. The final text output is
+only a LIGHTWEIGHT SUMMARY that references your notes — NOT a full re-statement.
+
 ```
 ## Summary
 Scope | Quality (⭐) | Verdict (APPROVE / REQUEST CHANGES)
+Files reviewed: N | Findings: 🔴 N | 🟠 N | 🟡 N | 🔵 N | 💚 N
 
-## 🔴 Critical & 🟠 Major
-### [Title] — `file:line` [CONFIDENCE]
-**Problem**: description of the issue
-**Evidence**: (copy-paste the actual code from the file — do NOT paraphrase)
-**Impact**: what can go wrong
-**Fix**: how to fix (with code if applicable)
+## Key Findings (brief — details are in take_note records)
+- 🔴 [Title] — `file:line` [CONFIDENCE]: one-sentence description
+- 🟠 [Title] — `file:line` [CONFIDENCE]: one-sentence description
+- ...
 
-## 🟡 Minor & 🔵 Nit
-- `file:line` [CONFIDENCE] — description | Evidence: `actual code snippet`
+## Cross-Module Issues (if any)
+- one-sentence per issue
 
-## 💚 Praise
-- `file:line` — what's good
-
-## Cross-Module Issues
-- Issues involving interfaces with other modules (if any)
-
-## Stats: 🔴 N | 🟠 N | 🟡 N | 🔵 N | 💚 N
+## Praise Highlights
+- `file:line` — one-sentence
 ```
 
 IMPORTANT output rules:
+- Your final output should be SHORT (under 1500 tokens). All detailed evidence,
+  code snippets, and fix suggestions belong in `take_note` calls, NOT here.
+- Do NOT repeat full evidence/code that you already recorded in take_note.
 - Every finding MUST have a [HIGH], [MEDIUM], or [LOW] confidence tag.
 - Every finding MUST cite an exact `file:line` that you actually read.
-- Every Critical/Major finding MUST include copy-pasted code as evidence.
-- Do NOT report issues you haven't verified by reading the actual code.
-- Do NOT paraphrase code — copy-paste the exact lines as evidence.",
+- Do NOT report issues you haven't verified by reading the actual code.",
         40,
         // Code reviewers need a larger context budget because they read many files.
         // The default heuristic (max_turns * 5000 = 200K) is too small for projects

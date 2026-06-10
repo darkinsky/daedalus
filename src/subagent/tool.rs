@@ -297,11 +297,20 @@ pub fn build_tool_definition(registry: &SubagentRegistry) -> Option<serde_json::
          doubling the cost. Instead, spawn the specialized subagent directly.\n\
          - For code review tasks, spawn 'code-reviewer' directly — it has all the tools \
          it needs (read_file, grep_search, bash, etc.) to explore and review independently.\n\n\
-         ORCHESTRATOR EFFICIENCY — Minimize exploration before dispatching:\n\
-         - Do NOT spend multiple rounds exploring the codebase before spawning subagents.\n\
-         - Use ONE bash command to gather all needed info (file list + LOC stats) in a single call.\n\
-         - Maximum 2 rounds of exploration before you MUST start dispatching subagents.\n\
-         - If you need a plan agent to partition work, spawn it immediately — don't pre-explore.\n\n\
+         ORCHESTRATOR EFFICIENCY — Target: 2 rounds, Hard limit: 3 rounds before dispatch:\n\
+         - Round 1: Use bash to gather directory structure + file counts. Optionally read \
+         workspace config (Cargo.toml members, package.json workspaces, etc.) in parallel \
+         if needed for accurate module boundary detection.\n\
+         - Round 2 (target): Spawn subagents with proper partitioning.\n\
+         - Round 3 (hard limit): Acceptable ONLY if a plan agent was spawned in round 2 \
+         and its results are needed to partition, OR if workspace config revealed unexpected \
+         complexity requiring re-partitioning. Round 4+ is NEVER acceptable.\n\
+         - Do NOT run per-module stats, read source files, or do any detailed exploration \
+         that subagents will redo themselves. Only gather what is strictly needed for \
+         partitioning: top-level directory structure, approximate sizes, and module boundaries.\n\
+         - If you find yourself in round 4+ without having spawned subagents, STOP and spawn NOW.\n\
+         - create_plan is optional — if you use it, combine it with spawn_subagent in the SAME round \
+         when possible, or use round 3 to spawn subagents based on plan results.\n\n\
          MAX_ROUNDS GUIDANCE — Set max_rounds based on task complexity:\n\
          - Simple exploration (list files, check patterns): 10-15 rounds\n\
          - Focused analysis (single module, <20 files): 20-30 rounds\n\

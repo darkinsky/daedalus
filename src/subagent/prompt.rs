@@ -219,8 +219,10 @@ fn build_tool_guidance_section(tool_infos: &[ToolInfo]) -> String {
          7. **`take_note` discipline** (CRITICAL for long tasks):\n\
             - Call `take_note` IMMEDIATELY when you discover something important — do NOT defer\n\
             - Notes survive context truncation; un-noted findings will be LOST permanently\n\
-            - Record findings in the SAME round you discover them, not in a batch at the end\n\
-            - Anti-pattern: saving all take_note calls for the last 1-2 rounds (this defeats the purpose)\n"
+            - Record findings in the SAME tool_calls batch as the discovery (parallel with next read)\n\
+            - Include full evidence (code snippets, line numbers) IN the note — notes are your primary deliverable\n\
+            - Anti-pattern: saving all take_note calls for the last 1-2 rounds (this defeats the purpose)\n\
+            - Your final text output should be a SHORT summary; detailed findings belong in take_note\n"
     } else {
         ""
     };
